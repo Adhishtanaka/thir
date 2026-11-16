@@ -40,11 +40,8 @@ fn exchange(s: &UdpSocket, msg: &[u8], xid: u32, mac: [u8; 6], want: u8, server:
 /// Unpredictable xid, so an off-path host cannot guess it and answer first. No weak fallback.
 fn xid() -> Result<u32, String> {
     let mut b = [0u8; 4];
-    loop {
-        if unsafe { libc::getrandom(b.as_mut_ptr() as *mut _, 4, 0) } == 4 { return Ok(u32::from_ne_bytes(b)); }
-        let e = io::Error::last_os_error();
-        if e.kind() != io::ErrorKind::Interrupted { return Err(format!("getrandom: {e}")); }
-    }
+    thir::user::random(&mut b).map_err(|e| format!("getrandom: {e}"))?;   // shared helper: raw syscall, see user.rs
+    Ok(u32::from_ne_bytes(b))
 }
 
 fn configure(iface: &str) -> Result<String, String> {
