@@ -26,24 +26,33 @@ fn prompt() -> String {
         Ok(h) if !h.is_empty() && h != "/" && (cwd == h || cwd.starts_with(&format!("{h}/"))) => format!("~{}", &cwd[h.len()..]),
         _ => cwd,
     };
-    format!("\x1b[1;32m{user}@{host}\x1b[0m:\x1b[1;34m{cwd}\x1b[0m$ ")
+    format!("\x1b[1;32m{}@{}\x1b[0m:\x1b[1;34m{}\x1b[0m$ ", printable(&user), printable(&host), printable(&cwd))
 }
 
 /// Completion candidates for `word`; the first word of a line without '/' is a command.
+/// Control bytes as '?', so a hostile file name cannot send escape sequences to the terminal.
+fn printable(s: &str) -> String { s.chars().map(|c| if c.is_control() { '?' } else { c }).collect() }
+
+/// Backslash-escape what parse_cmd treats specially, so a completed name stays one word and never becomes a redirect.
+fn escape(s: &str) -> String {
+    s.chars().fold(String::new(), |mut o, c| { if matches!(c, ' ' | '>' | '"' | '\'' | '\\') { o.push('\\'); } o.push(c); o })
+}
+
+/// Names with control characters are never offered (see `printable`).
 fn candidates(first: bool, word: &str) -> Vec<String> {
     let mut v: Vec<String> = vec![];
     if first && !word.contains('/') {
         v.extend(BUILTINS.iter().filter(|b| b.starts_with(word)).map(|b| b.to_string()));
         for dir in std::env::var("PATH").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
-            if let Ok(rd) = fs::read_dir(dir) { v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(word))); }
+            if let Ok(rd) = fs::read_dir(dir) { v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(word) && printable(n) == *n).map(|n| escape(&n))); }
         }
     } else {
         let (dir, pre) = word.rsplit_once('/').map_or(("", word), |(d, p)| (&word[..d.len() + 1], p));
         if let Ok(rd) = fs::read_dir(if dir.is_empty() { "." } else { dir }) {
             for e in rd.flatten() {
                 let n = e.file_name().to_string_lossy().into_owned();
-                if !n.starts_with(pre) || (n.starts_with('.') && !pre.starts_with('.')) { continue }
-                v.push(format!("{dir}{n}{}", if e.path().is_dir() { "/" } else { "" }));
+                if !n.starts_with(pre) || (n.starts_with('.') && !pre.starts_with('.')) || printable(&n) != n { continue }
+                v.push(format!("{dir}{}{}", escape(&n), if e.path().is_dir() { "/" } else { "" }));
             }
         }
     }
@@ -112,7 +121,7 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
         "exit" => exit(args.first().and_then(|s| s.parse().ok()).unwrap_or(0)),
         "help" => { let _ = writeln!(out, "nsh builtins: {}; redirect with > and >>; commands: passwd dhcp\ntab completes, up/down history, ctrl-a/e/u/k/w/l", BUILTINS.join(" ")); }
         "clear" => { let _ = out.write_all(b"\x1b[H\x1b[2J"); }
-        "history" => for (i, l) in hist.iter().enumerate() { let _ = writeln!(out, "{:>5}  {l}", i + 1); },
+        "history" => for (i, l) in hist.iter().enumerate() { let _ = writeln!(out, "{:>5}  {}", i + 1, printable(l)); },
         "pwd" => match std::env::current_dir() { Ok(d) => { let _ = writeln!(out, "{}", d.display()); } Err(e) => eprintln!("nsh: pwd: {e}") },
         "echo" => { let _ = writeln!(out, "{}", args.join(" ")); }
         "whoami" => { let _ = writeln!(out, "{}", std::env::var("USER").unwrap_or_else(|_| if unsafe { libc::getuid() } == 0 { "root".into() } else { unsafe { libc::getuid() }.to_string() })); }
@@ -146,7 +155,7 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
             match fs::read_dir(d) {
                 Ok(rd) => {
                     let mut names: Vec<String> = rd.filter_map(|e| e.ok())
-                        .map(|e| { let n = e.file_name().to_string_lossy().into_owned(); if e.path().is_dir() { if color { format!("\x1b[1;34m{n}/\x1b[0m") } else { n + "/" } } else { n } }).collect();
+                        .map(|e| { let n = printable(&e.file_name().to_string_lossy()); if e.path().is_dir() { if color { format!("\x1b[1;34m{n}/\x1b[0m") } else { n + "/" } } else { n } }).collect();
                     names.sort();
                     for n in names { let _ = writeln!(out, "{n}"); }
                 }
@@ -198,4 +207,14 @@ fn main() {
             Ok(_) => {}
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn escape_keeps_one_word() {
+        assert_eq!(escape("my file>x"), "my\\ file\\>x");
+        assert_eq!(thir::parse::parse_line(&format!("cat {}", escape("a b'c"))).unwrap(), vec!["cat", "a b'c"]);
+    }
+    #[test] fn printable_hides_control_bytes() { assert_eq!(printable("a\x1b[2Jb\n"), "a?[2Jb?"); }
 }
