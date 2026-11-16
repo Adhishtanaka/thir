@@ -50,6 +50,8 @@ Download the files from the [latest release](https://github.com/Adhishtanaka/thi
 
 **VirtualBox on an Apple Silicon Mac (easiest).** Get `thir-vbox-arm64.ova`, open VirtualBox, choose File > Import Appliance, then press Start. On the first boot, thir asks you to make a user name and a password.
 
+**VirtualBox on Windows, Linux or an Intel Mac.** Get `thir-vbox-x86_64.ova` and import it the same way (File > Import Appliance), then press Start. The appliance is already set to use EFI firmware, so you do not need to change any settings.
+
 **A real PC from a USB stick.** Get `thir-x86_64-uefi.img.xz` and write it to a USB stick:
 
 ```
