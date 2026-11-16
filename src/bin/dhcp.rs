@@ -2,7 +2,7 @@
 //! No args = every ethernet interface, one after another (they share UDP port 68).
 //! shortcut: no lease renewal; fine while sessions are shorter than the lease (QEMU gives 24 h). Add renew before long-running use.
 use thir::{dhcp, net};
-use std::{env, fs, io, net::{Ipv4Addr, UdpSocket}, os::fd::AsRawFd, process::exit, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{env, fs, io, net::{Ipv4Addr, UdpSocket}, os::fd::AsRawFd, process::exit, time::Duration};
 
 fn mac(iface: &str) -> [u8; 6] {
     let mut m = [0u8; 6];
@@ -37,26 +37,27 @@ fn exchange(s: &UdpSocket, msg: &[u8], xid: u32, mac: [u8; 6], want: u8, server:
     None
 }
 
-/// Unpredictable xid, so an off-path host cannot guess it and answer first.
-fn xid() -> u32 {
+/// Unpredictable xid, so an off-path host cannot guess it and answer first. No weak fallback.
+fn xid() -> Result<u32, String> {
     let mut b = [0u8; 4];
-    if unsafe { libc::getrandom(b.as_mut_ptr() as *mut _, 4, 0) } != 4 {
-        b = (SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()) ^ std::process::id()).to_ne_bytes();
+    loop {
+        if unsafe { libc::getrandom(b.as_mut_ptr() as *mut _, 4, 0) } == 4 { return Ok(u32::from_ne_bytes(b)); }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted { return Err(format!("getrandom: {e}")); }
     }
-    u32::from_ne_bytes(b)
 }
 
 fn configure(iface: &str) -> Result<String, String> {
     net::set_up(iface).map_err(|e| format!("up: {e}"))?;
     let s = socket(iface).map_err(|e| format!("socket: {e}"))?;
     let mac = mac(iface);
-    let xid = xid();
+    let xid = xid()?;
     let offer = exchange(&s, &dhcp::packet(dhcp::DISCOVER, xid, mac, None), xid, mac, dhcp::OFFER, None).ok_or("no offer")?;
     let server = offer.server.ok_or("offer without server id")?;
     let ack = exchange(&s, &dhcp::packet(dhcp::REQUEST, xid, mac, Some((offer.ip, server))), xid, mac, dhcp::ACK, Some(server)).ok_or("no ack")?;
     if ack.kind == dhcp::NAK { return Err("server sent NAK".into()); }
     let mask = ack.mask.unwrap_or(Ipv4Addr::new(255, 255, 255, 0));
-    dhcp::check(ack.ip, mask, ack.router).map_err(|e| format!("rejected lease {}: {e}", ack.ip))?;
+    dhcp::check(ack.ip, mask, ack.router, ack.dns).map_err(|e| format!("rejected lease {}: {e}", ack.ip))?;
     net::set_addr(iface, ack.ip, mask).map_err(|e| format!("set address: {e}"))?;
     if let Some(gw) = ack.router { net::add_default_route(gw).map_err(|e| format!("route: {e}"))?; }
     if let Some(dns) = ack.dns { fs::write("/etc/resolv.conf", format!("nameserver {dns}\n")).map_err(|e| format!("resolv.conf: {e}"))?; }
