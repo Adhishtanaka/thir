@@ -62,7 +62,12 @@ pub fn read_tz(path: &str, owner: u32) -> Option<i32> {
     parse_offset(std::str::from_utf8(&buf[..n]).ok()?.trim())
 }
 
-pub fn home_tz() -> Option<i32> { read_tz(&format!("{}/.tz", std::env::var("HOME").ok()?), unsafe { libc::getuid() }) }
+/// The build host's offset (build.sh passes THIR_TZ), used until a user sets ~/.tz.
+pub fn default_offset() -> Option<i32> { option_env!("THIR_TZ").and_then(parse_offset) }
+
+pub fn home_tz() -> Option<i32> {
+    std::env::var("HOME").ok().and_then(|h| read_tz(&format!("{h}/.tz"), unsafe { libc::getuid() })).or_else(default_offset)
+}
 
 pub fn now() -> i64 { unsafe { libc::time(std::ptr::null_mut()) as i64 } }
 

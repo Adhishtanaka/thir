@@ -141,13 +141,15 @@ impl Den {
         let mid = if self.uid.is_none() { "pane login".to_string() } else { format!("pane {n}/{}", self.panes.len()) };
         let mw = mid.len() as i32 * fw;
         // as many help items as fit left of the centre label (narrow screens, e.g. 800x600 firmware modes)
-        let room = (((w as i32 - mw) / 2 - m.pad * 2 - 2 * fw) / fw).max(0) as usize;
+        let inset = m.gap + m.border + m.pad;   // the bar text lines up with the text inside the panes
+        let room = (((w as i32 - mw) / 2 - inset - 2 * fw) / fw).max(0) as usize;
         let help = fit_items(HELP, " \u{b7} ", room);
-        self.text(m.pad * 2, &help, DIM);
+        self.text(inset, &help, DIM);
         self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);
-        let right = format!("{}   {}", ip_string(), clock::bar_line(clock::now(), self.tz_path.as_deref().zip(self.uid).and_then(|(p, u)| clock::read_tz(p, u))));
+        let off = self.tz_path.as_deref().zip(self.uid).and_then(|(p, u)| clock::read_tz(p, u)).or_else(clock::default_offset);
+        let right = format!("{}  \u{b7}  {}", ip_string(), clock::bar_line(clock::now(), off));
         let rw = right.len() as i32 * fw;
-        self.text(w as i32 - rw - m.pad * 2, &right, FG);
+        self.text(w as i32 - rw - inset, &right, FG);
         self.dirty_y = (0, self.dirty_y.1.max(m.bar as usize));
     }
 
@@ -238,7 +240,7 @@ fn main() {
     let (w, h) = (fb.w, fb.h);
     let mut wall = wall::gradient(w, h, &WALL);
     let (fy, r) = (h as i32 - m.foot, 9.0 * sc as f32);
-    let cy = fy + 21 * sc;   // footer strip centre line: bear mark and "thir", never covered by panes
+    let cy = fy + 18 * sc;   // footer strip centre line: bear mark and "thir", never covered by panes
     let cx = w as f32 / 2.0 - 2.5 * font.w as f32;
     wall::bear(&mut wall, w, cx, cy as f32, r, MARK, PANEL, 1.6 * sc as f32);
     let (mut x, y) = ((cx + r + 1.5 * font.w as f32) as i32, cy - font.h as i32 / 2);

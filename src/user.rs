@@ -22,8 +22,8 @@ pub struct User { pub name: String, pub uid: u32, pub params: Params, pub salt: 
 /// ^[a-z_][a-z0-9_-]{0,31}$ and not "root"
 pub fn valid_name(s: &str) -> bool {
     let b = s.as_bytes();
-    !b.is_empty() && b.len() <= 32 && s != "root" && (b[0].is_ascii_lowercase() || b[0] == b'_')
-        && b[1..].iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_' || *c == b'-')
+    !b.is_empty() && b.len() <= 32 && !s.eq_ignore_ascii_case("root") && (b[0].is_ascii_alphabetic() || b[0] == b'_')
+        && b[1..].iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
 }
 
 pub fn hash(password: &str, salt: &[u8; 16], p: &Params) -> Result<[u8; 32], String> {
@@ -170,8 +170,8 @@ mod tests {
         assert!(parse(&format!("{l}\n{l}")).is_err());
     }
     #[test] fn names() {
-        for ok in ["a", "_x", "ann-1_b", &"a".repeat(32)] { assert!(valid_name(ok), "{ok}"); }
-        for bad in ["", "root", "Ann", "1a", "-a", "a b", "a:b", &"a".repeat(33)] { assert!(!valid_name(bad), "{bad}"); }
+        for ok in ["a", "_x", "ann-1_b", "Ann", "Adhishtanaka", &"a".repeat(32)] { assert!(valid_name(ok), "{ok}"); }
+        for bad in ["", "root", "Root", "1a", "-a", "a b", "a:b", &"a".repeat(33)] { assert!(!valid_name(bad), "{bad}"); }
     }
     #[test] fn password_length() {
         assert!(new("ann", 1000, "abcd", [0; 16], &FAST).is_err());   // 4 bytes, below MIN_PASSWORD

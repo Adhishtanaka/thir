@@ -34,14 +34,18 @@ fn setup() -> Option<(User, Option<i32>)> {
     println!("thir: first boot: create the first user");
     loop {
         let name = line("username: ");
-        if !user::valid_name(&name) { println!("invalid name (a-z, 0-9, _ -, max 32)"); continue; }
+        if !user::valid_name(&name) { println!("invalid name: letters, digits, _ or -, max 32, starting with a letter or _"); continue; }
         let pw = secret("password: ");
         if pw != secret("repeat password: ") { println!("passwords do not match"); continue; }
         if pw.len() < user::MIN_PASSWORD { println!("password too short (min {})", user::MIN_PASSWORD); continue; }
         if !load_or_die().is_empty() { println!("a user was already created on another console"); return None; }
         let tz = loop {
-            let o = line("utc offset (e.g. +05:30, Enter for UTC): ");
-            if o.is_empty() { break None }
+            let def = clock::default_offset();
+            let o = match def {
+                Some(d) => line(&format!("utc offset [{}]: ", clock::format_offset(d))),
+                None => line("utc offset (e.g. +05:30, Enter for UTC): "),
+            };
+            if o.is_empty() { break def }
             match clock::parse_offset(&o) { Some(m) => break Some(m), None => println!("use +HH:MM or -HH:MM") }
         };
         match user::create(&name, user::FIRST_UID, &pw) {
