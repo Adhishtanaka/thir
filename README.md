@@ -39,7 +39,12 @@ kernel/*.config            kernel fragments applied on top of tinyconfig
 src/lib.rs                 exit-code protocol (decide)
 src/parse.rs               shell line parser (quotes, > and >>)
 src/user.rs                accounts: Argon2id hashes, /data/etc/users, privilege drop
-src/files.rs               rm safety check
+src/files.rs               rm safety check, printable/unsafe_char (hostile names)
+src/clock.rs               date math, UTC offsets, ~/.tz reader (pure)
+src/term.rs                raw-mode guard, size, key reading, prompt (edit and top)
+src/edit.rs                editor buffer + renderer (pure)
+src/glob.rs                `*` `?` matcher for find
+src/procinfo.rs            /proc parsers for top
 src/line.rs                nsh line editor (keys, history, completion; pure)
 src/net.rs                 interfaces, address, route (ioctl)
 src/dhcp.rs                DHCP packet build/parse
@@ -48,6 +53,9 @@ src/bin/init.rs            PID 1
 src/bin/nsh.rs             shell
 src/bin/login.rs           login (serial and den panes), first-boot setup
 src/bin/passwd.rs          change your own password (setuid root)
+src/bin/edit.rs            full-screen editor (`/bin/nano` is a link to it)
+src/bin/find.rs            find
+src/bin/top.rs             CPU, memory, process monitor
 out/<arch>/data.img        raw ext4 data disk, created when missing, never reformatted by a build
 src/bin/den.rs             GUI event loop
 src/gui/                   fb, wall (code-drawn wallpaper + bear), font (PSF), vt (terminal), layout (split tree), keymap, theme (all colors)
@@ -135,6 +143,17 @@ Tab completes commands (builtins and `/bin`) in the first word and paths elsewhe
 History is kept in `~/.nsh_history` (0600, last 1000 lines loaded); `history` lists it. nsh is in raw mode only while it reads a line, so
 programs, `write`, `passwd` and `login` always see a normal tty.
 
+## Programs, time zone
+
+`help` lists everything (`help <cmd>` for one). Builtins: `date`, `tz [+HH:MM]` (show or set the UTC offset), and the file commands above.
+- `edit [file]` (also `nano`): Ctrl-S save, Ctrl-Q or Ctrl-X quit, Ctrl-F find, Ctrl-K cut line (repeat to collect), Ctrl-U paste, arrows, Home/End, PgUp/PgDn. Saves atomically (temp file + rename, old mode kept).
+- `find [dir] [-name PATTERN] [-type f|d]`: `*` and `?` in patterns, never follows symlinks.
+- `top`: CPU, memory, load and processes, 1 s refresh. `s`/`m`/`p` sort by CPU/memory/pid, `k` kills a pid (SIGTERM, after a y/n), `q` quits.
+
+Time zone: the clock is UTC (QEMU's default RTC). Each user keeps an offset in `~/.tz` (`+05:30`, mode 0600); first-boot setup asks for it (Enter = UTC)
+and `tz +05:30` changes it. `date` and `top` use it; den's bar shows the logged-in user's local time (UTC until login). den runs as root and re-reads `~/.tz`
+every second, so it opens it `O_NOFOLLOW|O_NONBLOCK`, accepts regular files only, reads at most 64 bytes and parses strictly (a FIFO or symlink there cannot hang or fool it).
+
 ## Storage
 
 `The ext4 volume labelled `thirdata` (`out/<arch>/data.img` as a virtio disk, or partition 2 of `thir.img`) is mounted at `/data` with `nosuid,nodev,noexec`. It is ext4 with a journal,
@@ -182,5 +201,7 @@ default route, `/etc/resolv.conf`). Run `dhcp eth0` to do it again by hand.
 - den: no scrollback, no mouse, no wide (CJK) characters, no 256-color/truecolor SGR, no VT cursor save/restore or alternate screen.
 - The data disk is not encrypted: anyone with `out/<arch>/data.img` reads everything.
 - One user (no `adduser`). `write` replaces a whole file. `mv` across filesystems fails. `/data` is `noexec`.
+- edit: redraws the whole screen per key, 1 column per character (no wide characters), CRLF loads as LF and saves as LF, saving replaces hard links, files over 4 MB are refused.
+- top names only root and you (others show as a number). find has no `[]` patterns. Serial consoles report no size: edit and top assume 80x24.
 - Two consoles creating the first user at the same moment can overwrite each other (no lock).
 - No Ctrl-C test in the smoke test any more: its only long-running command (`dhcp`) needs root.

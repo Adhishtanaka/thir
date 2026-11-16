@@ -1,6 +1,6 @@
 //! den: tiling terminal GUI drawn straight to /dev/fb0. Alt is the window-manager key.
 use std::{fs::{self, File, OpenOptions}, io, os::{fd::IntoRawFd, unix::{fs::OpenOptionsExt, process::CommandExt}}, process::{exit, Command, Stdio}, thread::sleep, time::Duration};
-use thir::{decide, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, theme::*, wall::{self, blend}, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
+use thir::{clock, decide, user, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, theme::*, wall::{self, blend}, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
 
 const LOGIN_COLS: i32 = 60;
 const LOGIN_ROWS: i32 = 12;
@@ -12,6 +12,7 @@ struct Den {
     panes: Vec<Pane>, layout: Layout, next_id: usize, area: Rect, full_redraw: bool, dirty_y: (usize, usize),
     keys: Keys, inputs: Vec<(String, i32)>, zombies: Vec<i32>,
     uid: Option<u32>,   // None = nobody is logged in: one centered login pane
+    tz_path: Option<String>,   // the logged-in user's ~/.tz, for the bar clock
 }
 
 fn fill(back: &mut [u32], w: usize, r: Rect, c: u32) {
@@ -59,7 +60,10 @@ impl Den {
         let Some(p) = self.panes.first() else { return };
         let uid = fs::read_to_string(format!("/proc/{}/status", p.pid)).ok()
             .and_then(|s| s.lines().find_map(|l| l.strip_prefix("Uid:")?.split_whitespace().next()?.parse::<u32>().ok()));
-        if let Some(u) = uid.filter(|&u| u != 0) { self.uid = Some(u); self.relayout(); }
+        if let Some(u) = uid.filter(|&u| u != 0) {
+            self.tz_path = user::load().ok().and_then(|v| v.into_iter().find(|x| x.uid == u)).map(|x| format!("{}/.tz", x.home()));
+            self.uid = Some(u); self.relayout();
+        }
     }
 
     fn relayout(&mut self) {
@@ -83,7 +87,7 @@ impl Den {
         if hup { unsafe { libc::kill(p.pid, libc::SIGHUP); } }
         unsafe { libc::close(p.master); }
         self.zombies.push(p.pid);
-        if !self.layout.close(id) { self.uid = None; let n = self.new_pane(); self.layout = Layout::new(n); }   // last pane closed: logout
+        if !self.layout.close(id) { self.uid = None; self.tz_path = None; let n = self.new_pane(); self.layout = Layout::new(n); }   // last pane closed: logout
         self.relayout();
     }
 
@@ -127,8 +131,7 @@ impl Den {
         let mid = if self.uid.is_none() { "pane login".to_string() } else { format!("pane {n}/{}", self.panes.len()) };
         let mw = mid.len() as i32 * fw;
         self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);
-        let t = unsafe { libc::time(std::ptr::null_mut()) } % 86400;
-        let right = format!("{}   {:02}:{:02} UTC", ip_string(), t / 3600, t / 60 % 60);
+        let right = format!("{}   {}", ip_string(), clock::bar_line(clock::now(), self.tz_path.as_deref().and_then(clock::read_tz)));
         let rw = right.len() as i32 * fw;
         self.text(w as i32 - rw - m.pad * 2, &right, FG);
         self.dirty_y = (0, self.dirty_y.1.max(m.bar as usize));
@@ -220,15 +223,16 @@ fn main() {
     let font = Font::parse(&read_all(if sc == 2 { "/share/font32.psf" } else { "/share/font16.psf" })).unwrap_or_else(|e| { eprintln!("den: font: {e}"); exit(1) });
     let (w, h) = (fb.w, fb.h);
     let mut wall = wall::gradient(w, h, &WALL);
-    let (fy, r) = (h as i32 - m.foot, 9.0 * sc as f32);   // footer strip: bear mark and "thir", never covered by panes
+    let (fy, r) = (h as i32 - m.foot, 9.0 * sc as f32);
+    let cy = fy + 21 * sc;   // footer strip centre line: bear mark and "thir", never covered by panes
     let cx = w as f32 / 2.0 - 2.5 * font.w as f32;
-    wall::bear(&mut wall, w, cx, (fy + m.foot / 2 + sc) as f32, r, MARK, PANEL, 1.6 * sc as f32);
-    let (mut x, y) = ((cx + r + 1.5 * font.w as f32) as i32, fy + (m.foot - font.h as i32) / 2);
+    wall::bear(&mut wall, w, cx, cy as f32, r, MARK, PANEL, 1.6 * sc as f32);
+    let (mut x, y) = ((cx + r + 1.5 * font.w as f32) as i32, cy - font.h as i32 / 2);
     for ch in "thir".chars() { glyph(&mut wall, w, &font, x, y, ch, MARK); x += (font.w + font.w / 2) as i32; }
     let mut panel: Vec<u32> = wall.iter().map(|&p| blend(PANEL, p, PANEL_ALPHA)).collect();
     for (d, s) in panel[..m.bar as usize * w].iter_mut().zip(&wall) { *d = blend(BAR, *s, BAR_ALPHA); }
     let area = Rect { x: m.gap, y: m.bar + m.gap, w: w as i32 - 2 * m.gap, h: h as i32 - m.bar - m.foot - 2 * m.gap };
-    let mut den = Den { fb, font, m, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None };
+    let mut den = Den { fb, font, m, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None, tz_path: None };
     let first = den.new_pane(); den.layout = Layout::new(first);
     den.relayout(); den.scan_inputs(); den.render(true);
 

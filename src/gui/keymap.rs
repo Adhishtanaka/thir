@@ -41,7 +41,7 @@ impl Keys {
         }
         let fixed: &[u8] = match code {
             1 => b"\x1b", 14 => b"\x7f", 15 => b"\t", 28 => b"\r",
-            103 => b"\x1b[A", 108 => b"\x1b[B", 106 => b"\x1b[C", 105 => b"\x1b[D", 111 => b"\x1b[3~", 102 => b"\x1b[H", 107 => b"\x1b[F",
+            103 => b"\x1b[A", 108 => b"\x1b[B", 106 => b"\x1b[C", 105 => b"\x1b[D", 111 => b"\x1b[3~", 102 => b"\x1b[H", 107 => b"\x1b[F", 104 => b"\x1b[5~", 109 => b"\x1b[6~",
             _ => b"",
         };
         if !fixed.is_empty() { return Some(Key::Bytes(fixed.to_vec())) }
@@ -67,6 +67,7 @@ mod tests {
         let mut k = Keys::default();
         assert_eq!(k.event(28, 1), b(b"\r")); assert_eq!(k.event(14, 1), b(b"\x7f")); assert_eq!(k.event(15, 1), b(b"\t")); assert_eq!(k.event(1, 1), b(b"\x1b"));
         assert_eq!(k.event(103, 1), b(b"\x1b[A")); assert_eq!(k.event(108, 2), b(b"\x1b[B")); assert_eq!(k.event(106, 1), b(b"\x1b[C")); assert_eq!(k.event(105, 1), b(b"\x1b[D"));
+        assert_eq!(k.event(104, 1), b(b"\x1b[5~")); assert_eq!(k.event(109, 1), b(b"\x1b[6~"));
         assert_eq!(k.event(57, 1), b(b" ")); assert_eq!(k.event(53, 1), b(b"/")); assert_eq!(k.event(43, 1), b(b"\\"));
     }
     #[test] fn meta_acts_like_alt() {

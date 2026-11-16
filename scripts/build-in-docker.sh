@@ -13,7 +13,7 @@ KMAKE=(make -C "$SRC" O="$OBJ" ARCH="$KARCH" CROSS_COMPILE="$CROSS_COMPILE")
 mkdir -p "$OBJ" "$O"
 
 cd /work && cargo build --release --target "$RUST_TARGET"
-for b in init nsh dhcp den login passwd; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
+for b in init nsh dhcp den login passwd edit find top; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
 rm -f "$O/initramfs.cpio.gz"
 cat > "$LIST" <<EOL
 dir /dev 0755 0 0
@@ -32,6 +32,10 @@ file /bin/dhcp $O/dhcp 0755 0 0
 file /bin/den $O/den 0755 0 0
 file /bin/login $O/login 0755 0 0
 file /bin/passwd $O/passwd 04755 0 0
+file /bin/edit $O/edit 0755 0 0
+file /bin/find $O/find 0755 0 0
+file /bin/top $O/top 0755 0 0
+slink /bin/nano /bin/edit 0777 0 0
 file /share/font16.psf /work/assets/fonts/Uni3-Terminus16.psf 0644 0 0
 file /share/font32.psf /work/assets/fonts/Uni3-Terminus32x16.psf 0644 0 0
 EOL

@@ -26,6 +26,7 @@ leak_check() {
     if cat "$d"/*.log | grep -qF -- "$p"; then echo "FAIL: a password is in the serial log (log not printed)"; exit 1; fi
   done
 }
+sendk() { printf '%s' "$1" >&3; }   # keys, no newline; keeps `mark` because full-screen output has no newlines
 run() { send "$1"; wait_for "$2"; }   # command, expected output regex
 off() {
   send poweroff

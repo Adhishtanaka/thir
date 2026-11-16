@@ -1,10 +1,10 @@
 //! nsh's line editor, pure: bytes -> keys, key -> new state + the bytes to write to the terminal.
 #[derive(Debug, PartialEq, Clone)]
-pub enum Key { Char(char), Enter, Tab, Backspace, Delete, Left, Right, Home, End, Up, Down, Ctrl(u8) }
+pub enum Key { Char(char), Enter, Tab, Backspace, Delete, Left, Right, Home, End, Up, Down, PgUp, PgDn, Ctrl(u8) }
 #[derive(Debug, PartialEq)]
 pub enum Act { None, Submit(String), Eof }
 
-pub struct Editor { buf: Vec<char>, cur: usize, hist: Vec<String>, hpos: usize, stash: Vec<char>, esc: Vec<u8>, utf8: Vec<u8> }
+pub struct Editor { buf: Vec<char>, cur: usize, hist: Vec<String>, hpos: usize, stash: Vec<char>, dec: Decoder }
 
 pub fn common_prefix(words: &[String]) -> String {
     let Some(first) = words.first() else { return String::new() };
@@ -16,12 +16,11 @@ pub fn common_prefix(words: &[String]) -> String {
     p
 }
 
-fn s(c: &[char]) -> String { c.iter().collect() }
+/// Bytes from a terminal -> keys; escapes and UTF-8 may span reads.
+pub struct Decoder { esc: Vec<u8>, utf8: Vec<u8> }
 
-impl Editor {
-    pub fn new(hist: Vec<String>) -> Editor {
-        Editor { buf: vec![], cur: 0, hpos: hist.len(), hist, stash: vec![], esc: vec![], utf8: vec![] }
-    }
+impl Decoder {
+    pub fn new() -> Decoder { Decoder { esc: vec![], utf8: vec![] } }
 
     fn plain(&mut self, b: u8, out: &mut Vec<Key>) {
         match b {
@@ -40,7 +39,6 @@ impl Editor {
         }
     }
 
-    /// Escapes and UTF-8 may span reads.
     pub fn decode(&mut self, bytes: &[u8]) -> Vec<Key> {
         let mut out = vec![];
         for &b in bytes {
@@ -58,12 +56,22 @@ impl Editor {
             let k = match &self.esc[1..] {
                 b"[A" => Some(Key::Up), b"[B" => Some(Key::Down), b"[C" => Some(Key::Right), b"[D" => Some(Key::Left),
                 b"[H" | b"[1~" | b"[7~" | b"OH" => Some(Key::Home), b"[F" | b"[4~" | b"[8~" | b"OF" => Some(Key::End),
-                b"[3~" => Some(Key::Delete), _ => None,
+                b"[3~" => Some(Key::Delete), b"[5~" => Some(Key::PgUp), b"[6~" => Some(Key::PgDn), _ => None,
             };
             out.extend(k); self.esc.clear();
         }
         out
     }
+}
+
+fn s(c: &[char]) -> String { c.iter().collect() }
+
+impl Editor {
+    pub fn new(hist: Vec<String>) -> Editor {
+        Editor { buf: vec![], cur: 0, hpos: hist.len(), hist, stash: vec![], dec: Decoder::new() }
+    }
+
+    pub fn decode(&mut self, bytes: &[u8]) -> Vec<Key> { self.dec.decode(bytes) }
 
     pub fn redraw(&self, prompt: &str) -> Vec<u8> {
         let mut o = format!("\r{prompt}{}\x1b[K", s(&self.buf));
@@ -109,7 +117,7 @@ impl Editor {
                 self.set(t);
             },
             Key::Enter => { act = Act::Submit(s(&self.buf)); self.buf.clear(); self.cur = 0; self.hpos = self.hist.len(); out = b"\r\n".to_vec(); redraw = false; }
-            Key::Tab | Key::Ctrl(_) => redraw = false,
+            Key::Tab | Key::PgUp | Key::PgDn | Key::Ctrl(_) => redraw = false,
         }
         if redraw { out.extend(self.redraw(prompt)); }
         (act, out)
@@ -215,6 +223,7 @@ mod tests {
         assert_eq!(e.decode(b"\x1b[1;5C\x1bOHq"), vec![Key::Home, Key::Char('q')]);   // unknown CSI dropped
         assert_eq!(e.decode(&[0xff, b'a']), vec![Key::Char('a')]);
     }
+    #[test] fn pgup_pgdn() { assert_eq!(Decoder::new().decode(b"\x1b[5~\x1b[6~"), vec![Key::PgUp, Key::PgDn]); }
     #[test] fn word_detection() {
         let mut e = Editor::new(vec![]); feed(&mut e, b"cat /etc/re");
         assert_eq!(e.word(), (false, "/etc/re".into()));

@@ -1,22 +1,45 @@
-use thir::{files::rm_refuses, line::{Act, Editor, Key}, net, parse::parse_cmd};
+use thir::{clock, files::{printable, rm_refuses}, term::{put, raw_off, raw_on}, line::{Act, Editor, Key}, net, parse::parse_cmd};
 use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::{fs::OpenOptionsExt, process::{CommandExt, ExitStatusExt}}, path::Path, process::{exit, Command, Stdio}};
 
-const BUILTINS: &[&str] = &["cd", "pwd", "ls", "cat", "echo", "whoami", "mkdir", "rmdir", "touch", "rm", "mv", "cp", "write", "clear", "history", "exit", "help", "ip", "poweroff", "reboot"];
+/// Every command nsh offers, by section: (usage, description). Builtins and completion come from here, so they cannot drift.
+const HELP: &[(&str, &[(&str, &str)])] = &[
+    ("files", &[("ls [dir]", "list a directory"), ("cat file...", "print files"), ("cd [dir]", "change directory (default: home)"), ("pwd", "print the working directory"),
+        ("mkdir [-p] dir...", "make directories"), ("rmdir dir...", "remove empty directories"), ("touch file...", "create files"), ("rm [-r] path...", "remove files (-r: directories too)"),
+        ("mv src dest", "move or rename"), ("cp src dest", "copy a file")]),
+    ("text", &[("echo text...", "print text"), ("write file", "store lines until a line with only ."), ("clear", "clear the screen")]),
+    ("system", &[("date", "local date and time"), ("tz [+HH:MM]", "show or set the UTC offset (~/.tz)"), ("ip", "interfaces and addresses"), ("poweroff", "shut down"), ("reboot", "reboot")]),
+    ("session", &[("whoami", "your user name"), ("history", "command history"), ("help [cmd]", "this text, or one command"), ("exit", "log out")]),
+    ("programs", &[("edit [file]", "full-screen editor (also: nano)"), ("find [dir] [-name P]", "find files; P uses * and ?; -type f|d"), ("top", "CPU, memory and processes"),
+        ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
+];
 
-/// Raw mode only while a line is being read, so children, `write`, `passwd` and `login` always see a cooked tty. None if fd 0 is not a tty.
-fn raw_on() -> Option<libc::termios> {
-    let mut old: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(0, &mut old) } != 0 { return None; }
-    let mut t = old;
-    t.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
-    t.c_iflag &= !(libc::ICRNL | libc::IXON);
-    t.c_cc[libc::VMIN] = 1; t.c_cc[libc::VTIME] = 0;
-    unsafe { libc::tcsetattr(0, libc::TCSANOW, &t); }
-    Some(old)
+/// Names of the builtins: every section except "programs", first word of the usage.
+fn builtins() -> impl Iterator<Item = &'static str> {
+    HELP.iter().filter(|s| s.0 != "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap_or(""))
 }
-fn raw_off(t: &libc::termios) { unsafe { libc::tcsetattr(0, libc::TCSADRAIN, t); } }
 
-fn put(b: &[u8]) { let mut o = 0; while o < b.len() { let n = unsafe { libc::write(1, b[o..].as_ptr() as *const _, b.len() - o) }; if n <= 0 { break } o += n as usize; } }
+fn help_text() -> String {
+    let mut o = String::from("nsh, the thir shell\n");
+    for (sec, rows) in HELP {
+        o.push('\n');
+        for (i, (u, d)) in rows.iter().enumerate() { o += &format!("  {:<8} {:<20} {}\n", if i == 0 { sec } else { "" }, u, d); }
+    }
+    o + "\nRedirect output with > file or >> file.\nKeys: Tab completes, Up/Down history, Ctrl-A/E start/end, Ctrl-U/K cut to\nstart/end, Ctrl-W cut word, Ctrl-L clear screen, Ctrl-C cancel, Ctrl-D exit.\n"
+}
+
+fn help_cmd(name: &str) -> Option<String> {
+    HELP.iter().flat_map(|s| s.1.iter()).find(|u| u.0.split(' ').next() == Some(name)).map(|(u, d)| format!("{u}  {d}\n"))
+}
+
+/// `tz`: show the offset, or set it (`~/.tz`, mode 0600).
+fn tz(args: &[String], out: &mut dyn Write) {
+    let Some(a) = args.first() else { let _ = writeln!(out, "{}", clock::format_offset(clock::home_tz().unwrap_or(0))); return };
+    let Some(off) = clock::parse_offset(a) else { eprintln!("nsh: tz: use +HH:MM or -HH:MM"); return };
+    let Ok(home) = std::env::var("HOME") else { eprintln!("nsh: tz: no home directory"); return };
+    let r = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(format!("{home}/.tz"))
+        .and_then(|mut f| writeln!(f, "{}", clock::format_offset(off)));
+    if let Err(e) = r { eprintln!("nsh: tz: {e}"); }
+}
 
 fn prompt() -> String {
     let user = std::env::var("USER").unwrap_or_else(|_| "?".into());
@@ -29,25 +52,18 @@ fn prompt() -> String {
     format!("\x1b[1;32m{}@{}\x1b[0m:\x1b[1;34m{}\x1b[0m$ ", printable(&user), printable(&host), printable(&cwd))
 }
 
-/// Completion candidates for `word`; the first word of a line without '/' is a command.
-/// Control, bidi/format and non-space whitespace characters: they can send escape sequences or make a name display as something else.
-fn unsafe_char(c: char) -> bool {
-    c.is_control() || (c.is_whitespace() && c != ' ') || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
-}
-/// Unsafe characters as '?', so a hostile file name cannot drive the terminal.
-fn printable(s: &str) -> String { s.chars().map(|c| if unsafe_char(c) { '?' } else { c }).collect() }
-
 /// Backslash-escape what parse_cmd treats specially, so a completed name stays one word and never becomes a redirect.
 fn escape(s: &str) -> String {
     // the same set parse_cmd treats specially: all whitespace, '>', quotes, backslash
     s.chars().fold(String::new(), |mut o, c| { if c.is_whitespace() || matches!(c, '>' | '"' | '\'' | '\\') { o.push('\\'); } o.push(c); o })
 }
 
+/// Completion candidates for `word`; the first word of a line without '/' is a command.
 /// Names with control characters are never offered (see `printable`).
 fn candidates(first: bool, word: &str) -> Vec<String> {
     let mut v: Vec<String> = vec![];
     if first && !word.contains('/') {
-        v.extend(BUILTINS.iter().filter(|b| b.starts_with(word)).map(|b| b.to_string()));
+        v.extend(builtins().filter(|b| b.starts_with(word)).map(|b| b.to_string()));
         for dir in std::env::var("PATH").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
             if let Ok(rd) = fs::read_dir(dir) { v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(word) && printable(n) == *n).map(|n| escape(&n))); }
         }
@@ -124,7 +140,12 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
     match argv[0].as_str() {
         "cd" => { let d = args.first().cloned().or_else(|| std::env::var("HOME").ok()).unwrap_or("/".into()); if let Err(e) = std::env::set_current_dir(&d) { eprintln!("nsh: cd: {d}: {e}"); } }
         "exit" => exit(args.first().and_then(|s| s.parse().ok()).unwrap_or(0)),
-        "help" => { let _ = writeln!(out, "nsh builtins: {}; redirect with > and >>; commands: passwd dhcp\ntab completes, up/down history, ctrl-a/e/u/k/w/l", BUILTINS.join(" ")); }
+        "help" => match args.first() {
+            None => { let _ = out.write_all(help_text().as_bytes()); }
+            Some(c) => match help_cmd(c) { Some(t) => { let _ = out.write_all(t.as_bytes()); } None => eprintln!("nsh: help: no such command: {}", printable(c)) },
+        },
+        "date" => { let _ = writeln!(out, "{}", clock::date_line(clock::now(), clock::home_tz().unwrap_or(0))); }
+        "tz" => tz(args, out),
         "clear" => { let _ = out.write_all(b"\x1b[H\x1b[2J"); }
         "history" => for (i, l) in hist.iter().enumerate() { let _ = writeln!(out, "{:>5}  {}", i + 1, printable(l)); },
         "pwd" => match std::env::current_dir() { Ok(d) => { let _ = writeln!(out, "{}", d.display()); } Err(e) => eprintln!("nsh: pwd: {e}") },
@@ -221,10 +242,17 @@ mod tests {
         assert_eq!(escape("my file>x"), "my\\ file\\>x");
         assert_eq!(thir::parse::parse_line(&format!("cat {}", escape("a b'c"))).unwrap(), vec!["cat", "a b'c"]);
     }
-    #[test] fn printable_hides_control_bytes() { assert_eq!(printable("a\x1b[2Jb\n\u{202e}c\u{2028}"), "a?[2Jb??c?"); }
     #[test] fn escape_covers_all_whitespace() {
         for n in ["a\u{a0}b", "a\u{3000}b", "x\ty", "-n > \\q"] {
             assert_eq!(thir::parse::parse_line(&format!("cat {}", escape(n))).unwrap(), vec!["cat", n]);
         }
+    }
+    #[test] fn help_lines_fit_80_cols() { for l in help_text().lines() { assert!(l.chars().count() <= 80, "{l}"); } }
+    #[test] fn help_names_unique_and_programs_known() {
+        let mut all: Vec<&str> = HELP.iter().flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
+        let n = all.len(); all.sort(); all.dedup(); assert_eq!(all.len(), n);
+        let progs: Vec<&str> = HELP.iter().filter(|s| s.0 == "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
+        assert_eq!(progs, ["edit", "find", "top", "passwd", "dhcp"]);
+        assert!(builtins().all(|b| !progs.contains(&b)) && builtins().any(|b| b == "date") && help_cmd("find").unwrap().starts_with("find [dir]"));
     }
 }

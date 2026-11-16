@@ -28,7 +28,8 @@ wait_for 'den: 2560x1664 32bpp$' 30
 wait_for '^thir: init ready$' 5
 sleep 4                        # dhcp lease and the first redraw
 # first boot: pane 1 asks for the first user (the typed password is not echoed)
-type_str $USER_NAME; keys ret; sleep 1; type_str $PW; keys ret; sleep 1; type_str $PW; keys ret; sleep 3
+type_str $USER_NAME; keys ret; sleep 1; type_str $PW; keys ret; sleep 1; type_str $PW; keys ret; sleep 1
+keys shift-equal 0 5 shift-semicolon 3 0 ret; sleep 3   # utc offset +05:30
 keys alt-q; sleep 2            # closing the last pane = logout: a fresh login screen
 type_str $USER_NAME; keys ret; sleep 1; type_str $PW   # password typed, Enter not yet pressed
 shot login; cp "$tmp/login.ppm" "$tmp/login-keep.ppm"
@@ -37,6 +38,7 @@ type_str ip; keys ret
 keys alt-ret                   # split: the new pane logs in as the same user
 sleep 4
 type_str whoami; keys ret; sleep 1
+type_str date; keys ret; sleep 1
 type_str ca; keys tab; type_str /etc/res; keys tab; keys ret   # Tab completion
 sleep 2
 shot s
@@ -44,7 +46,7 @@ magick "$tmp/s.ppm" "$PNG"
 magick "$tmp/login-keep.ppm" "${PNG%.png}-login.png"
 colors=$(magick identify -format %k "$PNG")
 [ "$(magick identify -format %wx%h "$PNG")" = 2560x1664 ] || { echo "FAIL: wrong screenshot size"; exit 1; }
-foot=$(magick "$PNG" -crop 240x56+1160+1608 +repage -format %k info:)   # bear mark + "thir" in the footer strip
+foot=$(magick "$PNG" -crop 240x88+1160+1576 +repage -format %k info:)   # bear mark + "thir" in the footer strip
 [ "$foot" -gt 20 ] || { echo "FAIL: footer mark missing ($foot colors)"; exit 1; }
 if grep -qF -- "$PW" "$log"; then echo "FAIL: password in the serial log"; exit 1; fi
 [ "$colors" -gt 100 ] || { echo "FAIL: screenshot has only $colors colors"; exit 1; }
