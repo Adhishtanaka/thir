@@ -131,7 +131,7 @@ impl Den {
         let mid = if self.uid.is_none() { "pane login".to_string() } else { format!("pane {n}/{}", self.panes.len()) };
         let mw = mid.len() as i32 * fw;
         self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);
-        let right = format!("{}   {}", ip_string(), clock::bar_line(clock::now(), self.tz_path.as_deref().and_then(clock::read_tz)));
+        let right = format!("{}   {}", ip_string(), clock::bar_line(clock::now(), self.tz_path.as_deref().zip(self.uid).and_then(|(p, u)| clock::read_tz(p, u))));
         let rw = right.len() as i32 * fw;
         self.text(w as i32 - rw - m.pad * 2, &right, FG);
         self.dirty_y = (0, self.dirty_y.1.max(m.bar as usize));

@@ -1,5 +1,5 @@
 //! Local time from a UTC offset: pure date math, the ~/.tz reader, and the formats den, `date` and top show.
-use std::{fs::File, io::Read, os::unix::fs::OpenOptionsExt};
+use std::{fs::File, io::Read, os::unix::fs::{MetadataExt, OpenOptionsExt}};
 
 pub struct Local { pub year: i64, pub month: u32, pub day: u32, pub wday: u32 /* 0 = Sun */, pub hour: u32, pub min: u32, pub sec: u32 }
 pub const WDAY: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -52,15 +52,17 @@ pub fn bar_line(utc: i64, off: Option<i32>) -> String {
 
 /// The offset in a user's `.tz`. den (root) calls this every second on a user-owned path, so: never follow a symlink, never block on a FIFO,
 /// accept regular files only, read at most 64 bytes, and show nothing but the parsed number.
-pub fn read_tz(path: &str) -> Option<i32> {
+/// `owner` must own the file and it must have one link: den reads this as root, so a hard link to someone else's file is refused.
+pub fn read_tz(path: &str, owner: u32) -> Option<i32> {
     let mut f = File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path).ok()?;
-    if !f.metadata().ok()?.file_type().is_file() { return None }
+    let m = f.metadata().ok()?;
+    if !m.file_type().is_file() || m.uid() != owner || m.nlink() != 1 { return None }
     let mut buf = [0u8; 64];
     let n = f.read(&mut buf).ok()?;
     parse_offset(std::str::from_utf8(&buf[..n]).ok()?.trim())
 }
 
-pub fn home_tz() -> Option<i32> { read_tz(&format!("{}/.tz", std::env::var("HOME").ok()?)) }
+pub fn home_tz() -> Option<i32> { read_tz(&format!("{}/.tz", std::env::var("HOME").ok()?), unsafe { libc::getuid() }) }
 
 pub fn now() -> i64 { unsafe { libc::time(std::ptr::null_mut()) as i64 } }
 
@@ -92,10 +94,19 @@ mod tests {
     #[test] fn read_tz_regular_file_only() {
         let d = tmp("reg");
         let f = d.join("tz"); std::fs::write(&f, "+05:30\n").unwrap();
-        assert_eq!(read_tz(f.to_str().unwrap()), Some(330));
-        std::fs::write(&f, "junk").unwrap(); assert_eq!(read_tz(f.to_str().unwrap()), None);
-        std::fs::write(&f, "+05:30".repeat(100)).unwrap(); assert_eq!(read_tz(f.to_str().unwrap()), None);
-        assert_eq!(read_tz(d.join("missing").to_str().unwrap()), None);
+        assert_eq!(read_tz(f.to_str().unwrap(), me()), Some(330));
+        std::fs::write(&f, "junk").unwrap(); assert_eq!(read_tz(f.to_str().unwrap(), me()), None);
+        std::fs::write(&f, "+05:30".repeat(100)).unwrap(); assert_eq!(read_tz(f.to_str().unwrap(), me()), None);
+        assert_eq!(read_tz(d.join("missing").to_str().unwrap(), me()), None);
+        let _ = std::fs::remove_dir_all(d);
+    }
+    fn me() -> u32 { unsafe { libc::getuid() } }
+    #[test] fn read_tz_refuses_other_owner_and_hard_links() {
+        let d = tmp("own");
+        let f = d.join("tz"); std::fs::write(&f, "+05:30\n").unwrap();
+        assert_eq!(read_tz(f.to_str().unwrap(), me() + 1), None);
+        let l = d.join("hard"); std::fs::hard_link(&f, &l).unwrap();
+        assert_eq!(read_tz(f.to_str().unwrap(), me()), None);   // nlink 2
         let _ = std::fs::remove_dir_all(d);
     }
     #[test] fn read_tz_refuses_fifo_and_symlink() {
@@ -103,10 +114,10 @@ mod tests {
         let fifo = d.join("fifo");
         let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-        assert_eq!(read_tz(fifo.to_str().unwrap()), None);   // would hang here if it blocked
+        assert_eq!(read_tz(fifo.to_str().unwrap(), me()), None);   // would hang here if it blocked
         let real = d.join("real"); std::fs::write(&real, "+05:30").unwrap();
         let link = d.join("link"); std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert_eq!(read_tz(link.to_str().unwrap()), None);
+        assert_eq!(read_tz(link.to_str().unwrap(), me()), None);
         let _ = std::fs::remove_dir_all(d);
     }
 }

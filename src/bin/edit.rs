@@ -26,10 +26,20 @@ fn load(name: &str) -> (Buf, &'static str) {
 fn save(name: &str, text: &str) -> std::io::Result<()> {
     let p = Path::new(name);
     let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let tmp = dir.join(format!(".{}.edit-tmp", p.file_name().map_or("file".into(), |n| n.to_string_lossy())));
-    let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&tmp)?;
+    // a fresh, unguessable name opened with O_EXCL: a file or link planted at the temp path is never written through
+    let (tmp, mut f) = loop {
+        let mut r = [0u8; 8];
+        thir::user::random(&mut r)?;
+        let t = dir.join(format!(".{}.{:016x}.edit-tmp", p.file_name().map_or("file".into(), |n| n.to_string_lossy()), u64::from_ne_bytes(r)));
+        match OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&t) {
+            Ok(f) => break (t, f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
     let r = (|| {
-        if let Ok(m) = fs::metadata(p) { f.set_permissions(fs::Permissions::from_mode(m.permissions().mode() & 0o7777))?; }
+        // keep only rwx bits: setuid/setgid/sticky are never carried to the new file
+        if let Ok(m) = fs::symlink_metadata(p) { f.set_permissions(fs::Permissions::from_mode(m.permissions().mode() & 0o777))?; }
         f.write_all(text.as_bytes())?; f.sync_all()?;
         fs::rename(&tmp, p)?;
         File::open(dir)?.sync_all()

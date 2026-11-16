@@ -79,6 +79,10 @@ fn main() {
     mount_warn(c"tmpfs", c"/tmp", c"tmpfs", nosuid, c"mode=1777");
     mount_warn(c"tmpfs", c"/run", c"tmpfs", 0, c"mode=0755");
     println!("thir: mounted /dev /proc /sys /tmp /run");
+    // the kernel defaults are 0; root processes (den, login) read paths users control
+    for k in ["protected_hardlinks", "protected_symlinks", "protected_fifos", "protected_regular"] {
+        if let Err(e) = fs::write(format!("/proc/sys/fs/{k}"), "1") { eprintln!("thir: {k}: {e}"); }
+    }
     mount_data();
     if unsafe { libc::sethostname(c"thir".as_ptr(), 4) } != 0 { eprintln!("thir: sethostname: {}", io::Error::last_os_error()); }
     if let Err(e) = net::set_up("lo") { eprintln!("thir: lo up: {e}"); }
