@@ -16,7 +16,7 @@ impl Fb {
         let (mut v, mut x) = ([0u32; 40], [0u32; 20]);
         if unsafe { libc::ioctl(f.as_raw_fd(), FBIOGET_VSCREENINFO as _, v.as_mut_ptr()) } < 0 { return Err(io::Error::last_os_error()); }
         if unsafe { libc::ioctl(f.as_raw_fd(), FBIOGET_FSCREENINFO as _, x.as_mut_ptr()) } < 0 { return Err(io::Error::last_os_error()); }
-        // Without fbcon nothing sets the mode, so the virtio-gpu scanout stays off until userspace does.
+        // virtio-gpu's scanout stays off until userspace sets a mode; efifb has no check_var and returns 0 leaving the firmware mode; the result is ignored either way.
         v[21] |= 0x80;   // FB_ACTIVATE_FORCE: apply even though the mode is unchanged
         unsafe { libc::ioctl(f.as_raw_fd(), FBIOPUT_VSCREENINFO as _, v.as_mut_ptr()); }
         let (w, h, bpp, shifts) = (v[0] as usize, v[1] as usize, v[6], [v[8], v[11], v[14]]);

@@ -1,4 +1,4 @@
-use std::{ffi::CStr, fs::{self, File}, io, os::unix::process::CommandExt, path::Path, process::Command, thread::sleep, time::{Duration, Instant}};
+use std::{ffi::CStr, fs::{self, File}, io::{self, Read, Seek, SeekFrom}, os::unix::process::CommandExt, path::Path, process::Command, thread::sleep, time::{Duration, Instant}};
 use thir::{decide, net, Action};
 
 /// The real tty behind /dev/console. /dev/console cannot be a controlling terminal, so Ctrl-C needs this.
@@ -34,10 +34,25 @@ fn wait_for(path: &str, ms: u64) -> bool {
     for _ in 0..ms / 50 { if Path::new(path).exists() { return true; } sleep(Duration::from_millis(50)); }
     Path::new(path).exists()
 }
+/// The block device whose ext4 label is "thirdata": vda (raw data.img), vda2/sda2 (GPT image, USB stick). USB enumeration is slow, so retry for 15 s.
+fn find_data() -> Option<String> {
+    let t = Instant::now();
+    loop {
+        for e in fs::read_dir("/sys/class/block").into_iter().flatten().flatten() {
+            let dev = format!("/dev/{}", e.file_name().to_string_lossy());
+            let mut sb = [0u8; 1024];
+            let ok = File::open(&dev).and_then(|mut f| { f.seek(SeekFrom::Start(1024))?; f.read_exact(&mut sb) }).is_ok();
+            if ok && thir::disk::ext_label(&sb) == Some("thirdata") { return Some(dev); }
+        }
+        if t.elapsed() >= Duration::from_secs(15) { return None; }
+        sleep(Duration::from_millis(200));
+    }
+}
 fn mount_data() {
-    let r = if wait_for("/dev/vda", 3000) {
-        mount(c"/dev/vda", c"/data", c"ext4", libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, c"")
-    } else { Err(io::Error::new(io::ErrorKind::NotFound, "no /dev/vda")) };
+    let r = match find_data().and_then(|d| std::ffi::CString::new(d).ok()) {
+        Some(dev) => mount(&dev, c"/data", c"ext4", libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, c""),
+        None => Err(io::Error::new(io::ErrorKind::NotFound, "no ext4 volume labelled thirdata")),
+    };
     match r {
         Ok(()) => unsafe {
             libc::mkdir(c"/data/etc".as_ptr(), 0o700); libc::mkdir(c"/data/home".as_ptr(), 0o755);   // EEXIST is fine

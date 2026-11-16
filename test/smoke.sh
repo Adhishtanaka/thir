@@ -5,44 +5,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export DATA_IMG=out/${THIR_ARCH:-aarch64}/smoke-data.img
 source ./env.sh
-TIMEOUT=${SMOKE_TIMEOUT:-30}; STEP=${SMOKE_STEP_TIMEOUT:-60}   # argon2 is slow under x86_64 emulation
+TIMEOUT=${SMOKE_TIMEOUT:-30}   # argon2 is slow under x86_64 emulation (STEP)
 PW1='correct-horse-1'; PW2='tr0ub4dor-two-2'; PWX='wrongpass-xx'
-d=$(mktemp -d -t thir-smoke); fifo=$d/fifo; mkfifo "$fifo"; qpid=
-trap 'kill "$qpid" 2>/dev/null || true; rm -rf "$d"' EXIT
+SECRETS=("$PW1" "$PW2" "$PWX"); STEP=${SMOKE_STEP_TIMEOUT:-60}
+source test/lib.sh
 ./build.sh data > /dev/null 2>&1          # fresh disk for this run only
-log=; mark=0
 
-boot() {  # $1 = log name
-  log=$d/$1.log; : > "$log"; mark=0
-  "${QEMU[@]}" -no-reboot -display none -monitor none -serial stdio < "$fifo" > "$log" 2>&1 &
-  qpid=$!
-  exec 3>"$fifo"                      # keep the writer open until poweroff
-}
-wait_for() {  # $1 = extended regex on lines after the last send (CRs stripped), $2 = seconds (default STEP)
-  local deadline=$((SECONDS + ${2:-$STEP}))
-  until tail -n +$((mark + 1)) "$log" | tr -d '\r' | sed -E $'s/\e\\[[0-9;?]*[A-Za-z~]//g' | grep -qE "$1"; do
-    if ! kill -0 "$qpid" 2>/dev/null || (( SECONDS >= deadline )); then
-      echo "FAIL: did not see /$1/ within ${2:-$STEP}s"; echo "--- serial log ---"; leak_check; cat "$log"; exit 1
-    fi
-    sleep 0.2
-  done
-}
-send() { mark=$(awk 'END { print NR }' "$log");   # a partial last line (a prompt) counts as old
-  printf '%s\n' "$1" >&3; }
-leak_check() {
-  local p; for p in "$PW1" "$PW2" "$PWX"; do
-    if cat "$d"/*.log | grep -qF -- "$p"; then echo "FAIL: a password is in the serial log (log not printed)"; exit 1; fi
-  done
-}
-run() { send "$1"; wait_for "$2"; }   # command, expected output regex
-off() {
-  send poweroff
-  for _ in $(seq 1 50); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.2; done
-  if kill -0 "$qpid" 2>/dev/null; then echo "FAIL: QEMU still running after poweroff"; exit 1; fi
-  exec 3>&-
-}
-
-boot boot1
+boot boot1 "${QEMU[@]}"
 wait_for '^thir: init ready$' "$TIMEOUT"
 echo "boot-to-marker: ${SECONDS}s"
 wait_for '^thir: mounted /data$' 5
@@ -81,7 +50,7 @@ wait_for '\$ $'
 off
 echo "boot 1 ok"
 
-boot boot2
+boot boot2 "${QEMU[@]}"
 wait_for 'thir login: ' "$TIMEOUT"
 send alice;  wait_for 'password: '
 send "$PW1"; wait_for 'login incorrect'

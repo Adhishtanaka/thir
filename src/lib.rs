@@ -1,4 +1,5 @@
 pub mod dhcp;
+pub mod disk;
 pub mod files;
 pub mod gui;
 pub mod line;
