@@ -1,7 +1,9 @@
 pub mod dhcp;
+pub mod files;
 pub mod gui;
 pub mod net;
 pub mod parse;
+pub mod user;
 
 /// nsh exit codes that init turns into actions. Not 101: that is Rust's panic exit code.
 pub const EXIT_POWEROFF: i32 = 120;

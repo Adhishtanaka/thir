@@ -2,6 +2,9 @@
 use std::{fs::{self, File, OpenOptions}, io, os::{fd::IntoRawFd, unix::{fs::OpenOptionsExt, process::CommandExt}}, process::{exit, Command, Stdio}, thread::sleep, time::Duration};
 use thir::{decide, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, png, theme::*, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
 
+const LOGIN_COLS: i32 = 60;
+const LOGIN_ROWS: i32 = 12;
+
 fn blend(fg: u32, bg: u32, a: u32) -> u32 {
     let ch = |s: u32| ((fg >> s & 255) * a + (bg >> s & 255) * (255 - a)) / 255 << s;
     ch(16) | ch(8) | ch(0)
@@ -37,6 +40,7 @@ struct Den {
     fb: Fb, font: Font, w: usize, h: usize, back: Vec<u32>, wall: Vec<u32>, panel: Vec<u32>,
     panes: Vec<Pane>, layout: Layout, next_id: usize, area: Rect, full_redraw: bool, dirty_y: (usize, usize),
     keys: Keys, inputs: Vec<(String, i32)>, zombies: Vec<i32>,
+    uid: Option<u32>,   // None = nobody is logged in: one centered login pane
 }
 
 fn fill(back: &mut [u32], w: usize, r: Rect, c: u32) {
@@ -67,13 +71,28 @@ impl Den {
 
     fn new_pane(&mut self) -> usize {
         let id = self.next_id; self.next_id += 1;
-        let (master, pid) = spawn_shell(id, 80, 24).unwrap_or_else(|e| { eprintln!("den: cannot start pane shell: {e}"); exit(1) });
+        let (master, pid) = spawn_shell(self.uid, 80, 24).unwrap_or_else(|e| { eprintln!("den: cannot start pane shell: {e}"); exit(1) });
         self.panes.push(Pane { id, master, pid, term: Term::new(80, 24), rect: self.area, visible: false, dirty: true });
         id
     }
 
+    /// The login screen: one pane of LOGIN_COLS x LOGIN_ROWS cells in the middle of the screen.
+    fn login_rect(&self) -> Rect {
+        let inner = 2 * (BORDER + PAD);
+        let (rw, rh) = (LOGIN_COLS * self.font.w as i32 + inner, LOGIN_ROWS * self.font.h as i32 + inner);
+        Rect { x: (self.w as i32 - rw) / 2, y: BAR_H + (self.h as i32 - BAR_H - rh) / 2, w: rw, h: rh }
+    }
+
+    /// First time the login pane's process runs as a non-root uid: show the tiled layout.
+    fn check_login(&mut self) {
+        let Some(p) = self.panes.first() else { return };
+        let uid = fs::read_to_string(format!("/proc/{}/status", p.pid)).ok()
+            .and_then(|s| s.lines().find_map(|l| l.strip_prefix("Uid:")?.split_whitespace().next()?.parse::<u32>().ok()));
+        if let Some(u) = uid.filter(|&u| u != 0) { self.uid = Some(u); self.relayout(); }
+    }
+
     fn relayout(&mut self) {
-        let rects = self.layout.rects(self.area, GAP);
+        let rects = if self.uid.is_none() { self.panes.first().map(|p| (p.id, self.login_rect())).into_iter().collect() } else { self.layout.rects(self.area, GAP) };
         for i in 0..self.panes.len() {
             let found = rects.iter().find(|r| r.0 == self.panes[i].id).map(|r| r.1);
             self.panes[i].visible = found.is_some();
@@ -93,7 +112,7 @@ impl Den {
         if hup { unsafe { libc::kill(p.pid, libc::SIGHUP); } }
         unsafe { libc::close(p.master); }
         self.zombies.push(p.pid);
-        if !self.layout.close(id) { let n = self.new_pane(); self.layout = Layout::new(n); }
+        if !self.layout.close(id) { self.uid = None; let n = self.new_pane(); self.layout = Layout::new(n); }   // last pane closed: logout
         self.relayout();
     }
 
@@ -133,7 +152,7 @@ impl Den {
         fill(&mut self.back, w, Rect { x: 0, y: BAR_H - 1, w: w as i32, h: 1 }, BORDER_DIM);
         self.text(PAD * 2, "thir", ACCENT);
         let n = self.layout.ids(self.area, GAP).iter().position(|&id| id == self.layout.focus).map_or(1, |p| p + 1);
-        let mid = format!("pane {n}/{}", self.panes.len());
+        let mid = if self.uid.is_none() { "pane login".to_string() } else { format!("pane {n}/{}", self.panes.len()) };
         let mw = mid.len() as i32 * self.font.w as i32;
         self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * self.font.w as i32, &mid[5..], FG);
         let t = unsafe { libc::time(std::ptr::null_mut()) } % 86400;
@@ -158,6 +177,7 @@ impl Den {
     }
 
     fn act(&mut self, a: Action) {
+        if self.uid.is_none() { return }   // no panes or focus games before login
         match a {
             Action::Split => { let n = self.new_pane(); self.layout.split(self.area, GAP, n); }
             Action::Close => { let id = self.layout.focus; self.remove_pane(id, true); return }
@@ -195,11 +215,13 @@ fn set_winsize(fd: i32, cols: usize, rows: usize) {
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &ws); }
 }
 
-/// The program a pane runs. One place, so a later login step only changes this.
-fn pane_command(_pane: usize) -> Vec<String> { vec!["/bin/nsh".into()] }
+/// The program a pane runs: always /bin/login. Panes after the first one log in as the uid already logged in.
+fn pane_command(uid: Option<u32>) -> Vec<String> {
+    match uid { None => vec!["/bin/login".into()], Some(u) => vec!["/bin/login".into(), "--as".into(), u.to_string()] }
+}
 
 /// New pty with `pane_command` on the slave side. Returns (master fd, shell pid).
-fn spawn_shell(pane: usize, cols: usize, rows: usize) -> io::Result<(i32, i32)> {
+fn spawn_shell(uid: Option<u32>, cols: usize, rows: usize) -> io::Result<(i32, i32)> {
     unsafe {
         let m = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC);
         if m < 0 { return Err(io::Error::last_os_error()); }
@@ -210,7 +232,7 @@ fn spawn_shell(pane: usize, cols: usize, rows: usize) -> io::Result<(i32, i32)> 
         libc::fcntl(m, libc::F_SETFL, libc::O_NONBLOCK);
         let slave = OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOCTTY | libc::O_CLOEXEC).open(&path)?;
         let dup = |f: &File| f.try_clone().map(Stdio::from);
-        let argv = pane_command(pane);
+        let argv = pane_command(uid);
         let mut cmd = Command::new(&argv[0]); cmd.args(&argv[1..]);
         cmd.env_clear().env("PATH", "/bin").env("HOME", "/").env("TERM", "linux").stdin(dup(&slave)?).stdout(dup(&slave)?).stderr(dup(&slave)?);
         cmd.pre_exec(|| { libc::setsid(); libc::ioctl(0, libc::TIOCSCTTY as _, 0); Ok(()) });
@@ -228,7 +250,7 @@ fn main() {
     let mut panel: Vec<u32> = wall.iter().map(|&p| blend(PANEL, p, PANEL_ALPHA)).collect();
     for (d, s) in panel[..BAR_H as usize * w].iter_mut().zip(&wall) { *d = blend(BAR, *s, BAR_ALPHA); }
     let area = Rect { x: GAP, y: BAR_H + GAP, w: w as i32 - 2 * GAP, h: h as i32 - BAR_H - 2 * GAP };
-    let mut den = Den { fb, font, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![] };
+    let mut den = Den { fb, font, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None };
     let first = den.new_pane(); den.layout = Layout::new(first);
     den.relayout(); den.scan_inputs(); den.render(true);
 
@@ -264,7 +286,7 @@ fn main() {
             let Some(i) = den.panes.iter().position(|p| p.id == *id) else { continue };
             let mut buf = [0u8; 4096];
             let n = unsafe { libc::read(den.panes[i].master, buf.as_mut_ptr() as *mut _, buf.len()) };
-            if n > 0 { den.panes[i].term.feed(&buf[..n as usize]); continue }
+            if n > 0 { den.panes[i].term.feed(&buf[..n as usize]); if den.uid.is_none() { den.check_login(); } continue }
             if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) { continue }
             let pid = den.panes[i].pid;   // EOF/EIO: the shell is gone
             let st = den.reap_status(pid);
@@ -280,6 +302,7 @@ fn main() {
         if tick {
             last_tick = std::time::Instant::now();
             den.scan_inputs();
+            if den.uid.is_none() { den.check_login(); }
             den.zombies.retain(|&p| p > 0 && unsafe { libc::waitpid(p, std::ptr::null_mut(), libc::WNOHANG) } == 0);
         }
         den.render(tick);

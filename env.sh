@@ -15,8 +15,12 @@ case "$THIR_ARCH" in
   *) echo "unknown THIR_ARCH=$THIR_ARCH" >&2; return 1 ;;
 esac
 OUT=out/$THIR_ARCH
+DATA_IMG=${DATA_IMG:-$OUT/data.img}   # raw ext4 image; path relative to the repo root (also /work in the container)
+DATA_SIZE=${DATA_SIZE:-128M}
 QEMU=("$QEMU_BIN" "${QEMU_MACHINE[@]}" -m 256 -smp 1
       -kernel $OUT/Image -initrd $OUT/initramfs.cpio.gz
       -append "console=$CONSOLE panic=1"
       -netdev user,id=n0 -device virtio-net-pci,netdev=n0
-      -device virtio-gpu-pci,id=gpu0 -device virtio-keyboard-pci)
+      -device virtio-gpu-pci,id=gpu0 -device virtio-keyboard-pci
+      -drive file=$DATA_IMG,format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0
+      -device virtio-rng-pci)

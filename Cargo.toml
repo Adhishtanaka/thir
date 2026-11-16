@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 libc = "0.2"
 miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc"] }   # Argon2id KDF; the one crypto exception, see README
+subtle = { version = "2", default-features = false }                              # constant-time hash compare
 
 [profile.release]
 opt-level = "s"

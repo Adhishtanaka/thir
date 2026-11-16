@@ -4,6 +4,8 @@ source /work/env.sh
 export CARGO_HOME=/build/cargo-home CARGO_TARGET_DIR=/build/target
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-gnu-gcc   # the container is arm64
 if [ "${1:-all}" = test ]; then cd /work && exec cargo test; fi
+mkdata() { rm -f "/work/$DATA_IMG"; truncate -s "$DATA_SIZE" "/work/$DATA_IMG"; mkfs.ext4 -q -F -L thirdata "/work/$DATA_IMG"; echo "data image: /work/$DATA_IMG ($DATA_SIZE)"; }
+if [ "${1:-all}" = data ]; then mkdata; exit 0; fi
 
 SRC=/build/linux-$KERNEL_VERSION; OBJ=/build/kobj-$THIR_ARCH; O=/work/$OUT
 KMAKE=(make -C "$SRC" O="$OBJ" ARCH="$KARCH" CROSS_COMPILE="$CROSS_COMPILE")
@@ -26,7 +28,7 @@ cp "$OBJ/$KIMAGE" "$O/Image"
 cc -O2 -o /build/gen_init_cpio "$SRC/usr/gen_init_cpio.c"
 
 cd /work && cargo build --release --target "$RUST_TARGET"
-for b in init nsh dhcp den; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
+for b in init nsh dhcp den login passwd; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
 
 cat > /build/initramfs.list <<EOL
 dir /dev 0755 0 0
@@ -38,12 +40,16 @@ dir /run 0755 0 0
 dir /etc 0755 0 0
 dir /bin 0755 0 0
 dir /share 0755 0 0
+dir /data 0755 0 0
 file /init $O/init 0755 0 0
 file /bin/nsh $O/nsh 0755 0 0
 file /bin/dhcp $O/dhcp 0755 0 0
 file /bin/den $O/den 0755 0 0
+file /bin/login $O/login 0755 0 0
+file /bin/passwd $O/passwd 04755 0 0
 file /share/wallpaper.png /work/assets/wallpaper.png 0644 0 0
 file /share/font.psf /work/assets/fonts/Uni3-Terminus16.psf 0644 0 0
 EOL
 /build/gen_init_cpio /build/initramfs.list | gzip -9 > "$O/initramfs.cpio.gz"
+[ -f "/work/$DATA_IMG" ] || mkdata
 ls -l "$O"
