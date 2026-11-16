@@ -10,6 +10,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ("system", &[("date", "local date and time"), ("tz [+HH:MM]", "show or set the UTC offset (~/.tz)"), ("ip", "interfaces and addresses"), ("poweroff", "shut down"), ("reboot", "reboot")]),
     ("session", &[("whoami", "your user name"), ("history", "command history"), ("help [cmd]", "this text, or one command"), ("exit", "log out")]),
     ("programs", &[("edit [file]", "full-screen editor (also: nano)"), ("find [dir] [-name P]", "find files; P uses * and ?; -type f|d"), ("top", "CPU, memory and processes"),
+        ("fetch", "system summary with a bear (also: neofetch)"),
         ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
 ];
 
@@ -252,7 +253,7 @@ mod tests {
         let mut all: Vec<&str> = HELP.iter().flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
         let n = all.len(); all.sort(); all.dedup(); assert_eq!(all.len(), n);
         let progs: Vec<&str> = HELP.iter().filter(|s| s.0 == "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
-        assert_eq!(progs, ["edit", "find", "top", "passwd", "dhcp"]);
+        assert_eq!(progs, ["edit", "find", "top", "fetch", "passwd", "dhcp"]);
         assert!(builtins().all(|b| !progs.contains(&b)) && builtins().any(|b| b == "date") && help_cmd("find").unwrap().starts_with("find [dir]"));
     }
 }

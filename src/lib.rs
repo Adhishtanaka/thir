@@ -2,6 +2,7 @@ pub mod clock;
 pub mod dhcp;
 pub mod disk;
 pub mod edit;
+pub mod fetch;
 pub mod files;
 pub mod glob;
 pub mod gui;

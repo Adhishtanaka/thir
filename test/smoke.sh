@@ -44,6 +44,7 @@ run 'help find' 'find \[dir\]'
 send 'edit docs/b.txt'; wait_for 'edit  docs/b.txt'; sendk 'line one'; sendk $'\x13'; wait_for 'Saved 1 line'
 sendk $'\x11'; wait_for '\$ $'
 run 'cat docs/b.txt' '^line one$'
+send neofetch; wait_for 'alice@thir'; wait_for 'Kernel: 6\.'; wait_for '\$ $'
 send top; wait_for 'PID +USER'
 sendk q; wait_for '\$ $'
 run 'rm /' "refusing to remove '/'"

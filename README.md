@@ -1,8 +1,24 @@
+<p align="center"><img src="assets/logo.png" width="160" alt="thir logo"></p>
+
 # thir
 
-A tiny research OS for network work: the Linux kernel plus a userspace written only in Rust.
-No distro, no systemd, no busybox. Step 1: a Rust PID 1 (`init`), a small Rust shell (`nsh`) and a Rust DHCP client (`dhcp`).
-Step 2: `den`, a tiling terminal GUI on the framebuffer. Phase 3: a persistent disk, accounts, login and file commands. Phase 4: HiDPI den, Cmd/Option as WM key, a brand footer, a line editor in `nsh`. Phase 5: a UEFI-bootable disk image (`out/<arch>/thir.img`) for a USB stick.
+A tiny research OS for network work: the Linux kernel (6.12, a `tinyconfig` build with everything compiled in) plus a userspace written only in Rust.
+No distro, no systemd, no busybox. One kernel image holds the whole userspace as a built-in initramfs; one small ext4 volume holds the accounts and home directories.
+Userspace: a PID 1 (`init`), a shell with a line editor (`nsh`), a DHCP client, `login`/`passwd` with Argon2id, `den` (a tiling terminal GUI drawn straight on the framebuffer),
+an editor (`edit`, also `nano`), `find`, `top` and `fetch` (also `neofetch`). It boots in QEMU (aarch64 with HVF, or x86_64 emulated), in VirtualBox on Apple Silicon, and from a USB stick on a UEFI PC.
+
+![thir demo: first-boot setup, login, neofetch, help, files, edit, find, split pane with top](docs/demo.gif)
+
+Same recording as video: [docs/demo.mp4](docs/demo.mp4) (90 s, H.264). Recorded headless by `test/demo.sh` (QEMU `sendkey` and `screendump`, no window).
+
+| | |
+|---|---|
+| ![login](docs/screenshots/login.png) **login**: the den login screen (the password is never echoed) | ![neofetch](docs/screenshots/neofetch.png) **fetch**: `neofetch` |
+| ![edit](docs/screenshots/edit.png) **edit**: the full-screen editor after Ctrl-S | ![files](docs/screenshots/files.png) **files**: `ls`, `find` with a glob |
+| ![split](docs/screenshots/split-top.png) **split**: Alt+Enter, `top` in the new pane | |
+
+Step 1: a Rust PID 1 (`init`), a small Rust shell (`nsh`) and a Rust DHCP client (`dhcp`).
+Step 2: `den`, a tiling terminal GUI on the framebuffer. Phase 3: a persistent disk, accounts, login and file commands. Phase 4: HiDPI den, Cmd/Option as WM key, a brand footer, a line editor in `nsh`. Phase 5: a UEFI-bootable disk image (`out/<arch>/thir.img`) for a USB stick. Later: `fetch`, the demo recording.
 
 ## Prerequisites
 
@@ -20,8 +36,181 @@ Step 2: `den`, a tiling terminal GUI on the framebuffer. Phase 3: a persistent d
 | `./run.sh gui` | Boots den full screen in QEMU (1 guest pixel = 1 Retina pixel); serial shell stays on this terminal. `GUI_RES=WxH` overrides the size (default: asked from macOS), `GUI_FULL=0` uses a window |
 | `./test/smoke.sh` | Headless two-boot test on a fresh disk (first-boot setup, files, passwd, persistence), exit 0 = PASS |
 | `./test/uefi.sh` | Boots `thir.img` on edk2 firmware (x86_64: a USB stick on xHCI; aarch64: virtio-blk), two boots, checks `/data` and persistence |
+| `DEMO_PW=... ./test/demo.sh` | Records `docs/demo.mp4`, `docs/demo.gif` and `docs/screenshots/*.png` headless (aarch64, 2560x1600, first user `thir`); refuses to run without `DEMO_PW`, which is never stored |
 | `./test/gui.sh [out.png]` | Headless GUI test: logs in and types via the QEMU monitor on its own fresh disk, screendumps, checks the picture (aarch64) |
 | `docker volume rm thir-build` | Clean kernel tree and caches |
+
+## Architecture
+
+Everything runs from RAM except `/data`. The kernel image is the only file the firmware loads: it is an EFI program (EFI stub) with a gzip cpio initramfs linked in.
+Userspace is 10 static musl binaries (Rust, `opt-level = "s"`, LTO, `panic = "abort"`, stripped) plus two fonts. Nothing is dynamically linked, there is no libc on the image, and there are no kernel modules.
+
+### Boot flow
+
+```mermaid
+flowchart LR
+  FW["UEFI firmware<br/>(edk2 or the PC's)"] -->|"loads EFI/BOOT/BOOT*.EFI<br/>from the ESP"| STUB["Linux EFI stub<br/>(the kernel is the EFI app)"]
+  STUB --> KERN["kernel start<br/>drivers built in"]
+  KERN -->|"unpacks the built-in<br/>initramfs into rootfs"| INIT["/init, PID 1"]
+  INIT --> MNT["mount devtmpfs, devpts, proc,<br/>sysfs, tmpfs /tmp and /run"]
+  MNT --> SYS["fs.protected_hardlinks, symlinks,<br/>fifos, regular = 1"]
+  SYS --> DATA["scan /sys/class/block for the ext4<br/>label thirdata, mount /data<br/>nosuid,nodev,noexec (retry 15 s)"]
+  DATA --> NET["hostname thir, lo up,<br/>print interfaces"]
+  NET --> DHCP["spawn /bin/dhcp"]
+  DHCP --> READY["print 'thir: init ready'"]
+  READY --> LOGIN["supervise /bin/login<br/>on the serial console"]
+  READY --> DEN["supervise /bin/den<br/>if /dev/fb0 shows up (5 s)"]
+```
+
+QEMU `-kernel` (used by `run.sh` and the smoke and GUI tests) skips the first two boxes. init is a loop around `waitpid(-1)`: it restarts the console session or den when they exit (never sooner than 1 s apart),
+acts on exit code 120 (power off) and 121 (reboot) after `sync` and an unmount, and reaps everything else (dhcp, orphans). It installs no signal handlers.
+
+### Processes and privilege boundaries
+
+```mermaid
+flowchart TB
+  subgraph R["root (uid 0)"]
+    INIT["init (PID 1)"]
+    DHCP["dhcp<br/>(UDP socket and ioctl, then exits)"]
+    DEN["den<br/>(framebuffer, evdev, ptys)"]
+    LC["login on the serial console<br/>(root until it execs nsh)"]
+    LP["login in a den pane<br/>(root until it execs nsh)"]
+    PW["passwd<br/>(setuid root, short-lived)"]
+  end
+  subgraph U["user (uid 1000 and up, own gid, no supplementary groups)"]
+    NSH["nsh"]
+    PROG["edit, find, top, fetch,<br/>anything you run"]
+  end
+  INIT --> DHCP
+  INIT --> LC
+  INIT --> DEN
+  DEN -->|"pty per pane"| LP
+  LC -->|"drop_to, exec"| NSH
+  LP -->|"drop_to, exec"| NSH
+  NSH --> PROG
+  NSH -->|"setuid bit"| PW
+```
+
+The only privilege changes are `login` (root to user, irreversible: `setgroups`, `setgid`, `setuid`, all checked, and a test that `setuid(0)` fails afterwards) and the setuid-root `passwd`
+(trusts only the real uid and the tty, ignores argv and environment). `/data` is `noexec`, so nothing a user writes can run from disk. den runs as root because it opens `/dev/fb0` and `/dev/input/event*`;
+it executes only `/bin/login`, never echoes or logs keys, and reads the user-owned `~/.tz` defensively (see Time zone).
+
+### den internals
+
+```mermaid
+flowchart LR
+  subgraph IN["input"]
+    EV["/dev/input/event*<br/>(keyboards: EV_KEY with KEY_A)"] --> KM["keymap: evdev code to bytes<br/>or WM action (Alt/Cmd + key)"]
+  end
+  KM -->|"bytes"| PTY
+  KM -->|"split, close, focus, full"| LAY
+  subgraph PANES["one per pane"]
+    PTY["pty master<br/>(posix_openpt)"] <-->|"slave = stdin/out/err"| SH["/bin/login, then nsh"]
+    PTY -->|"output bytes"| VT["VT parser: Term grid of cells<br/>(cursor moves, erase, SGR 0-7, 90-97, bold, reverse)"]
+  end
+  LAY["binary split tree (gui/layout.rs)<br/>splits the longer side"] -->|"rect per pane, resize and TIOCSWINSZ"| VT
+  VT --> BACK["back buffer (Vec of u32)<br/>wallpaper, panel blend,<br/>PSF font glyphs, borders"]
+  BAR["bar: help, pane n/m,<br/>eth0 address, local time"] --> BACK
+  FOOT["footer strip: bear mark and 'thir'"] --> BACK
+  BACK -->|"dirty rows only"| FB["Fb::present into mmap of /dev/fb0"]
+  FB --> DRV["virtio-gpu (QEMU), vmwgfx (VirtualBox ARM),<br/>efifb (firmware framebuffer, real PCs)"]
+```
+
+den is one thread and one `poll(2)` over the input fds and the pty masters, with a 1 s timeout that also drives the bar clock and the rescan of input devices. Only panes whose `Term` is dirty are redrawn, and only the touched rows are copied to the framebuffer.
+It needs a 32 bpp framebuffer in any channel order (it converts when the layout is not XRGB). At 2000 px or wider it uses the 16x32 font and doubles all metrics.
+
+### Disk image layout
+
+```mermaid
+flowchart TB
+  IMG["out/&lt;arch&gt;/thir.img, 256 MiB, GPT"] --> ESP["p1: ESP, 64 MiB, FAT32 label THIRESP<br/>starts at 1 MiB"]
+  IMG --> TD["p2: ext4 label thirdata, 190 MiB<br/>starts at sector 133120"]
+  ESP --> EFI["EFI/BOOT/BOOTX64.EFI or BOOTAA64.EFI<br/>= the kernel image itself"]
+  TD --> ETC["etc/ (0700 root)<br/>users (0600 root)"]
+  TD --> HOME["home/ (0755)<br/>name/ (0700, owned by the user)<br/>.tz, .nsh_history, files"]
+```
+
+`out/<arch>/data.img` is the same `thirdata` volume as a bare 128 MiB ext4 file, used with `-kernel` boots (it appears as `vda`). init finds the volume by label, so `vda`, `vda2` and `sda2` (USB) all work.
+`users` has one line per user: `name:uid:argon2id:m:t:p:salt:hash`.
+
+### Login and authentication
+
+```mermaid
+sequenceDiagram
+  participant T as tty (serial or den pty)
+  participant L as login (root)
+  participant F as /data/etc/users
+  participant S as nsh (user)
+  T->>L: starts, tty reset to cooked mode, SIGINT ignored
+  L->>F: load
+  alt no users yet (first boot)
+    L->>T: ask user name, password twice, UTC offset
+    L->>F: Argon2id hash (random salt), save 0600
+  else normal login, up to 5 tries
+    L->>T: "thir login:", then "password:" (echo off)
+    L->>F: verify in constant time (a dummy hash for unknown names)
+    L-->>T: "login incorrect", sleep 3 s on failure
+  end
+  L->>L: mkdir and chown home, umask 077
+  L->>L: drop_to: setgroups, setgid, setuid, check setuid(0) fails
+  L->>S: exec /bin/nsh with a clean environment (PATH, HOME, USER)
+  Note over S: raw mode only while nsh reads a line, cooked for every child
+```
+
+Argon2id parameters: m=19456 KiB, t=2, p=1, 32-byte output, 16-byte random salt from `getrandom` (virtio-rng on the VM). Parameters are stored per user, so they can change later. Extra den panes run `login --as <uid>`, which only runs the drop and the exec.
+
+### Components
+
+Sizes are the stripped aarch64 release binaries from the current build (x86_64 is about the same).
+
+| Binary | Runs as | Source | Role | Size |
+|---|---|---|---|---|
+| `init` | root, PID 1 | `src/bin/init.rs`, `src/disk.rs`, `src/net.rs`, `src/lib.rs` | mounts, finds and mounts `/data`, supervises login and den, power off and reboot | 452 KiB |
+| `login` | root, then the user via `nsh` | `src/bin/login.rs`, `src/user.rs`, `src/clock.rs` | first-boot setup, authentication, privilege drop, exec `nsh` | 452 KiB |
+| `nsh` | user | `src/bin/nsh.rs`, `src/line.rs`, `src/parse.rs`, `src/files.rs`, `src/glob.rs` | shell: line editor, history, completion, file builtins, redirection, `help` | 452 KiB |
+| `den` | root | `src/bin/den.rs`, `src/gui/*` | tiling GUI on `/dev/fb0` | 452 KiB |
+| `dhcp` | root | `src/bin/dhcp.rs`, `src/dhcp.rs`, `src/net.rs` | DHCPv4 client: address, mask, route, `/etc/resolv.conf` | 388 KiB |
+| `passwd` | setuid root | `src/bin/passwd.rs`, `src/user.rs` | change your own password | 388 KiB |
+| `edit` (`nano`) | user | `src/bin/edit.rs`, `src/edit.rs`, `src/term.rs` | full-screen editor | 388 KiB |
+| `find` | user | `src/bin/find.rs`, `src/glob.rs` | find files by name and type | 388 KiB |
+| `top` | user | `src/bin/top.rs`, `src/procinfo.rs`, `src/term.rs` | CPU, memory, processes from `/proc` | 452 KiB |
+| `fetch` (`neofetch`) | user | `src/bin/fetch.rs`, `src/fetch.rs`, `src/procinfo.rs`, `src/net.rs` | bear logo and system facts (reads `/proc`, `/sys`, `uname`, `statvfs`) | 388 KiB |
+
+The pure parts (parsers, formatters, the editor buffer, the VT grid, the layout tree) live in the library crate `thir` and are unit-tested without a VM; the binaries are thin I/O around them.
+The only crates besides `libc` are `argon2` and `subtle` (see Security).
+
+### Kernel configuration
+
+`tinyconfig` is the base, so every feature is opt-in. `kernel/common.config` (49 lines) adds what both architectures need: ELF, devtmpfs, procfs/sysfs, UNIX98 ptys, TCP/IP, PCI, virtio (net, blk, rng, input, GPU), DRM with fbdev emulation, evdev, ext4, GPT, RTC, gzip initramfs and the EFI framebuffer.
+`kernel/aarch64.config` (28 lines) adds PL011, PL031 RTC, ACPI, the VirtualBox pieces (virtio-SCSI, xHCI USB HID, EFI RTC, `vmwgfx`) and a built-in command line with `video=Virtual-1:WxH`.
+`kernel/x86_64.config` (33 lines) adds 8250 serial, i8042 keyboard, CMOS RTC, xHCI/EHCI USB storage and the e1000e, igc and r8169 NICs.
+The fragments are appended to `.config`, then `olddefconfig` runs, then a verification loop checks that every `CONFIG_X=y` line survived and every `# CONFIG_X is not set` line stayed off. A requested option that a missing dependency silently dropped fails the build, so the config cannot drift.
+The initramfs file list is generated by `scripts/build-in-docker.sh` and referenced by `CONFIG_INITRAMFS_SOURCE`, so the kernel build embeds the binaries (the symlinks `/bin/nano` and `/bin/neofetch` are cpio entries).
+
+### Build pipeline
+
+```mermaid
+flowchart LR
+  B["build.sh (macOS host)<br/>env.sh, THIR_TZ from the host,<br/>VM_RES from screen-res.sh"] --> D["docker build thir-build<br/>(rust:1.99-bookworm + kernel build tools)"]
+  D --> R["docker run scripts/build-in-docker.sh<br/>volume thir-build caches the kernel tree"]
+  R --> C["cargo build --release<br/>musl target, 10 binaries"]
+  C --> L["initramfs list<br/>(files, modes, symlinks)"]
+  L --> K["kernel: tinyconfig + fragments,<br/>olddefconfig, verify, make Image<br/>(initramfs built in)"]
+  K --> M["mkimg: sfdisk GPT, mkfs.fat and mtools<br/>for the ESP, mkfs.ext4 -E offset"]
+  M --> O["out/&lt;arch&gt;/Image, thir.img, data.img"]
+```
+
+The container is always native arm64; x86_64 is cross-built there (`gcc-x86-64-linux-gnu`) and run emulated by QEMU TCG. The images are built from plain files (no loop devices in Docker). The data image is created only when missing, so a build never erases accounts.
+
+### Tests
+
+| Suite | Command | What it covers | Runs on |
+|---|---|---|---|
+| unit | `./build.sh test` | 111 `cargo test` tests: parsers, line editor, VT grid, layout, Argon2 records, clock, fetch formatting, help table | Docker (arm64) |
+| smoke | `./test/smoke.sh` | two serial boots on a fresh disk: first-boot setup, file commands, permission denials, `edit`, `neofetch`, `top`, `passwd` delay, persistence, old password rejected; the serial log must never contain a password | QEMU, either arch |
+| uefi | `./test/uefi.sh` | boots `thir.img` on edk2 (no `-kernel`), setup, a file on `/data`, second boot | QEMU, either arch |
+| gui | `./test/gui.sh` | den at 2560x1664: types through the QEMU monitor, login, split, Tab completion, screendump checks (size, colours, footer mark), logout | QEMU aarch64 |
+| demo | `DEMO_PW=... ./test/demo.sh` | records `docs/demo.mp4`, `docs/demo.gif` and `docs/screenshots/*`; refuses to run without `DEMO_PW` | QEMU aarch64 |
 
 ## Layout
 
@@ -56,6 +245,10 @@ src/bin/passwd.rs          change your own password (setuid root)
 src/bin/edit.rs            full-screen editor (`/bin/nano` is a link to it)
 src/bin/find.rs            find
 src/bin/top.rs             CPU, memory, process monitor
+src/bin/fetch.rs           system summary with a bear (`/bin/neofetch` is a link to it)
+src/fetch.rs               fetch's logo, parsers and formatting (pure)
+test/demo.sh               records the demo video, GIF and screenshots
+assets/logo*               project logo (logo.html is the source)
 out/<arch>/data.img        raw ext4 data disk, created when missing, never reformatted by a build
 src/bin/den.rs             GUI event loop
 src/gui/                   fb, wall (code-drawn wallpaper + bear), font (PSF), vt (terminal), layout (split tree), keymap, theme (all colors)
@@ -106,8 +299,8 @@ Linux 6.12.117 · `rust:1.99-bookworm` · libc 0.2.191 · QEMU 11.1.3 (Homebrew)
 
 | | aarch64 | x86_64 |
 |---|---|---|
-| Kernel image (initramfs inside) | 7.9 MB | 3.9 MB (compressed bzImage) |
-| `thir.img` | 256 MiB apparent, ~19 MB real | 256 MiB apparent, ~11 MB real |
+| Kernel image (initramfs inside) | 9.3 MB (`Image`) | 4.8 MB (compressed bzImage) |
+| `thir.img` | 256 MiB apparent, ~11 MB real | 256 MiB apparent, ~6.5 MB real |
 | Boot to `thir: init ready` (`-kernel`) | < 1 s (HVF) | ~1–2 s (TCG emulation) |
 | UEFI boot to `thir: init ready` (`test/uefi.sh`) | ~6 s (edk2, HVF) | ~5 s (edk2, TCG) |
 
@@ -148,6 +341,7 @@ programs, `write`, `passwd` and `login` always see a normal tty.
 `help` lists everything (`help <cmd>` for one). Builtins: `date`, `tz [+HH:MM]` (show or set the UTC offset), and the file commands above.
 - `edit [file]` (also `nano`): Ctrl-S save, Ctrl-Q or Ctrl-X quit, Ctrl-F find, Ctrl-K cut line (repeat to collect), Ctrl-U paste, arrows, Home/End, PgUp/PgDn. Saves atomically (temp file + rename, old mode kept).
 - `find [dir] [-name PATTERN] [-type f|d]`: `*` and `?` in patterns, never follows symlinks.
+- `fetch` (also `neofetch`): a bear logo beside `user@thir`, OS (thir version and arch), kernel, uptime, shell, resolution (`/sys/class/graphics/fb0/virtual_size`, `serial` without a framebuffer), terminal size, CPU, memory, `/data` usage, local IP and the date in your time zone.
 - `top`: CPU, memory, load and processes, 1 s refresh. `s`/`m`/`p` sort by CPU/memory/pid, `k` kills a pid (SIGTERM, after a y/n), `q` quits.
 
 Time zone: the clock is UTC (QEMU's default RTC). Each user keeps an offset in `~/.tz` (`+05:30`, mode 0600); first-boot setup asks for it (Enter = UTC)
