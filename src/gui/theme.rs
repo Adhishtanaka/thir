@@ -7,10 +7,12 @@ pub const FG: u32 = 0xecd6cd;         // default text
 pub const DIM: u32 = 0x807370;        // rgba(236,214,205,0.5) over PANEL
 pub const ACCENT: u32 = 0xe0b8a8;     // focused border, cursor, bar highlights
 pub const BORDER_DIM: u32 = 0x3a3134; // unfocused border
-pub const BAR_H: i32 = 28;
-pub const GAP: i32 = 12;
-pub const BORDER: i32 = 1;
-pub const PAD: i32 = 8;
+#[derive(Clone, Copy)]
+pub struct Metrics { pub bar: i32, pub gap: i32, pub border: i32, pub pad: i32, pub foot: i32 }
+impl Metrics { pub const fn at(s: i32) -> Metrics { Metrics { bar: 28 * s, gap: 12 * s, border: s, pad: 8 * s, foot: 28 * s } } }
+pub const MARK: u32 = 0x9c8c86;   // rgba(236,214,205,0.62) over the wallpaper, as in wallpaper.html variant D
+pub const WALL: [(f32, u32); 3] = [(0.0, 0x1a1518), (0.5, 0x110e10), (1.0, 0x09080a)];   // radial stops, centre bottom-middle
+pub const HELP: &str = "alt|cmd + enter split \u{b7} arrows focus \u{b7} q close \u{b7} f full";
 
 /// ANSI colors 0..15 (30-37, 90-97 and their backgrounds).
 pub const PALETTE: [u32; 16] = [

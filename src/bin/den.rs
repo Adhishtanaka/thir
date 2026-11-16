@@ -1,43 +1,14 @@
 //! den: tiling terminal GUI drawn straight to /dev/fb0. Alt is the window-manager key.
 use std::{fs::{self, File, OpenOptions}, io, os::{fd::IntoRawFd, unix::{fs::OpenOptionsExt, process::CommandExt}}, process::{exit, Command, Stdio}, thread::sleep, time::Duration};
-use thir::{decide, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, png, theme::*, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
+use thir::{decide, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, theme::*, wall::{self, blend}, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
 
 const LOGIN_COLS: i32 = 60;
 const LOGIN_ROWS: i32 = 12;
 
-fn blend(fg: u32, bg: u32, a: u32) -> u32 {
-    let ch = |s: u32| ((fg >> s & 255) * a + (bg >> s & 255) * (255 - a)) / 255 << s;
-    ch(16) | ch(8) | ch(0)
-}
-
-/// Scales the image to cover w*h (centered crop), bilinear.
-fn cover(img: &png::Image, w: usize, h: usize) -> Vec<u32> {
-    let s = (w as f32 / img.w as f32).max(h as f32 / img.h as f32);
-    let (ox, oy) = ((img.w as f32 * s - w as f32) / 2.0, (img.h as f32 * s - h as f32) / 2.0);
-    let px = |x: usize, y: usize, c: usize| img.rgb[(y * img.w + x) * 3 + c] as f32;
-    let mut out = Vec::with_capacity(w * h);
-    for y in 0..h {
-        let sy = ((y as f32 + oy + 0.5) / s - 0.5).clamp(0.0, (img.h - 1) as f32);
-        let (y0, fy) = (sy as usize, sy.fract()); let y1 = (y0 + 1).min(img.h - 1);
-        for x in 0..w {
-            let sx = ((x as f32 + ox + 0.5) / s - 0.5).clamp(0.0, (img.w - 1) as f32);
-            let (x0, fx) = (sx as usize, sx.fract()); let x1 = (x0 + 1).min(img.w - 1);
-            let mut v = 0u32;
-            for c in 0..3 {
-                let top = px(x0, y0, c) * (1.0 - fx) + px(x1, y0, c) * fx;
-                let bot = px(x0, y1, c) * (1.0 - fx) + px(x1, y1, c) * fx;
-                v = v << 8 | (top * (1.0 - fy) + bot * fy + 0.5) as u32;
-            }
-            out.push(v);
-        }
-    }
-    out
-}
-
 struct Pane { id: usize, master: i32, pid: i32, term: Term, rect: Rect, visible: bool, dirty: bool }
 
 struct Den {
-    fb: Fb, font: Font, w: usize, h: usize, back: Vec<u32>, wall: Vec<u32>, panel: Vec<u32>,
+    fb: Fb, font: Font, m: Metrics, w: usize, h: usize, back: Vec<u32>, wall: Vec<u32>, panel: Vec<u32>,
     panes: Vec<Pane>, layout: Layout, next_id: usize, area: Rect, full_redraw: bool, dirty_y: (usize, usize),
     keys: Keys, inputs: Vec<(String, i32)>, zombies: Vec<i32>,
     uid: Option<u32>,   // None = nobody is logged in: one centered login pane
@@ -65,7 +36,7 @@ fn ip_string() -> String {
 
 impl Den {
     fn cell_size(&self, r: Rect) -> (usize, usize) {
-        let inner = 2 * (BORDER + PAD);
+        let inner = 2 * (self.m.border + self.m.pad);
         ((((r.w - inner).max(0) as usize) / self.font.w).max(1), (((r.h - inner).max(0) as usize) / self.font.h).max(1))
     }
 
@@ -78,9 +49,9 @@ impl Den {
 
     /// The login screen: one pane of LOGIN_COLS x LOGIN_ROWS cells in the middle of the screen.
     fn login_rect(&self) -> Rect {
-        let inner = 2 * (BORDER + PAD);
+        let inner = 2 * (self.m.border + self.m.pad);
         let (rw, rh) = (LOGIN_COLS * self.font.w as i32 + inner, LOGIN_ROWS * self.font.h as i32 + inner);
-        Rect { x: (self.w as i32 - rw) / 2, y: BAR_H + (self.h as i32 - BAR_H - rh) / 2, w: rw, h: rh }
+        Rect { x: (self.w as i32 - rw) / 2, y: self.m.bar + (self.h as i32 - self.m.bar - self.m.foot - rh) / 2, w: rw, h: rh }
     }
 
     /// First time the login pane's process runs as a non-root uid: show the tiled layout.
@@ -92,7 +63,7 @@ impl Den {
     }
 
     fn relayout(&mut self) {
-        let rects = if self.uid.is_none() { self.panes.first().map(|p| (p.id, self.login_rect())).into_iter().collect() } else { self.layout.rects(self.area, GAP) };
+        let rects = if self.uid.is_none() { self.panes.first().map(|p| (p.id, self.login_rect())).into_iter().collect() } else { self.layout.rects(self.area, self.m.gap) };
         for i in 0..self.panes.len() {
             let found = rects.iter().find(|r| r.0 == self.panes[i].id).map(|r| r.1);
             self.panes[i].visible = found.is_some();
@@ -122,11 +93,11 @@ impl Den {
 
     fn draw_pane(&mut self, i: usize) {
         let focused = self.panes[i].id == self.layout.focus;
-        let p = &self.panes[i]; let r = p.rect; let w = self.w;
+        let m = self.m; let p = &self.panes[i]; let r = p.rect; let w = self.w;
         for y in r.y..r.y + r.h { let o = y as usize * w + r.x as usize; self.back[o..o + r.w as usize].copy_from_slice(&self.panel[o..o + r.w as usize]); }
         let bc = if focused { ACCENT } else { BORDER_DIM };
-        for e in [Rect { h: BORDER, ..r }, Rect { y: r.y + r.h - BORDER, h: BORDER, ..r }, Rect { w: BORDER, ..r }, Rect { x: r.x + r.w - BORDER, w: BORDER, ..r }] { fill(&mut self.back, w, e, bc); }
-        let (x0, y0) = (r.x + BORDER + PAD, r.y + BORDER + PAD);
+        for e in [Rect { h: m.border, ..r }, Rect { y: r.y + r.h - m.border, h: m.border, ..r }, Rect { w: m.border, ..r }, Rect { x: r.x + r.w - m.border, w: m.border, ..r }] { fill(&mut self.back, w, e, bc); }
+        let (x0, y0) = (r.x + m.border + m.pad, r.y + m.border + m.pad);
         let (fw, fh) = (self.font.w as i32, self.font.h as i32);
         for cy in 0..p.term.rows { for cx in 0..p.term.cols {
             let c = p.term.cells[cy * p.term.cols + cx];
@@ -141,25 +112,26 @@ impl Den {
     }
 
     fn text(&mut self, x: i32, s: &str, c: u32) -> i32 {
-        let y = (BAR_H - self.font.h as i32) / 2;
+        let y = (self.m.bar - self.font.h as i32) / 2;
         for (k, ch) in s.chars().enumerate() { glyph(&mut self.back, self.w, &self.font, x + (k * self.font.w) as i32, y, ch, c); }
         s.chars().count() as i32 * self.font.w as i32
     }
 
     fn draw_bar(&mut self) {
-        let w = self.w;
-        self.back[..BAR_H as usize * w].copy_from_slice(&self.panel[..BAR_H as usize * w]);
-        fill(&mut self.back, w, Rect { x: 0, y: BAR_H - 1, w: w as i32, h: 1 }, BORDER_DIM);
-        self.text(PAD * 2, "thir", ACCENT);
-        let n = self.layout.ids(self.area, GAP).iter().position(|&id| id == self.layout.focus).map_or(1, |p| p + 1);
+        let (w, m) = (self.w, self.m);
+        self.back[..m.bar as usize * w].copy_from_slice(&self.panel[..m.bar as usize * w]);
+        fill(&mut self.back, w, Rect { x: 0, y: m.bar - 1, w: w as i32, h: 1 }, BORDER_DIM);
+        self.text(m.pad * 2, HELP, DIM);
+        let fw = self.font.w as i32;
+        let n = self.layout.ids(self.area, m.gap).iter().position(|&id| id == self.layout.focus).map_or(1, |p| p + 1);
         let mid = if self.uid.is_none() { "pane login".to_string() } else { format!("pane {n}/{}", self.panes.len()) };
-        let mw = mid.len() as i32 * self.font.w as i32;
-        self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * self.font.w as i32, &mid[5..], FG);
+        let mw = mid.len() as i32 * fw;
+        self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);
         let t = unsafe { libc::time(std::ptr::null_mut()) } % 86400;
         let right = format!("{}   {:02}:{:02} UTC", ip_string(), t / 3600, t / 60 % 60);
-        let rw = right.len() as i32 * self.font.w as i32;
-        self.text(w as i32 - rw - PAD * 2, &right, FG);
-        self.dirty_y = (0, self.dirty_y.1.max(BAR_H as usize));
+        let rw = right.len() as i32 * fw;
+        self.text(w as i32 - rw - m.pad * 2, &right, FG);
+        self.dirty_y = (0, self.dirty_y.1.max(m.bar as usize));
     }
 
     fn render(&mut self, bar: bool) {
@@ -179,10 +151,10 @@ impl Den {
     fn act(&mut self, a: Action) {
         if self.uid.is_none() { return }   // no panes or focus games before login
         match a {
-            Action::Split => { let n = self.new_pane(); self.layout.split(self.area, GAP, n); }
+            Action::Split => { let n = self.new_pane(); self.layout.split(self.area, self.m.gap, n); }
             Action::Close => { let id = self.layout.focus; self.remove_pane(id, true); return }
             Action::Fullscreen => self.layout.toggle_full(),
-            Action::Focus(d) => self.layout.move_focus(self.area, GAP, d),
+            Action::Focus(d) => self.layout.move_focus(self.area, self.m.gap, d),
         }
         self.relayout();
     }
@@ -243,14 +215,20 @@ fn spawn_shell(uid: Option<u32>, cols: usize, rows: usize) -> io::Result<(i32, i
 fn main() {
     let fb = Fb::open().unwrap_or_else(|e| { eprintln!("den: framebuffer: {e}"); exit(1) });
     println!("den: {}x{} {}bpp", fb.w, fb.h, fb.bpp);
-    let font = Font::parse(&read_all("/share/font.psf")).unwrap_or_else(|e| { eprintln!("den: font: {e}"); exit(1) });
-    let img = png::decode(&read_all("/share/wallpaper.png")).unwrap_or_else(|e| { eprintln!("den: wallpaper: {e}"); exit(1) });
+    let sc = if fb.w >= 2000 { 2 } else { 1 };   // integer scale keeps the bitmap font crisp
+    let m = Metrics::at(sc);
+    let font = Font::parse(&read_all(if sc == 2 { "/share/font32.psf" } else { "/share/font16.psf" })).unwrap_or_else(|e| { eprintln!("den: font: {e}"); exit(1) });
     let (w, h) = (fb.w, fb.h);
-    let wall = cover(&img, w, h); drop(img);
+    let mut wall = wall::gradient(w, h, &WALL);
+    let (fy, r) = (h as i32 - m.foot, 9.0 * sc as f32);   // footer strip: bear mark and "thir", never covered by panes
+    let cx = w as f32 / 2.0 - 2.5 * font.w as f32;
+    wall::bear(&mut wall, w, cx, (fy + m.foot / 2 + sc) as f32, r, MARK, PANEL, 1.6 * sc as f32);
+    let (mut x, y) = ((cx + r + 1.5 * font.w as f32) as i32, fy + (m.foot - font.h as i32) / 2);
+    for ch in "thir".chars() { glyph(&mut wall, w, &font, x, y, ch, MARK); x += (font.w + font.w / 2) as i32; }
     let mut panel: Vec<u32> = wall.iter().map(|&p| blend(PANEL, p, PANEL_ALPHA)).collect();
-    for (d, s) in panel[..BAR_H as usize * w].iter_mut().zip(&wall) { *d = blend(BAR, *s, BAR_ALPHA); }
-    let area = Rect { x: GAP, y: BAR_H + GAP, w: w as i32 - 2 * GAP, h: h as i32 - BAR_H - 2 * GAP };
-    let mut den = Den { fb, font, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None };
+    for (d, s) in panel[..m.bar as usize * w].iter_mut().zip(&wall) { *d = blend(BAR, *s, BAR_ALPHA); }
+    let area = Rect { x: m.gap, y: m.bar + m.gap, w: w as i32 - 2 * m.gap, h: h as i32 - m.bar - m.foot - 2 * m.gap };
+    let mut den = Den { fb, font, m, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None };
     let first = den.new_pane(); den.layout = Layout::new(first);
     den.relayout(); den.scan_inputs(); den.render(true);
 

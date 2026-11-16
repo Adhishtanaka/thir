@@ -1,5 +1,80 @@
-use thir::{files::rm_refuses, net, parse::parse_cmd};
-use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::process::{CommandExt, ExitStatusExt}, path::Path, process::{exit, Command, Stdio}};
+use thir::{files::rm_refuses, line::{Act, Editor, Key}, net, parse::parse_cmd};
+use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::{fs::OpenOptionsExt, process::{CommandExt, ExitStatusExt}}, path::Path, process::{exit, Command, Stdio}};
+
+const BUILTINS: &[&str] = &["cd", "pwd", "ls", "cat", "echo", "whoami", "mkdir", "rmdir", "touch", "rm", "mv", "cp", "write", "clear", "history", "exit", "help", "ip", "poweroff", "reboot"];
+
+/// Raw mode only while a line is being read, so children, `write`, `passwd` and `login` always see a cooked tty. None if fd 0 is not a tty.
+fn raw_on() -> Option<libc::termios> {
+    let mut old: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(0, &mut old) } != 0 { return None; }
+    let mut t = old;
+    t.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
+    t.c_iflag &= !(libc::ICRNL | libc::IXON);
+    t.c_cc[libc::VMIN] = 1; t.c_cc[libc::VTIME] = 0;
+    unsafe { libc::tcsetattr(0, libc::TCSANOW, &t); }
+    Some(old)
+}
+fn raw_off(t: &libc::termios) { unsafe { libc::tcsetattr(0, libc::TCSADRAIN, t); } }
+
+fn put(b: &[u8]) { let mut o = 0; while o < b.len() { let n = unsafe { libc::write(1, b[o..].as_ptr() as *const _, b.len() - o) }; if n <= 0 { break } o += n as usize; } }
+
+fn prompt() -> String {
+    let user = std::env::var("USER").unwrap_or_else(|_| "?".into());
+    let host = fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_else(|_| "thir".into());
+    let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_else(|_| "?".into());
+    let cwd = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() && h != "/" && (cwd == h || cwd.starts_with(&format!("{h}/"))) => format!("~{}", &cwd[h.len()..]),
+        _ => cwd,
+    };
+    format!("\x1b[1;32m{user}@{host}\x1b[0m:\x1b[1;34m{cwd}\x1b[0m$ ")
+}
+
+/// Completion candidates for `word`; the first word of a line without '/' is a command.
+fn candidates(first: bool, word: &str) -> Vec<String> {
+    let mut v: Vec<String> = vec![];
+    if first && !word.contains('/') {
+        v.extend(BUILTINS.iter().filter(|b| b.starts_with(word)).map(|b| b.to_string()));
+        for dir in std::env::var("PATH").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
+            if let Ok(rd) = fs::read_dir(dir) { v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(word))); }
+        }
+    } else {
+        let (dir, pre) = word.rsplit_once('/').map_or(("", word), |(d, p)| (&word[..d.len() + 1], p));
+        if let Ok(rd) = fs::read_dir(if dir.is_empty() { "." } else { dir }) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if !n.starts_with(pre) || (n.starts_with('.') && !pre.starts_with('.')) { continue }
+                v.push(format!("{dir}{n}{}", if e.path().is_dir() { "/" } else { "" }));
+            }
+        }
+    }
+    v.sort(); v.dedup(); v
+}
+
+/// One line from the user with editing. None = end of input. Raw mode is always off again on return.
+fn read_cmd(ed: &mut Editor, stdin: &io::Stdin) -> Option<String> {
+    let p = prompt();
+    let Some(old) = raw_on() else {
+        print!("{p}"); let _ = io::stdout().flush();
+        let mut l = String::new();
+        return match stdin.read_line(&mut l) { Ok(0) | Err(_) => None, Ok(_) => Some(l) };
+    };
+    put(&ed.redraw(&p));
+    let r = 'read: loop {
+        let mut buf = [0u8; 256];
+        let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue }
+        if n <= 0 { break None }
+        for k in ed.decode(&buf[..n as usize]) {   // shortcut: keys after Enter in the same read are dropped
+            if k == Key::Tab { let (first, w) = ed.word(); let o = ed.complete(&candidates(first, &w), &p); put(&o); continue }
+            let (a, o) = ed.key(k, &p); put(&o);
+            match a { Act::Submit(l) => break 'read Some(l), Act::Eof => break 'read None, Act::None => {} }
+        }
+    };
+    raw_off(&old);
+    r
+}
+
+fn hist_path() -> String { format!("{}/.nsh_history", std::env::var("HOME").unwrap_or_else(|_| "/".into())) }
 
 /// Splits `-x` flags from operands; Err(flag) for a flag not in `allowed`.
 fn opts<'a>(args: &'a [String], allowed: &str) -> Result<(String, Vec<&'a String>), String> {
@@ -26,7 +101,7 @@ fn rm(path: &str, recursive: bool) -> io::Result<()> {
 }
 
 /// Runs a builtin; None if `argv[0]` is not one. Builtin errors go to stderr.
-fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin) -> Option<()> {
+fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[String], color: bool) -> Option<()> {
     let args = &argv[1..];
     let each = |allowed: &str, f: &mut dyn FnMut(&str, &str) -> io::Result<()>| match opts(args, allowed) {
         Ok((fl, rest)) => for a in rest { if let Err(e) = f(&fl, a) { eprintln!("nsh: {}: {a}: {e}", argv[0]); } },
@@ -35,7 +110,9 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin) -> Option<()
     match argv[0].as_str() {
         "cd" => { let d = args.first().cloned().or_else(|| std::env::var("HOME").ok()).unwrap_or("/".into()); if let Err(e) = std::env::set_current_dir(&d) { eprintln!("nsh: cd: {d}: {e}"); } }
         "exit" => exit(args.first().and_then(|s| s.parse().ok()).unwrap_or(0)),
-        "help" => { let _ = writeln!(out, "nsh builtins: cd pwd ls cat echo whoami mkdir rmdir touch rm mv cp write exit help ip poweroff reboot; redirect with > and >>; commands: passwd dhcp"); }
+        "help" => { let _ = writeln!(out, "nsh builtins: {}; redirect with > and >>; commands: passwd dhcp\ntab completes, up/down history, ctrl-a/e/u/k/w/l", BUILTINS.join(" ")); }
+        "clear" => { let _ = out.write_all(b"\x1b[H\x1b[2J"); }
+        "history" => for (i, l) in hist.iter().enumerate() { let _ = writeln!(out, "{:>5}  {l}", i + 1); },
         "pwd" => match std::env::current_dir() { Ok(d) => { let _ = writeln!(out, "{}", d.display()); } Err(e) => eprintln!("nsh: pwd: {e}") },
         "echo" => { let _ = writeln!(out, "{}", args.join(" ")); }
         "whoami" => { let _ = writeln!(out, "{}", std::env::var("USER").unwrap_or_else(|_| if unsafe { libc::getuid() } == 0 { "root".into() } else { unsafe { libc::getuid() }.to_string() })); }
@@ -69,7 +146,7 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin) -> Option<()
             match fs::read_dir(d) {
                 Ok(rd) => {
                     let mut names: Vec<String> = rd.filter_map(|e| e.ok())
-                        .map(|e| { let n = e.file_name().to_string_lossy().into_owned(); if e.path().is_dir() { n + "/" } else { n } }).collect();
+                        .map(|e| { let n = e.file_name().to_string_lossy().into_owned(); if e.path().is_dir() { if color { format!("\x1b[1;34m{n}/\x1b[0m") } else { n + "/" } } else { n } }).collect();
                     names.sort();
                     for n in names { let _ = writeln!(out, "{n}"); }
                 }
@@ -93,11 +170,14 @@ fn main() {
     // Children get Ctrl-C and Ctrl-\ back; Ctrl-Z stays ignored because nsh has no job control to resume a stopped child.
     unsafe { for s in [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP] { libc::signal(s, libc::SIG_IGN); } }
     let stdin = io::stdin();
+    let path = hist_path();
+    let old = fs::read_to_string(&path).unwrap_or_default();
+    let mut ed = Editor::new(old.lines().rev().take(1000).map(String::from).collect::<Vec<_>>().into_iter().rev().collect());
     loop {
-        print!("nsh> ");
-        let _ = io::stdout().flush();
-        let mut line = String::new();
-        match stdin.read_line(&mut line) { Ok(0) | Err(_) => exit(0), Ok(_) => {} }
+        let Some(line) = read_cmd(&mut ed, &stdin) else { exit(0) };
+        if ed.push_history(line.trim()) {
+            if let Ok(mut f) = OpenOptions::new().append(true).create(true).mode(0o600).open(&path) { let _ = writeln!(f, "{}", line.trim()); }
+        }
         let cmd = match parse_cmd(&line) { Ok(c) => c, Err(e) => { eprintln!("nsh: {e}"); continue; } };
         let Some(name) = cmd.argv.first() else { continue };
         let file = match &cmd.redirect {   // opened first; umask makes it 0600
@@ -107,7 +187,8 @@ fn main() {
             None => None,
         };
         let mut out: Box<dyn Write> = match file.as_ref().map(File::try_clone) { Some(Ok(f)) => Box::new(f), Some(Err(e)) => { eprintln!("nsh: {e}"); continue }, None => Box::new(io::stdout()) };
-        if builtin(&cmd.argv, &mut out, &stdin).is_some() { continue }
+        let color = cmd.redirect.is_none() && unsafe { libc::isatty(1) } == 1;
+        if builtin(&cmd.argv, &mut out, &stdin, ed.history(), color).is_some() { continue }
         let mut c = Command::new(name);
         c.args(&cmd.argv[1..]);
         if let Some(f) = file { c.stdout(Stdio::from(f)); }

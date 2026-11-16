@@ -47,8 +47,8 @@ file /bin/dhcp $O/dhcp 0755 0 0
 file /bin/den $O/den 0755 0 0
 file /bin/login $O/login 0755 0 0
 file /bin/passwd $O/passwd 04755 0 0
-file /share/wallpaper.png /work/assets/wallpaper.png 0644 0 0
-file /share/font.psf /work/assets/fonts/Uni3-Terminus16.psf 0644 0 0
+file /share/font16.psf /work/assets/fonts/Uni3-Terminus16.psf 0644 0 0
+file /share/font32.psf /work/assets/fonts/Uni3-Terminus32x16.psf 0644 0 0
 EOL
 /build/gen_init_cpio /build/initramfs.list | gzip -9 > "$O/initramfs.cpio.gz"
 [ -f "/work/$DATA_IMG" ] || mkdata

@@ -20,7 +20,7 @@ boot() {  # $1 = log name
 }
 wait_for() {  # $1 = extended regex on lines after the last send (CRs stripped), $2 = seconds (default STEP)
   local deadline=$((SECONDS + ${2:-$STEP}))
-  until tail -n +$((mark + 1)) "$log" | tr -d '\r' | grep -qE "$1"; do
+  until tail -n +$((mark + 1)) "$log" | tr -d '\r' | sed -E $'s/\e\\[[0-9;?]*[A-Za-z~]//g' | grep -qE "$1"; do
     if ! kill -0 "$qpid" 2>/dev/null || (( SECONDS >= deadline )); then
       echo "FAIL: did not see /$1/ within ${2:-$STEP}s"; echo "--- serial log ---"; leak_check; cat "$log"; exit 1
     fi
@@ -54,19 +54,22 @@ wait_for 'username: '
 send alice;  wait_for 'password: '
 send "$PW1"; wait_for 'repeat password: '
 send "$PW1"; wait_for 'user alice created'
-wait_for 'nsh> '
+wait_for '\$ $'
 run whoami '^alice$'
 run pwd '^/data/home/alice$'
-run 'mkdir docs' 'nsh> '
-run 'echo hello > docs/a.txt' 'nsh> '
-run 'echo world >> docs/a.txt' 'nsh> '
+run 'mkdir docs' '\$ $'
+run 'echo hello > docs/a.txt' '\$ $'
+run 'echo world >> docs/a.txt' '\$ $'
 send 'cat docs/a.txt'; wait_for '^hello$'; wait_for '^world$'
 run 'cat /data/etc/users' 'cat: /data/etc/users: Permission denied'
 run 'cat /dev/vda' 'cat: /dev/vda: Permission denied'
 run 'dhcp lo' '\[exit [1-9]'              # needs root: fails at once as a user
 run 'rm /' "refusing to remove '/'"
 run 'cat /proc/sys/kernel/hostname' '^thir$'
-run 'cat /etc/resolv.conf' '^nameserver 10\.0\.2\.3$'
+send $'ca\t/etc/res\t'   # Tab completion; the send's newline runs it. The echo is on the old partial line, so only the output proves it
+wait_for '^nameserver 10\.0\.2\.3$'
+wait_for '\$ $'
+run history '^ *[0-9]+ +whoami$'
 send passwd; wait_for 'old password: '
 send "$PWX"; wait_for 'passwd: wrong password'; t0=$SECONDS
 wait_for 'old password: '
@@ -74,7 +77,7 @@ wait_for 'old password: '
 send "$PW1"; wait_for 'new password: '
 send "$PW2"; wait_for 'repeat new password: '
 send "$PW2"; wait_for 'passwd: password changed'
-wait_for 'nsh> '
+wait_for '\$ $'
 off
 echo "boot 1 ok"
 
@@ -84,7 +87,7 @@ send alice;  wait_for 'password: '
 send "$PW1"; wait_for 'login incorrect'
 wait_for 'thir login: '
 send alice;  wait_for 'password: '
-send "$PW2"; wait_for 'nsh> '
+send "$PW2"; wait_for '\$ $'
 run 'cat docs/a.txt' '^hello$'
 run ls '^docs/$'
 off

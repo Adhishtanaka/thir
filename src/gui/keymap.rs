@@ -7,7 +7,7 @@ pub enum Action { Split, Close, Fullscreen, Focus(Dir) }
 pub enum Key { Bytes(Vec<u8>), Act(Action) }
 
 #[derive(Default)]
-pub struct Keys { shift: bool, ctrl: bool, alt: bool, caps: bool }
+pub struct Keys { shift: bool, ctrl: bool, wm: bool, caps: bool }
 
 /// (unshifted, shifted) for printable keys.
 fn printable(code: u16) -> Option<(u8, u8)> {
@@ -26,12 +26,12 @@ impl Keys {
         match code {
             42 | 54 => { self.shift = down; return None }
             29 | 97 => { self.ctrl = down; return None }
-            56 | 100 => { self.alt = down; return None }
+            56 | 100 | 125 | 126 => { self.wm = down; return None }   // Alt or Cmd: some Mac keyboards have no Alt
             58 => { if value == 1 { self.caps = !self.caps } return None }
             _ => {}
         }
         if !down { return None }
-        if self.alt {
+        if self.wm {
             return Some(Key::Act(match code {
                 28 => Action::Split, 16 => Action::Close, 33 => Action::Fullscreen,
                 103 | 37 => Action::Focus(Dir::Up), 108 | 36 => Action::Focus(Dir::Down),
@@ -41,7 +41,7 @@ impl Keys {
         }
         let fixed: &[u8] = match code {
             1 => b"\x1b", 14 => b"\x7f", 15 => b"\t", 28 => b"\r",
-            103 => b"\x1b[A", 108 => b"\x1b[B", 106 => b"\x1b[C", 105 => b"\x1b[D", 111 => b"\x1b[3~",
+            103 => b"\x1b[A", 108 => b"\x1b[B", 106 => b"\x1b[C", 105 => b"\x1b[D", 111 => b"\x1b[3~", 102 => b"\x1b[H", 107 => b"\x1b[F",
             _ => b"",
         };
         if !fixed.is_empty() { return Some(Key::Bytes(fixed.to_vec())) }
@@ -68,6 +68,12 @@ mod tests {
         assert_eq!(k.event(28, 1), b(b"\r")); assert_eq!(k.event(14, 1), b(b"\x7f")); assert_eq!(k.event(15, 1), b(b"\t")); assert_eq!(k.event(1, 1), b(b"\x1b"));
         assert_eq!(k.event(103, 1), b(b"\x1b[A")); assert_eq!(k.event(108, 2), b(b"\x1b[B")); assert_eq!(k.event(106, 1), b(b"\x1b[C")); assert_eq!(k.event(105, 1), b(b"\x1b[D"));
         assert_eq!(k.event(57, 1), b(b" ")); assert_eq!(k.event(53, 1), b(b"/")); assert_eq!(k.event(43, 1), b(b"\\"));
+    }
+    #[test] fn meta_acts_like_alt() {
+        let mut k = Keys::default(); k.event(125, 1);
+        assert_eq!(k.event(28, 1), Some(Key::Act(Action::Split)));
+        k.event(125, 0); assert_eq!(k.event(28, 1), b(b"\r"));
+        assert_eq!(k.event(102, 1), b(b"\x1b[H")); assert_eq!(k.event(107, 1), b(b"\x1b[F"));
     }
     #[test] fn ctrl_letters() {
         let mut k = Keys::default(); k.event(29, 1);

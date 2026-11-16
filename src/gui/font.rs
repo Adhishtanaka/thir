@@ -79,5 +79,7 @@ mod tests {
     #[test] fn bundled_font_parses() {
         let f = Font::parse(include_bytes!("../../assets/fonts/Uni3-Terminus16.psf")).unwrap();
         assert_eq!((f.w, f.h), (8, 16)); assert_ne!(f.glyph('A'), f.glyph(' '));
+        let f = Font::parse(include_bytes!("../../assets/fonts/Uni3-Terminus32x16.psf")).unwrap();
+        assert_eq!((f.w, f.h), (16, 32));
     }
 }

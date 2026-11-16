@@ -1,6 +1,7 @@
 pub mod dhcp;
 pub mod files;
 pub mod gui;
+pub mod line;
 pub mod net;
 pub mod parse;
 pub mod user;

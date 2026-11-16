@@ -47,6 +47,13 @@ fn setup() -> Option<User> {
 
 fn main() {
     if unsafe { libc::getuid() } != 0 { die("must be run by init or den"); }
+    unsafe {   // a shell that died in raw mode must not leave the tty raw
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(0, &mut t) == 0 {
+            t.c_lflag |= libc::ICANON | libc::ECHO | libc::ECHOE | libc::ISIG | libc::IEXTEN; t.c_iflag |= libc::ICRNL; t.c_oflag |= libc::OPOST | libc::ONLCR;
+            libc::tcsetattr(0, libc::TCSANOW, &t);
+        }
+    }
     unsafe { for s in [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP] { libc::signal(s, libc::SIG_IGN); } }
     if !Path::new("/data/etc").exists() { die_slow("/data is not mounted"); }
     let args: Vec<String> = std::env::args().collect();
