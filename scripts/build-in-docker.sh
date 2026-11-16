@@ -41,10 +41,12 @@ file /share/font32.psf /work/assets/fonts/Uni3-Terminus32x16.psf 0644 0 0
 EOL
 
 "${KMAKE[@]}" tinyconfig
-cat /work/kernel/common.config "/work/kernel/$THIR_ARCH.config" >> "$OBJ/.config"
+# kernel fragments, with the VirtualBox screen size from build.sh put into the cmdline's video= option
+frag() { sed -E "s/video=Virtual-1:[0-9]+x[0-9]+/video=Virtual-1:${VM_RES:-2560x1600}/" /work/kernel/common.config "/work/kernel/$THIR_ARCH.config"; }
+frag >> "$OBJ/.config"
 "${KMAKE[@]}" olddefconfig
 # every requested line must survive olddefconfig (catches unmet dependencies)
-cat /work/kernel/common.config "/work/kernel/$THIR_ARCH.config" | while read -r line; do
+frag | while read -r line; do
   case "$line" in
     "# CONFIG_"*" is not set") sym=${line#\# }; sym=${sym%% *}
       if grep -q "^$sym=" "$OBJ/.config"; then echo "kernel config: $sym is still enabled (selected by another option?)" >&2; exit 1; fi ;;

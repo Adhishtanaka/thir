@@ -210,8 +210,10 @@ VBoxManage startvm thir
 
 The default graphics controller (VBoxVGA) does not start on ARM: use `vmsvga`. The ARM firmware ignores
 `EfiGraphicsResolution`/`EfiGopMode` (800x600), so the aarch64 kernel has the `vmwgfx` driver and its built-in
-cmdline sets `video=Virtual-1:2560x1600`. For a sharp 1280x800-point window on a Retina Mac:
-`VBoxManage setextradata thir GUI/HiDPI/UnscaledOutput true`.
+cmdline sets `video=Virtual-1:<W>x<H>`. `build.sh` fills in the Mac's full-screen size (`scripts/screen-res.sh`,
+override with `VM_RES=WxH ./build.sh`), so with unscaled HiDPI output the VM fills the screen 1:1 in full screen
+(View > Full Screen Mode, or Right Cmd+F):
+`VBoxManage setextradata thir GUI/HiDPI/UnscaledOutput true` and `VBoxManage setextradata thir GUI/Fullscreen true`.
 
 The default time zone is the build Mac's UTC offset (`build.sh` passes `THIR_TZ`; override with `THIR_TZ=+05:30 ./build.sh`).
 To update the VM to a new build, detach and delete `thir.vdi`, convert again, and attach it (this erases the
