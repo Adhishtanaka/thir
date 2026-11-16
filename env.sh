@@ -16,7 +16,9 @@ case "$THIR_ARCH" in
     QEMU_BIN=qemu-system-x86_64; QEMU_MACHINE=(-M q35 -cpu max -accel tcg) ;;
   *) echo "unknown THIR_ARCH=$THIR_ARCH" >&2; return 1 ;;
 esac
-OUT=out/$THIR_ARCH
+THIR_FLAVOR=${THIR_FLAVOR:-}   # "vbox" (x86_64 only): AHCI disk + VMSVGA screen for VirtualBox on x86 hosts; never for the USB image
+FSUF=${THIR_FLAVOR:+-$THIR_FLAVOR}
+OUT=out/$THIR_ARCH$FSUF
 DATA_IMG=${DATA_IMG:-$OUT/data.img}   # raw ext4 image; path relative to the repo root (also /work in the container)
 DATA_SIZE=${DATA_SIZE:-128M}
 GUI_RES=${GUI_RES:-1280x800}

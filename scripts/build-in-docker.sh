@@ -7,7 +7,7 @@ if [ "${1:-all}" = test ]; then cd /work && exec cargo test; fi
 mkdata() { rm -f "/work/$DATA_IMG"; truncate -s "$DATA_SIZE" "/work/$DATA_IMG"; mkfs.ext4 -q -F -L thirdata "/work/$DATA_IMG"; echo "data image: /work/$DATA_IMG ($DATA_SIZE)"; }
 if [ "${1:-all}" = data ]; then mkdata; exit 0; fi
 
-SRC=/build/linux-$KERNEL_VERSION; OBJ=/build/kobj-$THIR_ARCH; O=/work/$OUT; LIST=/build/initramfs-$THIR_ARCH.list
+SRC=/build/linux-$KERNEL_VERSION; OBJ=/build/kobj-$THIR_ARCH$FSUF; O=/work/$OUT; LIST=/build/initramfs-$THIR_ARCH.list
 KMAKE=(make -C "$SRC" O="$OBJ" ARCH="$KARCH" CROSS_COMPILE="$CROSS_COMPILE")
 [ -d "$SRC" ] || curl -fL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz" | tar -xJ -C /build
 mkdir -p "$OBJ" "$O"
@@ -44,7 +44,12 @@ EOL
 
 "${KMAKE[@]}" tinyconfig
 # kernel fragments, with the VirtualBox screen size from build.sh put into the cmdline's video= option
-frag() { sed -E "s/video=Virtual-1:[0-9]+x[0-9]+/video=Virtual-1:${VM_RES:-2560x1600}/" /work/kernel/common.config "/work/kernel/$THIR_ARCH.config"; }
+# a flavour's fragment (kernel/<arch>-<flavor>.config) comes last and replaces the arch cmdline
+frag() {
+  { cat /work/kernel/common.config
+    if [ -n "$THIR_FLAVOR" ]; then grep -v '^CONFIG_CMDLINE=' "/work/kernel/$THIR_ARCH.config"; cat "/work/kernel/$THIR_ARCH-$THIR_FLAVOR.config"
+    else cat "/work/kernel/$THIR_ARCH.config"; fi; } | sed -E "s/video=Virtual-1:[0-9]+x[0-9]+/video=Virtual-1:${VM_RES:-2560x1600}/"
+}
 frag >> "$OBJ/.config"
 "${KMAKE[@]}" olddefconfig
 # every requested line must survive olddefconfig (catches unmet dependencies)
