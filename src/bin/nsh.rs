@@ -1,7 +1,10 @@
-use netos::{net, parse::parse_line};
-use std::{fs::File, io::{self, Write}, process::{exit, Command}};
+use thir::{net, parse::parse_line};
+use std::{fs::File, io::{self, Write}, os::unix::process::{CommandExt, ExitStatusExt}, process::{exit, Command}};
 
 fn main() {
+    // Ctrl-C / Ctrl-\ / Ctrl-Z hit the whole foreground group: the shell ignores them.
+    // Children get Ctrl-C and Ctrl-\ back; Ctrl-Z stays ignored because nsh has no job control to resume a stopped child.
+    unsafe { for s in [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP] { libc::signal(s, libc::SIG_IGN); } }
     let stdin = io::stdin();
     loop {
         print!("nsh> ");
@@ -30,11 +33,11 @@ fn main() {
                 match File::open(a).and_then(|mut f| io::copy(&mut f, &mut io::stdout())) { Ok(_) => {} Err(e) => println!("nsh: cat: {a}: {e}") }
             },
             "ip" => match net::interfaces() { Ok(v) => for i in &v { println!("{}", i.line()); }, Err(e) => println!("nsh: ip: {e}") },
-            "poweroff" => exit(netos::EXIT_POWEROFF),
-            "reboot" => exit(netos::EXIT_REBOOT),
-            _ => match Command::new(cmd).args(&argv[1..]).status() {
+            "poweroff" => exit(thir::EXIT_POWEROFF),
+            "reboot" => exit(thir::EXIT_REBOOT),
+            _ => match unsafe { Command::new(cmd).args(&argv[1..]).pre_exec(|| { for s in [libc::SIGINT, libc::SIGQUIT] { libc::signal(s, libc::SIG_DFL); } Ok(()) }) }.status() {
                 Err(e) => println!("nsh: {cmd}: {e}"),
-                Ok(s) if !s.success() => println!("[exit {}]", s.code().unwrap_or(-1)),
+                Ok(s) if !s.success() => match s.signal() { Some(n) => println!("[signal {n}]"), None => println!("[exit {}]", s.code().unwrap_or(-1)) },
                 Ok(_) => {}
             },
         }

@@ -1,3 +1,4 @@
+pub mod dhcp;
 pub mod net;
 pub mod parse;
 

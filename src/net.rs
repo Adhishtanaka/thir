@@ -25,6 +25,29 @@ pub fn set_up(name: &str) -> io::Result<()> {
     ioctl(&s, libc::SIOCSIFFLAGS, &mut r)
 }
 
+fn sockaddr(ip: Ipv4Addr) -> libc::sockaddr {
+    let sin = libc::sockaddr_in { sin_family: libc::AF_INET as _, sin_port: 0, sin_addr: libc::in_addr { s_addr: u32::from(ip).to_be() }, sin_zero: [0; 8] };
+    unsafe { std::mem::transmute(sin) }   // same 16-byte layout; the kernel reads it as sockaddr_in
+}
+
+pub fn set_addr(name: &str, ip: Ipv4Addr, mask: Ipv4Addr) -> io::Result<()> {
+    let s = Sock::new()?; let mut r = ifreq(name);
+    r.ifr_ifru.ifru_addr = sockaddr(ip);
+    ioctl(&s, libc::SIOCSIFADDR, &mut r)?;
+    r.ifr_ifru.ifru_netmask = sockaddr(mask);
+    ioctl(&s, libc::SIOCSIFNETMASK, &mut r)
+}
+
+pub fn add_default_route(gw: Ipv4Addr) -> io::Result<()> {
+    let s = Sock::new()?;
+    let mut rt: libc::rtentry = unsafe { std::mem::zeroed() };
+    rt.rt_dst = sockaddr(Ipv4Addr::UNSPECIFIED);
+    rt.rt_genmask = sockaddr(Ipv4Addr::UNSPECIFIED);
+    rt.rt_gateway = sockaddr(gw);
+    rt.rt_flags = libc::RTF_UP | libc::RTF_GATEWAY;
+    if unsafe { libc::ioctl(s.0, libc::SIOCADDRT as _, &rt) } < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
 /// Names from /sys/class/net (sorted), MAC from .../address, flags + IPv4 via ioctl.
 pub fn interfaces() -> io::Result<Vec<Iface>> {
     let s = Sock::new()?;

@@ -1,4 +1,4 @@
-# netos — Step 1 implementation plan (made by the Fable planner)
+# thir — Step 1 implementation plan (made by the Fable planner)
 
 Host facts: Apple M2, 8 cores, 16 GB. Docker daemon currently has only 2 CPUs (`docker info` → `2 cpus`), which roughly triples kernel build time. `rustc 1.99.0` on host. `linux-6.12.117` (current 6.12 LTS) tarball and `rust:1.99-bookworm` image both exist.
 
@@ -6,24 +6,24 @@ Host facts: Apple M2, 8 cores, 16 GB. Docker daemon currently has only 2 CPUs (`
 
 | Decision | Choice | Why |
 |---|---|---|
-| Guest arch | **aarch64** (`qemu-system-aarch64 -M virt -accel hvf -cpu host`) | HVF = near-native: boot-to-init well under 1 s. Kernel and Rust build run natively in an arm64 container. Switching = `NETOS_ARCH=x86_64` + one kernel fragment file. |
+| Guest arch | **aarch64** (`qemu-system-aarch64 -M virt -accel hvf -cpu host`) | HVF = near-native: boot-to-init well under 1 s. Kernel and Rust build run natively in an arm64 container. Switching = `THIR_ARCH=x86_64` + one kernel fragment file. |
 | Where Rust is compiled | **Docker**, same image as the kernel | Native arm64 Linux container: `cargo build --target aarch64-unknown-linux-musl` works with stock gcc + Rust's bundled musl crt. `cargo test` must run on Linux anyway. On the Mac only `cargo check --target aarch64-unknown-linux-musl`. |
 | Kernel base | **`tinyconfig` + explicit fragment** | ~4–6 MB Image, 3–8 min build. Build script verifies every fragment line landed in `.config`. Fallback: `tinyconfig`→`defconfig` in one line of `scripts/build-in-docker.sh`. |
 | Framebuffer | `DRM_VIRTIO_GPU` + `DRM_FBDEV_EMULATION` + `FB_DEVICE` | QEMU `-device virtio-gpu-pci` gives `/dev/dri/card0` and `/dev/fb0`. simpledrm skipped (no simple-framebuffer node on `-M virt` without UEFI). |
 | Crates | **`libc` only** (`libc = "0.2"`, locked by committed `Cargo.lock`) | Needed for `SIOCGIFFLAGS/SIOCGIFADDR` ioctls; mount/sethostname/waitpid/reboot are one-liners. |
 | poweroff/reboot protocol | **exit-code**, not signals | `nsh poweroff` = `exit(120)`, `reboot` = `exit(121)`; init's `waitpid(-1)` loop sees it and calls `sync(); reboot(2)`. No signal handling in PID 1. Not 100/101: Rust panics exit 101. |
 | initramfs tool | kernel's `usr/gen_init_cpio.c`, compiled with `cc` | Emits `newc`; device nodes from a manifest, no root/`mknod`. |
-| Kernel objects | Docker named volume `netos-build` | Bind mount is 2–3x slower; volume makes rebuilds incremental and caches tarball + cargo registry. Only `Image`, `init`, `nsh`, `initramfs.cpio.gz` copied to `out/`. |
+| Kernel objects | Docker named volume `thir-build` | Bind mount is 2–3x slower; volume makes rebuilds incremental and caches tarball + cargo registry. Only `Image`, `init`, `nsh`, `initramfs.cpio.gz` copied to `out/`. |
 
 Pinned: kernel `6.12.117`, image `rust:1.99-bookworm` (fallback `rust:1.98-bookworm`), `libc = "0.2"` locked, edition 2021, QEMU = whatever `brew install qemu` gives (record in README).
 
 ## File tree
 
 ```
-netos/
+thir/
 ├── .gitignore                 out/  target/
 ├── README.md
-├── env.sh                     single source of truth: NETOS_ARCH + derived vars
+├── env.sh                     single source of truth: THIR_ARCH + derived vars
 ├── build.sh                   host: docker build + docker run → out/
 ├── run.sh                     host: interactive QEMU
 ├── test/smoke.sh              host: headless boot test, exit 0/1
@@ -31,7 +31,7 @@ netos/
 ├── scripts/build-in-docker.sh container: kernel + cargo + initramfs (+ `test` subcommand)
 ├── kernel/common.config       arch-independent fragment
 ├── kernel/aarch64.config      arch fragment (console driver)
-├── Cargo.toml                 package "netos", two bins + lib
+├── Cargo.toml                 package "thir", two bins + lib
 ├── Cargo.lock                 committed
 └── src/
     ├── lib.rs                 EXIT_POWEROFF/EXIT_REBOOT, Action, decide() + tests
@@ -47,11 +47,11 @@ netos/
 ### `env.sh`
 ```bash
 # Single source of truth for the guest arch. Sourced by build.sh, run.sh, test/smoke.sh, scripts/build-in-docker.sh.
-# NOTE: variable is NETOS_ARCH, not ARCH, because the kernel Makefile reads $ARCH.
-NETOS_ARCH=${NETOS_ARCH:-aarch64}
+# NOTE: variable is THIR_ARCH, not ARCH, because the kernel Makefile reads $ARCH.
+THIR_ARCH=${THIR_ARCH:-aarch64}
 KERNEL_VERSION=6.12.117
 DOCKER_PLATFORM=linux/arm64        # build container is always native arm64
-case "$NETOS_ARCH" in
+case "$THIR_ARCH" in
   aarch64)
     KARCH=arm64; KIMAGE=arch/arm64/boot/Image; RUST_TARGET=aarch64-unknown-linux-musl
     CONSOLE=ttyAMA0; QEMU_BIN=qemu-system-aarch64; ACCEL=${ACCEL:-hvf}
@@ -60,7 +60,7 @@ case "$NETOS_ARCH" in
   x86_64)  # shortcut: untested; needs gcc-x86-64-linux-gnu + CROSS_COMPILE in the Dockerfile/script and kernel/x86_64.config (SERIAL_8250 + _CONSOLE). Upgrade when a PC target is wanted.
     KARCH=x86_64; KIMAGE=arch/x86/boot/bzImage; RUST_TARGET=x86_64-unknown-linux-musl
     CONSOLE=ttyS0; QEMU_BIN=qemu-system-x86_64; QEMU_MACHINE=(-M q35 -cpu max -accel tcg) ;;
-  *) echo "unknown NETOS_ARCH=$NETOS_ARCH" >&2; return 1 ;;
+  *) echo "unknown THIR_ARCH=$THIR_ARCH" >&2; return 1 ;;
 esac
 QEMU=("$QEMU_BIN" "${QEMU_MACHINE[@]}" -m 256 -smp 1
       -kernel out/Image -initrd out/initramfs.cpio.gz
@@ -83,10 +83,10 @@ RUN rustup target add "$RUST_TARGET"
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"; source ./env.sh
-docker build --platform "$DOCKER_PLATFORM" --build-arg RUST_TARGET="$RUST_TARGET" -t netos-build docker
+docker build --platform "$DOCKER_PLATFORM" --build-arg RUST_TARGET="$RUST_TARGET" -t thir-build docker
 mkdir -p out
-docker run --rm --platform "$DOCKER_PLATFORM" -e NETOS_ARCH="$NETOS_ARCH" \
-  -v "$PWD":/work -v netos-build:/build -w /work netos-build scripts/build-in-docker.sh "${1:-all}"
+docker run --rm --platform "$DOCKER_PLATFORM" -e THIR_ARCH="$THIR_ARCH" \
+  -v "$PWD":/work -v thir-build:/build -w /work thir-build scripts/build-in-docker.sh "${1:-all}"
 ```
 
 ### `scripts/build-in-docker.sh` (container; `chmod +x`)
@@ -97,14 +97,14 @@ source /work/env.sh
 export CARGO_HOME=/build/cargo-home CARGO_TARGET_DIR=/build/target
 if [ "${1:-all}" = test ]; then cd /work && exec cargo test; fi
 
-SRC=/build/linux-$KERNEL_VERSION; OBJ=/build/kobj-$NETOS_ARCH
+SRC=/build/linux-$KERNEL_VERSION; OBJ=/build/kobj-$THIR_ARCH
 [ -d "$SRC" ] || curl -fL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz" | tar -xJ -C /build
 mkdir -p "$OBJ"
 make -C "$SRC" O="$OBJ" ARCH="$KARCH" tinyconfig
-cat /work/kernel/common.config "/work/kernel/$NETOS_ARCH.config" >> "$OBJ/.config"
+cat /work/kernel/common.config "/work/kernel/$THIR_ARCH.config" >> "$OBJ/.config"
 make -C "$SRC" O="$OBJ" ARCH="$KARCH" olddefconfig
 # every requested line must survive olddefconfig (catches unmet dependencies)
-grep -hv '^#' /work/kernel/common.config "/work/kernel/$NETOS_ARCH.config" | grep . | while read -r line; do
+grep -hv '^#' /work/kernel/common.config "/work/kernel/$THIR_ARCH.config" | grep . | while read -r line; do
   grep -qxF "$line" "$OBJ/.config" || { echo "kernel config: '$line' was not applied (missing dependency?)" >&2; exit 1; }
 done
 make -C "$SRC" O="$OBJ" ARCH="$KARCH" -j"$(nproc)" Image
@@ -173,7 +173,7 @@ If the verification loop reports a line not applied, find the missing dependency
 ### `Cargo.toml`
 ```toml
 [package]
-name = "netos"
+name = "thir"
 version = "0.1.0"
 edition = "2021"
 
@@ -275,16 +275,16 @@ Bringing `lo` up is enough: the kernel auto-assigns 127.0.0.1/8. `eth0` will sho
 ### `src/bin/init.rs`
 ```rust
 use std::{ffi::CStr, io, process::Command, thread::sleep, time::Duration};
-use netos::{decide, net, Action};
+use thir::{decide, net, Action};
 
 fn mount(src: &CStr, dir: &CStr, fs: &CStr, data: &CStr) {
     if unsafe { libc::mount(src.as_ptr(), dir.as_ptr(), fs.as_ptr(), 0, data.as_ptr() as *const _) } != 0 {
-        eprintln!("netos: mount {}: {}", dir.to_str().unwrap(), io::Error::last_os_error());   // warn, never die
+        eprintln!("thir: mount {}: {}", dir.to_str().unwrap(), io::Error::last_os_error());   // warn, never die
     }
 }
 fn shutdown(cmd: libc::c_int) -> ! {
     unsafe { libc::sync(); libc::reboot(cmd); }
-    eprintln!("netos: reboot(2) failed: {}", io::Error::last_os_error());
+    eprintln!("thir: reboot(2) failed: {}", io::Error::last_os_error());
     loop { sleep(Duration::from_secs(60)); }        // PID 1 must never return
 }
 
@@ -294,15 +294,15 @@ fn main() {
     mount(c"sysfs", c"/sys", c"sysfs", c"");
     mount(c"tmpfs", c"/tmp", c"tmpfs", c"mode=1777");
     mount(c"tmpfs", c"/run", c"tmpfs", c"mode=0755");
-    println!("netos: mounted /dev /proc /sys /tmp /run");
-    if unsafe { libc::sethostname(c"netos".as_ptr(), 5) } != 0 { eprintln!("netos: sethostname: {}", io::Error::last_os_error()); }
-    if let Err(e) = net::set_up("lo") { eprintln!("netos: lo up: {e}"); }
-    match net::interfaces() { Ok(v) => for i in &v { println!("netos: iface {}", i.line()); }, Err(e) => eprintln!("netos: interfaces: {e}") }
-    println!("netos: init ready");                                   // smoke-test marker; do not change without updating test/smoke.sh
+    println!("thir: mounted /dev /proc /sys /tmp /run");
+    if unsafe { libc::sethostname(c"thir".as_ptr(), 5) } != 0 { eprintln!("thir: sethostname: {}", io::Error::last_os_error()); }
+    if let Err(e) = net::set_up("lo") { eprintln!("thir: lo up: {e}"); }
+    match net::interfaces() { Ok(v) => for i in &v { println!("thir: iface {}", i.line()); }, Err(e) => eprintln!("thir: interfaces: {e}") }
+    println!("thir: init ready");                                   // smoke-test marker; do not change without updating test/smoke.sh
     loop {
         let child = match Command::new("/bin/nsh").env_clear().env("PATH", "/bin").env("HOME", "/").spawn() {
             Ok(c) => c,
-            Err(e) => { eprintln!("netos: spawn /bin/nsh: {e}"); sleep(Duration::from_secs(1)); continue; }
+            Err(e) => { eprintln!("thir: spawn /bin/nsh: {e}"); sleep(Duration::from_secs(1)); continue; }
         };
         let shell = child.id() as libc::pid_t;                       // do NOT call child.wait(): waitpid(-1) below reaps it
         let status = loop {
@@ -312,7 +312,7 @@ fn main() {
             if pid < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) { break 0; } // ECHILD: shell gone; restart
         };
         match decide(status) {
-            Action::Restart => { println!("netos: shell exited, restarting"); sleep(Duration::from_secs(1)); } // guards against a respawn storm
+            Action::Restart => { println!("thir: shell exited, restarting"); sleep(Duration::from_secs(1)); } // guards against a respawn storm
             Action::Poweroff => shutdown(libc::LINUX_REBOOT_CMD_POWER_OFF),
             Action::Reboot => shutdown(libc::LINUX_REBOOT_CMD_RESTART),
         }
@@ -334,8 +334,8 @@ loop:
     "ls"       => read_dir(argv.get(1) or "."), names sorted, "/" suffix for dirs, one per line
     "cat"      => for each arg: io::copy(File::open(arg), stdout), print "nsh: cat: arg: err" on failure
     "ip"       => for i in net::interfaces(): println!(i.line())
-    "poweroff" => exit(netos::EXIT_POWEROFF)
-    "reboot"   => exit(netos::EXIT_REBOOT)
+    "poweroff" => exit(thir::EXIT_POWEROFF)
+    "reboot"   => exit(thir::EXIT_REBOOT)
     other      => Command::new(&argv[0]).args(&argv[1..]).status()
                   Err(e) => "nsh: {cmd}: {e}";  Ok(s) if !s.success() => "[exit {code}]"
 ```
@@ -346,7 +346,7 @@ No echo of input (tty line discipline echoes). No job control, no Ctrl-C handlin
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"; source ./env.sh
-echo "netos: Ctrl-A X quits QEMU" >&2
+echo "thir: Ctrl-A X quits QEMU" >&2
 exec "${QEMU[@]}" -nographic "$@"
 ```
 
@@ -357,7 +357,7 @@ exec "${QEMU[@]}" -nographic "$@"
 set -euo pipefail
 cd "$(dirname "$0")/.."; source ./env.sh
 TIMEOUT=${SMOKE_TIMEOUT:-30}
-log=$(mktemp -t netos-smoke); fifo=$(mktemp -u -t netos-fifo); mkfifo "$fifo"
+log=$(mktemp -t thir-smoke); fifo=$(mktemp -u -t thir-fifo); mkfifo "$fifo"
 cleanup() { kill "$qpid" 2>/dev/null || true; rm -f "$fifo"; }
 "${QEMU[@]}" -no-reboot -display none -monitor none -serial stdio < "$fifo" > "$log" 2>&1 &
 qpid=$!; trap cleanup EXIT
@@ -372,11 +372,11 @@ wait_for() {  # $1 = extended regex (CRs stripped), $2 = seconds
     sleep 0.2
   done
 }
-wait_for '^netos: init ready$' "$TIMEOUT"
+wait_for '^thir: init ready$' "$TIMEOUT"
 echo "boot-to-marker: ${SECONDS}s"
-wait_for '^netos: iface eth0 ' 1
+wait_for '^thir: iface eth0 ' 1
 printf 'cat /proc/sys/kernel/hostname\n' >&3
-wait_for '^netos$' 10
+wait_for '^thir$' 10
 printf 'poweroff\n' >&3
 for _ in $(seq 1 50); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.2; done
 if kill -0 "$qpid" 2>/dev/null; then echo "FAIL: QEMU still running after poweroff"; exit 1; fi
@@ -384,7 +384,7 @@ echo PASS
 ```
 
 ### `README.md` outline
-Purpose (step 1 of the roadmap) · Prerequisites (`brew install qemu`; Docker Desktop, ≥ 6 CPUs / 8 GB recommended) · Layout · Commands (`./build.sh`, `./build.sh test`, `./run.sh`, `./test/smoke.sh`, `docker volume rm netos-build` for a clean kernel) · How boot works (kernel → `/init` → mounts → `lo` up → marker → `/bin/nsh` loop; exit codes 120/121) · Switching arch (`NETOS_ARCH`, x86_64 untested) · Kernel config rationale · Pinned versions (kernel, image, libc from Cargo.lock, real QEMU version) · Known limitations (no Ctrl-C/job control, eth0 has no address yet, `poweroff` only from the top-level shell, Mac-side `cargo test` does not compile: use `./build.sh test`).
+Purpose (step 1 of the roadmap) · Prerequisites (`brew install qemu`; Docker Desktop, ≥ 6 CPUs / 8 GB recommended) · Layout · Commands (`./build.sh`, `./build.sh test`, `./run.sh`, `./test/smoke.sh`, `docker volume rm thir-build` for a clean kernel) · How boot works (kernel → `/init` → mounts → `lo` up → marker → `/bin/nsh` loop; exit codes 120/121) · Switching arch (`THIR_ARCH`, x86_64 untested) · Kernel config rationale · Pinned versions (kernel, image, libc from Cargo.lock, real QEMU version) · Known limitations (no Ctrl-C/job control, eth0 has no address yet, `poweroff` only from the top-level shell, Mac-side `cargo test` does not compile: use `./build.sh test`).
 
 ### `.gitignore`
 ```
@@ -409,7 +409,7 @@ target/
 13. **Rust panic exit code is 101**: hence 120/121.
 14. **`cargo test` on macOS does not compile**: use `./build.sh test`.
 15. **Fragment verification**: add the missing dependency; never delete the line.
-16. **`ARCH` name clash**: use `NETOS_ARCH`; never `export ARCH`.
+16. **`ARCH` name clash**: use `THIR_ARCH`; never `export ARCH`.
 17. **Rust `Command` under PID 1**: `env_clear()` + `PATH=/bin`; no `child.wait()`.
 18. **`-nographic`** muxes monitor+serial: Ctrl-A X quits. Smoke test uses `-display none -monitor none -serial stdio`.
 
@@ -434,7 +434,7 @@ target/
 - `file` reports aarch64 static/static-pie ELF for init and nsh.
 - `./build.sh test` exits 0 with ≥ 9 passing tests.
 - `./test/smoke.sh`: `boot-to-marker: Ns` with N ≤ 2, `PASS`, exit 0, ≤ 15 s wall. `SMOKE_TIMEOUT=0` → exit 1.
-- Serial log shows `netos: iface lo … up 127.0.0.1` and `netos: iface eth0 … down -`; `/dev/dri/card0` and `/dev/fb0` exist; exit restarts shell; reboot reboots; poweroff ends QEMU.
+- Serial log shows `thir: iface lo … up 127.0.0.1` and `thir: iface eth0 … down -`; `/dev/dri/card0` and `/dev/fb0` exist; exit restarts shell; reboot reboots; poweroff ends QEMU.
 - `out/Image` + `out/initramfs.cpio.gz` < 30 MB.
 - Repo committed; `out/`, `target/` untracked; `Cargo.lock` tracked.
 - No crate other than `libc`; no busybox, no shell scripts inside the image.
