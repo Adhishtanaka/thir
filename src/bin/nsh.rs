@@ -30,12 +30,17 @@ fn prompt() -> String {
 }
 
 /// Completion candidates for `word`; the first word of a line without '/' is a command.
-/// Control bytes as '?', so a hostile file name cannot send escape sequences to the terminal.
-fn printable(s: &str) -> String { s.chars().map(|c| if c.is_control() { '?' } else { c }).collect() }
+/// Control, bidi/format and non-space whitespace characters: they can send escape sequences or make a name display as something else.
+fn unsafe_char(c: char) -> bool {
+    c.is_control() || (c.is_whitespace() && c != ' ') || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
+}
+/// Unsafe characters as '?', so a hostile file name cannot drive the terminal.
+fn printable(s: &str) -> String { s.chars().map(|c| if unsafe_char(c) { '?' } else { c }).collect() }
 
 /// Backslash-escape what parse_cmd treats specially, so a completed name stays one word and never becomes a redirect.
 fn escape(s: &str) -> String {
-    s.chars().fold(String::new(), |mut o, c| { if matches!(c, ' ' | '>' | '"' | '\'' | '\\') { o.push('\\'); } o.push(c); o })
+    // the same set parse_cmd treats specially: all whitespace, '>', quotes, backslash
+    s.chars().fold(String::new(), |mut o, c| { if c.is_whitespace() || matches!(c, '>' | '"' | '\'' | '\\') { o.push('\\'); } o.push(c); o })
 }
 
 /// Names with control characters are never offered (see `printable`).
@@ -216,5 +221,10 @@ mod tests {
         assert_eq!(escape("my file>x"), "my\\ file\\>x");
         assert_eq!(thir::parse::parse_line(&format!("cat {}", escape("a b'c"))).unwrap(), vec!["cat", "a b'c"]);
     }
-    #[test] fn printable_hides_control_bytes() { assert_eq!(printable("a\x1b[2Jb\n"), "a?[2Jb?"); }
+    #[test] fn printable_hides_control_bytes() { assert_eq!(printable("a\x1b[2Jb\n\u{202e}c\u{2028}"), "a?[2Jb??c?"); }
+    #[test] fn escape_covers_all_whitespace() {
+        for n in ["a\u{a0}b", "a\u{3000}b", "x\ty", "-n > \\q"] {
+            assert_eq!(thir::parse::parse_line(&format!("cat {}", escape(n))).unwrap(), vec!["cat", n]);
+        }
+    }
 }

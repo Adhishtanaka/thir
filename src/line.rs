@@ -10,7 +10,10 @@ pub fn common_prefix(words: &[String]) -> String {
     let Some(first) = words.first() else { return String::new() };
     let mut n = first.chars().count();
     for w in &words[1..] { n = n.min(first.chars().zip(w.chars()).take_while(|(a, b)| a == b).count()); }
-    first.chars().take(n).collect()
+    let mut p: String = first.chars().take(n).collect();
+    // never stop inside an escape: an odd run of trailing backslashes would escape whatever is typed next
+    if p.chars().rev().take_while(|&c| c == '\\').count() % 2 == 1 { p.pop(); }
+    p
 }
 
 fn s(c: &[char]) -> String { c.iter().collect() }
@@ -115,7 +118,7 @@ impl Editor {
     /// (is_first_word, the word that ends at the cursor)
     pub fn word(&self) -> (bool, String) {
         let before = &self.buf[..self.cur];
-        let start = before.iter().rposition(|&c| c == ' ').map_or(0, |i| i + 1);
+        let start = (0..before.len()).rev().find(|&i| before[i] == ' ' && (i == 0 || before[i - 1] != '\\')).map_or(0, |i| i + 1);   // an escaped space stays in the word
         (before[..start].iter().all(|&c| c == ' '), s(&before[start..]))
     }
 
@@ -149,6 +152,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
+    #[test] fn prefix_never_ends_in_lone_backslash() { assert_eq!(super::common_prefix(&["a\\ b".into(), "a\\>c".into()]), "a"); }
     use super::*;
     const P: &str = "$ ";
     fn feed(e: &mut Editor, b: &[u8]) -> (Vec<Act>, Vec<u8>) {
