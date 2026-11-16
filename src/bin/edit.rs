@@ -39,7 +39,8 @@ fn save(name: &str, text: &str) -> std::io::Result<()> {
     };
     let r = (|| {
         // keep only rwx bits: setuid/setgid/sticky are never carried to the new file
-        if let Ok(m) = fs::symlink_metadata(p) { f.set_permissions(fs::Permissions::from_mode(m.permissions().mode() & 0o777))?; }
+        // only from a regular file: a symlink's own mode is 0777
+        if let Ok(m) = fs::symlink_metadata(p) { if m.file_type().is_file() { f.set_permissions(fs::Permissions::from_mode(m.permissions().mode() & 0o777))?; } }
         f.write_all(text.as_bytes())?; f.sync_all()?;
         fs::rename(&tmp, p)?;
         File::open(dir)?.sync_all()

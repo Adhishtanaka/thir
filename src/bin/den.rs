@@ -31,6 +31,17 @@ fn glyph(back: &mut [u32], w: usize, font: &Font, x: i32, y: i32, ch: char, c: u
 
 fn read_all(p: &str) -> Vec<u8> { fs::read(p).unwrap_or_else(|e| { eprintln!("den: {p}: {e}"); exit(1) }) }
 
+/// The leading items of `s` (split by `sep`) whose total width fits in `room` characters.
+fn fit_items(s: &str, sep: &str, room: usize) -> String {
+    let mut out = String::new();
+    for item in s.split(sep) {
+        let next = if out.is_empty() { item.to_string() } else { format!("{out}{sep}{item}") };
+        if next.chars().count() > room { break }
+        out = next;
+    }
+    out
+}
+
 fn ip_string() -> String {
     net::interfaces().ok().and_then(|v| v.into_iter().find(|i| i.name == "eth0").and_then(|i| i.ipv4)).map_or("offline".into(), |a| a.to_string())
 }
@@ -125,11 +136,14 @@ impl Den {
         let (w, m) = (self.w, self.m);
         self.back[..m.bar as usize * w].copy_from_slice(&self.panel[..m.bar as usize * w]);
         fill(&mut self.back, w, Rect { x: 0, y: m.bar - 1, w: w as i32, h: 1 }, BORDER_DIM);
-        self.text(m.pad * 2, HELP, DIM);
         let fw = self.font.w as i32;
         let n = self.layout.ids(self.area, m.gap).iter().position(|&id| id == self.layout.focus).map_or(1, |p| p + 1);
         let mid = if self.uid.is_none() { "pane login".to_string() } else { format!("pane {n}/{}", self.panes.len()) };
         let mw = mid.len() as i32 * fw;
+        // as many help items as fit left of the centre label (narrow screens, e.g. 800x600 firmware modes)
+        let room = (((w as i32 - mw) / 2 - m.pad * 2 - 2 * fw) / fw).max(0) as usize;
+        let help = fit_items(HELP, " \u{b7} ", room);
+        self.text(m.pad * 2, &help, DIM);
         self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);
         let right = format!("{}   {}", ip_string(), clock::bar_line(clock::now(), self.tz_path.as_deref().zip(self.uid).and_then(|(p, u)| clock::read_tz(p, u))));
         let rw = right.len() as i32 * fw;
@@ -288,5 +302,15 @@ fn main() {
             den.zombies.retain(|&p| p > 0 && unsafe { libc::waitpid(p, std::ptr::null_mut(), libc::WNOHANG) } == 0);
         }
         den.render(tick);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_items;
+    #[test] fn help_items_fit() {
+        assert_eq!(fit_items("a b · cc · d", " · ", 100), "a b · cc · d");
+        assert_eq!(fit_items("a b · cc · d", " · ", 8), "a b · cc");
+        assert_eq!(fit_items("a b · cc · d", " · ", 2), "");
     }
 }
