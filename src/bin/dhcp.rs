@@ -23,27 +23,40 @@ fn socket(iface: &str) -> io::Result<UdpSocket> {
 }
 
 /// Send `msg` up to 3 times; return the first reply of kind `want` (or a NAK).
-fn exchange(s: &UdpSocket, msg: &[u8], xid: u32, want: u8) -> Option<dhcp::Lease> {
+/// With `server` set, replies carrying another server id are ignored.
+fn exchange(s: &UdpSocket, msg: &[u8], xid: u32, mac: [u8; 6], want: u8, server: Option<Ipv4Addr>) -> Option<dhcp::Lease> {
     let mut buf = [0u8; 1500];
     for _ in 0..3 {
         let _ = s.send_to(msg, (Ipv4Addr::BROADCAST, 67));   // a down link fails here; keep retrying
         while let Ok(n) = s.recv(&mut buf) {
-            if let Some(l) = dhcp::parse(&buf[..n], xid) { if l.kind == want || l.kind == dhcp::NAK { return Some(l); } }
+            let Some(l) = dhcp::parse(&buf[..n], xid, mac) else { continue };
+            if server.is_some() && l.server != server { continue; }
+            if l.kind == want || l.kind == dhcp::NAK { return Some(l); }
         }
     }
     None
+}
+
+/// Unpredictable xid, so an off-path host cannot guess it and answer first.
+fn xid() -> u32 {
+    let mut b = [0u8; 4];
+    if unsafe { libc::getrandom(b.as_mut_ptr() as *mut _, 4, 0) } != 4 {
+        b = (SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()) ^ std::process::id()).to_ne_bytes();
+    }
+    u32::from_ne_bytes(b)
 }
 
 fn configure(iface: &str) -> Result<String, String> {
     net::set_up(iface).map_err(|e| format!("up: {e}"))?;
     let s = socket(iface).map_err(|e| format!("socket: {e}"))?;
     let mac = mac(iface);
-    let xid = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()) ^ std::process::id();
-    let offer = exchange(&s, &dhcp::packet(dhcp::DISCOVER, xid, mac, None), xid, dhcp::OFFER).ok_or("no offer")?;
+    let xid = xid();
+    let offer = exchange(&s, &dhcp::packet(dhcp::DISCOVER, xid, mac, None), xid, mac, dhcp::OFFER, None).ok_or("no offer")?;
     let server = offer.server.ok_or("offer without server id")?;
-    let ack = exchange(&s, &dhcp::packet(dhcp::REQUEST, xid, mac, Some((offer.ip, server))), xid, dhcp::ACK).ok_or("no ack")?;
+    let ack = exchange(&s, &dhcp::packet(dhcp::REQUEST, xid, mac, Some((offer.ip, server))), xid, mac, dhcp::ACK, Some(server)).ok_or("no ack")?;
     if ack.kind == dhcp::NAK { return Err("server sent NAK".into()); }
     let mask = ack.mask.unwrap_or(Ipv4Addr::new(255, 255, 255, 0));
+    dhcp::check(ack.ip, mask, ack.router).map_err(|e| format!("rejected lease {}: {e}", ack.ip))?;
     net::set_addr(iface, ack.ip, mask).map_err(|e| format!("set address: {e}"))?;
     if let Some(gw) = ack.router { net::add_default_route(gw).map_err(|e| format!("route: {e}"))?; }
     if let Some(dns) = ack.dns { fs::write("/etc/resolv.conf", format!("nameserver {dns}\n")).map_err(|e| format!("resolv.conf: {e}"))?; }

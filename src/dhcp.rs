@@ -26,9 +26,20 @@ pub fn packet(kind: u8, xid: u32, mac: [u8; 6], req: Option<(Ipv4Addr, Ipv4Addr)
     p
 }
 
-/// None for anything that is not a well-formed reply to `xid`.
-pub fn parse(p: &[u8], xid: u32) -> Option<Lease> {
-    if p.len() < 240 || p[0] != 2 || p[4..8] != xid.to_be_bytes() || p[236..240] != MAGIC { return None; }
+/// Reject a lease that would install a nonsense address or a gateway outside the subnet.
+pub fn check(ip: Ipv4Addr, mask: Ipv4Addr, router: Option<Ipv4Addr>) -> Result<(), &'static str> {
+    let (a, m) = (u32::from(ip), u32::from(mask));
+    if m == 0 || !m & (!m).wrapping_add(1) != 0 { return Err("bad netmask"); }   // ones must be contiguous from the left
+    if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() || ip.is_broadcast() || (m != u32::MAX && (a & !m == 0 || a & !m == !m)) {
+        return Err("bad address");
+    }
+    if let Some(gw) = router { if gw == ip || u32::from(gw) & m != a & m { return Err("gateway outside subnet"); } }
+    Ok(())
+}
+
+/// None for anything that is not a well-formed reply to `xid` for `mac`.
+pub fn parse(p: &[u8], xid: u32, mac: [u8; 6]) -> Option<Lease> {
+    if p.len() < 240 || p[0] != 2 || p[4..8] != xid.to_be_bytes() || p[28..34] != mac || p[236..240] != MAGIC { return None; }
     let ip4 = |b: &[u8]| (b.len() >= 4).then(|| Ipv4Addr::new(b[0], b[1], b[2], b[3]));
     let mut l = Lease { kind: 0, ip: ip4(&p[16..20])?, server: None, mask: None, router: None, dns: None };
     let mut i = 240;
@@ -62,15 +73,28 @@ mod tests {
         assert_eq!(&p[240..254], &[53, 1, 3, 50, 4, 10, 0, 2, 15, 54, 4, 10, 0, 2][..]);
     }
     #[test] fn parses_ack() {
-        let l = parse(&reply(7, &[53, 1, 5, 1, 4, 255, 255, 255, 0, 3, 4, 10, 0, 2, 2, 6, 4, 10, 0, 2, 3, 255]), 7).unwrap();
+        let l = parse(&reply(7, &[53, 1, 5, 1, 4, 255, 255, 255, 0, 3, 4, 10, 0, 2, 2, 6, 4, 10, 0, 2, 3, 255]), 7, MAC).unwrap();
         assert_eq!(l, Lease { kind: ACK, ip: Ipv4Addr::new(10, 0, 2, 15), server: None, mask: Some(Ipv4Addr::new(255, 255, 255, 0)),
                               router: Some(Ipv4Addr::new(10, 0, 2, 2)), dns: Some(Ipv4Addr::new(10, 0, 2, 3)) });
     }
     #[test] fn rejects_wrong_xid_and_own_request() {
-        assert_eq!(parse(&reply(7, &[53, 1, 2, 255]), 8), None);
-        assert_eq!(parse(&packet(DISCOVER, 7, MAC, None), 7), None);
+        assert_eq!(parse(&reply(7, &[53, 1, 2, 255]), 8, MAC), None);
+        assert_eq!(parse(&packet(DISCOVER, 7, MAC, None), 7, MAC), None);
+    }
+    #[test] fn rejects_reply_for_other_mac() {
+        assert_eq!(parse(&reply(7, &[53, 1, 2, 255]), 7, [0; 6]), None);
+    }
+    #[test] fn checks_lease_sanity() {
+        let ip = |a, b, c, d| Ipv4Addr::new(a, b, c, d);
+        let m24 = ip(255, 255, 255, 0);
+        assert_eq!(check(ip(10, 0, 2, 15), m24, Some(ip(10, 0, 2, 2))), Ok(()));
+        assert_eq!(check(ip(10, 0, 2, 15), ip(255, 0, 255, 0), None), Err("bad netmask"));
+        assert_eq!(check(ip(10, 0, 2, 15), ip(0, 0, 0, 0), None), Err("bad netmask"));
+        assert_eq!(check(ip(127, 0, 0, 1), m24, None), Err("bad address"));
+        assert_eq!(check(ip(10, 0, 2, 255), m24, None), Err("bad address"));
+        assert_eq!(check(ip(10, 0, 2, 15), m24, Some(ip(8, 8, 8, 8))), Err("gateway outside subnet"));
     }
     #[test] fn rejects_truncated_option() {
-        assert_eq!(parse(&reply(7, &[53, 1, 2, 6, 4, 10, 0]), 7), None);
+        assert_eq!(parse(&reply(7, &[53, 1, 2, 6, 4, 10, 0]), 7, MAC), None);
     }
 }
