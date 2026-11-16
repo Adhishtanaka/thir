@@ -441,3 +441,15 @@ Rebuild the shared ARM image at a portable size with `VM_RES=1920x1200 ./build.s
 - top names only root and you (others show as a number). find has no `[]` patterns. Serial consoles report no size: edit and top assume 80x24.
 - Two consoles creating the first user at the same moment can overwrite each other (no lock).
 - No Ctrl-C test in the smoke test any more: its only long-running command (`dhcp`) needs root.
+
+## License
+
+thir's own code (everything in this repository unless noted) is under the [MIT License](LICENSE).
+
+Bundled third-party parts keep their own licenses:
+
+| Part | License | Where |
+|---|---|---|
+| Linux kernel 6.12.117 (in the boot images, unmodified, built from `kernel/*.config`) | GPL-2.0 | source: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.117.tar.xz |
+| Terminus font | SIL OFL 1.1 | `assets/fonts/LICENSE-terminus.txt` |
+| Rust crates `libc`, `argon2`, `subtle` (statically linked) | MIT / Apache-2.0 | `Cargo.lock` |
