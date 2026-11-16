@@ -19,4 +19,4 @@ QEMU=("$QEMU_BIN" "${QEMU_MACHINE[@]}" -m 256 -smp 1
       -kernel $OUT/Image -initrd $OUT/initramfs.cpio.gz
       -append "console=$CONSOLE panic=1"
       -netdev user,id=n0 -device virtio-net-pci,netdev=n0
-      -device virtio-gpu-pci)
+      -device virtio-gpu-pci,id=gpu0 -device virtio-keyboard-pci)

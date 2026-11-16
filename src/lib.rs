@@ -1,4 +1,5 @@
 pub mod dhcp;
+pub mod gui;
 pub mod net;
 pub mod parse;
 

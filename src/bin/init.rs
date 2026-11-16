@@ -1,4 +1,4 @@
-use std::{ffi::CStr, fs::{self, File}, io, os::unix::process::CommandExt, process::Command, thread::sleep, time::Duration};
+use std::{ffi::CStr, fs::{self, File}, io, os::unix::process::CommandExt, path::Path, process::Command, thread::sleep, time::{Duration, Instant}};
 use thir::{decide, net, Action};
 
 /// The real tty behind /dev/console. /dev/console cannot be a controlling terminal, so Ctrl-C needs this.
@@ -35,6 +35,8 @@ fn shutdown(cmd: libc::c_int) -> ! {
 
 fn main() {
     mount(c"devtmpfs", c"/dev", c"devtmpfs", c"mode=0755");   // first, so /dev/console etc. exist for everything after
+    unsafe { libc::mkdir(c"/dev/pts".as_ptr(), 0o755); }
+    mount(c"devpts", c"/dev/pts", c"devpts", c"mode=0620");   // den's pane ptys
     mount(c"proc", c"/proc", c"proc", c"");
     mount(c"sysfs", c"/sys", c"sysfs", c"");
     mount(c"tmpfs", c"/tmp", c"tmpfs", c"mode=1777");
@@ -45,22 +47,29 @@ fn main() {
     match net::interfaces() { Ok(v) => for i in &v { println!("thir: iface {}", i.line()); }, Err(e) => eprintln!("thir: interfaces: {e}") }
     if let Err(e) = Command::new("/bin/dhcp").env_clear().spawn() { eprintln!("thir: spawn /bin/dhcp: {e}"); }   // runs beside the shell; reaped below
     println!("thir: init ready");                                   // smoke-test marker; do not change without updating test/smoke.sh
+    // Two supervised services: the serial shell and (when /dev/fb0 exists) the GUI. Each restarts 1 s after it exits.
+    let mut svc = [Svc { pid: 0, at: Instant::now() }, Svc { pid: 0, at: Instant::now() }];
     loop {
-        let child = match shell().spawn() {
-            Ok(c) => c,
-            Err(e) => { eprintln!("thir: spawn /bin/nsh: {e}"); sleep(Duration::from_secs(1)); continue; }
-        };
-        let shell = child.id() as libc::pid_t;                       // do NOT call child.wait(): waitpid(-1) below reaps it
-        let status = loop {
+        loop {   // reap everything that exited (also dhcp)
             let mut st = 0;
-            let pid = unsafe { libc::waitpid(-1, &mut st, 0) };
-            if pid == shell { break st; }
-            if pid < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) { break 0; } // ECHILD: shell gone; restart
-        };
-        match decide(status) {
-            Action::Restart => { println!("thir: shell exited, restarting"); sleep(Duration::from_secs(1)); } // guards against a respawn storm
-            Action::Poweroff => shutdown(libc::LINUX_REBOOT_CMD_POWER_OFF),
-            Action::Reboot => shutdown(libc::LINUX_REBOOT_CMD_RESTART),
+            let pid = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
+            if pid <= 0 { break }
+            let Some(i) = svc.iter().position(|s| s.pid == pid) else { continue };
+            svc[i].pid = 0; svc[i].at = Instant::now() + Duration::from_secs(1);   // guards against a respawn storm
+            match decide(st) {
+                Action::Restart => if i == 0 { println!("thir: shell exited, restarting") } else { println!("thir: den exited, restarting") },
+                Action::Poweroff => shutdown(libc::LINUX_REBOOT_CMD_POWER_OFF),
+                Action::Reboot => shutdown(libc::LINUX_REBOOT_CMD_RESTART),
+            }
         }
+        if svc[0].pid == 0 && Instant::now() >= svc[0].at {
+            match shell().spawn() { Ok(c) => svc[0].pid = c.id() as libc::pid_t, Err(e) => { eprintln!("thir: spawn /bin/nsh: {e}"); svc[0].at = Instant::now() + Duration::from_secs(1); } }
+        }
+        if svc[1].pid == 0 && Instant::now() >= svc[1].at && Path::new("/dev/fb0").exists() {
+            match Command::new("/bin/den").env_clear().env("PATH", "/bin").spawn() { Ok(c) => svc[1].pid = c.id() as libc::pid_t, Err(e) => { eprintln!("thir: spawn /bin/den: {e}"); svc[1].at = Instant::now() + Duration::from_secs(1); } }
+        }
+        sleep(Duration::from_millis(50));   // children are reaped above, never with child.wait()
     }
 }
+
+struct Svc { pid: libc::pid_t, at: Instant }

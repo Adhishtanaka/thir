@@ -26,7 +26,7 @@ cp "$OBJ/$KIMAGE" "$O/Image"
 cc -O2 -o /build/gen_init_cpio "$SRC/usr/gen_init_cpio.c"
 
 cd /work && cargo build --release --target "$RUST_TARGET"
-for b in init nsh dhcp; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
+for b in init nsh dhcp den; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
 
 cat > /build/initramfs.list <<EOL
 dir /dev 0755 0 0
@@ -37,9 +37,13 @@ dir /tmp 01777 0 0
 dir /run 0755 0 0
 dir /etc 0755 0 0
 dir /bin 0755 0 0
+dir /share 0755 0 0
 file /init $O/init 0755 0 0
 file /bin/nsh $O/nsh 0755 0 0
 file /bin/dhcp $O/dhcp 0755 0 0
+file /bin/den $O/den 0755 0 0
+file /share/wallpaper.png /work/assets/wallpaper.png 0644 0 0
+file /share/font.psf /work/assets/fonts/Uni3-Terminus16.psf 0644 0 0
 EOL
 /build/gen_init_cpio /build/initramfs.list | gzip -9 > "$O/initramfs.cpio.gz"
 ls -l "$O"

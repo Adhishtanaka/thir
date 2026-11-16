@@ -1,0 +1,122 @@
+<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<canvas id="c"></canvas>
+<script>
+const v = new URLSearchParams(location.search).get('v') || 'D';
+const q = new URLSearchParams(location.search), W = +(q.get('w') || 1920), H = +(q.get('h') || 1080), c = document.getElementById('c');
+c.width = W; c.height = H;
+const g = c.getContext('2d'), s = Math.min(W / 1920, H / 1080);
+let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const MONO = '"SF Mono", Menlo, monospace';
+
+// Walking bear, facing left, in a 500x310 box.
+const OUT = [[20,140],[60,108],[78,84],[96,78],[104,96],[140,88],[220,58],[330,68],[430,84],[472,112],[482,180],[472,258],[492,300],[438,300],[420,222],[330,214],[244,214],[238,290],[254,300],[196,300],[190,220],[150,200],[92,172],[42,162],[20,150]];
+const IN = [[66,124],[200,118],[300,118],[400,128],[262,170],[364,170],[150,150],[452,160],[118,120]];
+function bearGraph(ox, oy, k) {
+  const pts = [...OUT, ...IN].map(([x, y]) => [ox + x * k, oy + y * k]);
+  const edges = [];
+  for (let i = 0; i < OUT.length - 1; i++) edges.push([i, i + 1]);
+  for (let i = OUT.length; i < pts.length; i++) {           // each inner node links to its 3 nearest
+    const d = pts.map((p, j) => [Math.hypot(p[0] - pts[i][0], p[1] - pts[i][1]), j]).filter(([, j]) => j !== i).sort((a, b) => a[0] - b[0]);
+    for (const [, j] of d.slice(0, 3)) edges.push([i, j]);
+  }
+  return { pts, edges };
+}
+function bg(stops, cx = 0.45, cy = 0.42) {
+  const r = g.createRadialGradient(W * cx, H * cy, 0, W * cx, H * cy, Math.hypot(W, H) * 0.7);
+  stops.forEach(([o, col]) => r.addColorStop(o, col)); g.fillStyle = r; g.fillRect(0, 0, W, H);
+}
+function grain(amt) {                                         // breaks up gradient banding on 8-bit framebuffers
+  const im = g.getImageData(0, 0, W, H), d = im.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (rnd() - 0.5) * amt; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  g.putImageData(im, 0, 0);
+}
+function drawGraph({ pts, edges }, line, node, lw, nr, square) {
+  g.strokeStyle = line; g.lineWidth = lw;
+  for (const [a, b] of edges) { g.beginPath(); g.moveTo(...pts[a]); g.lineTo(...pts[b]); g.stroke(); }
+  g.fillStyle = node;
+  for (const [x, y] of pts) { g.beginPath(); square ? g.rect(x - nr, y - nr, nr * 2, nr * 2) : g.arc(x, y, nr, 0, 7); g.fill(); }
+}
+function glow(x, y, r, col, blur) { g.save(); g.shadowColor = col; g.shadowBlur = blur; g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); g.restore(); }
+function packets({ pts, edges }, list, col, r) {
+  for (const [e, t] of list) { const [a, b] = edges[e]; glow(pts[a][0] + (pts[b][0] - pts[a][0]) * t, pts[a][1] + (pts[b][1] - pts[a][1]) * t, r, col, 10 * s); }
+}
+function field(x0, y0, x1, y1, n, line, node) {              // sparse far-off nodes, nearest-neighbour links
+  const p = Array.from({ length: n }, () => [x0 + rnd() * (x1 - x0), y0 + rnd() * (y1 - y0)]);
+  g.strokeStyle = line; g.lineWidth = 1 * s;
+  p.forEach((a, i) => { const b = p.map((q, j) => [Math.hypot(q[0] - a[0], q[1] - a[1]), j]).filter(([, j]) => j !== i).sort((m, n) => m[0] - n[0])[0][1]; g.beginPath(); g.moveTo(...a); g.lineTo(...p[b]); g.stroke(); });
+  g.fillStyle = node; p.forEach(([x, y]) => { g.beginPath(); g.arc(x, y, 1.6 * s, 0, 7); g.fill(); });
+}
+function text(str, x, y, size, col, spacing = 0, weight = 500, align = 'left') {
+  g.font = `${weight} ${size}px ${MONO}`; g.fillStyle = col; g.textAlign = align; g.letterSpacing = spacing + 'px'; g.fillText(str, x, y);
+}
+function paw(x, y, sz, col) {
+  g.fillStyle = col;
+  g.beginPath(); g.ellipse(x, y, sz * 0.55, sz * 0.42, 0, 0, 7); g.fill();
+  [[-0.7, -0.62], [-0.36, -0.82], [0, -0.9], [0.36, -0.82], [0.7, -0.62]].forEach(([dx, dy]) => { g.beginPath(); g.arc(x + dx * sz, y + dy * sz, sz * 0.17, 0, 7); g.fill(); });
+}
+function bearHead(cx, cy, r, stroke, fill, lw) {
+  g.lineWidth = lw; g.strokeStyle = stroke; g.fillStyle = fill;
+  for (const sx of [-1, 1]) { g.beginPath(); g.arc(cx + sx * 0.7 * r, cy - 0.72 * r, 0.36 * r, 0, 7); g.fill(); g.stroke(); }
+  g.beginPath(); g.arc(cx, cy, r, 0, 7); g.fill(); g.stroke();
+  g.beginPath(); g.ellipse(cx, cy + 0.34 * r, 0.42 * r, 0.3 * r, 0, 0, 7); g.stroke();
+  g.fillStyle = stroke; g.beginPath(); g.ellipse(cx, cy + 0.24 * r, 0.13 * r, 0.09 * r, 0, 0, 7); g.fill();
+  for (const sx of [-1, 1]) { g.beginPath(); g.arc(cx + sx * 0.36 * r, cy - 0.12 * r, 0.06 * r, 0, 7); g.fill(); }
+}
+
+if (v === 'A') {            // Night signal: constellation bear, teal on blue-black
+  bg([[0, '#111821'], [0.55, '#0b1016'], [1, '#06080b']]);
+  field(40 * s, 40 * s, W * 0.3, H * 0.32, 16, 'rgba(95,212,196,0.07)', 'rgba(95,212,196,0.18)');
+  const b = bearGraph(W - 640 * s, H - 430 * s, 1.15 * s);
+  drawGraph(b, 'rgba(95,212,196,0.20)', 'rgba(140,232,218,0.55)', 1.2 * s, 2.3 * s);
+  packets(b, [[3, 0.5], [9, 0.3], [27, 0.6], [33, 0.45], [40, 0.7]], 'rgba(170,255,240,0.95)', 2.2 * s);
+  glow(b.pts[OUT.length][0], b.pts[OUT.length][1], 2.8 * s, 'rgba(170,255,240,1)', 14 * s);   // the eye
+  text('thir', 64 * s, H - 70 * s, 22 * s, 'rgba(140,232,218,0.75)', 6 * s, 600);
+  text('network os · v0.1', 64 * s, H - 44 * s, 12 * s, 'rgba(140,232,218,0.32)', 2 * s);
+  grain(5);
+}
+if (v === 'B') {            // Phosphor: bear tracks walking across packet lanes, amber on warm black
+  bg([[0, '#15110b'], [0.6, '#0d0a07'], [1, '#060504']], 0.5, 0.35);
+  const lanes = [0.74, 0.79, 0.84, 0.89].map(f => H * f);
+  lanes.forEach((y, i) => {
+    g.strokeStyle = 'rgba(232,165,75,0.10)'; g.lineWidth = 1 * s; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+    for (let x = 0; x < W; x += 48 * s) { g.fillStyle = 'rgba(232,165,75,0.08)'; g.fillRect(x, y - 3 * s, 1 * s, 6 * s); }
+    if (i !== 2) for (let k = 0; k < 5; k++) { const x = rnd() * W, w = (20 + rnd() * 70) * s; g.fillStyle = `rgba(232,165,75,${0.10 + rnd() * 0.18})`; g.fillRect(x, y - 2 * s, w, 4 * s); }
+  });
+  for (let i = 0, x = 120 * s; x < W - 80 * s; i++, x += 92 * s) {           // the trail fades in toward the right
+    paw(x, lanes[2] + (i % 2 ? -14 : 14) * s, 14 * s, `rgba(240,178,90,${0.08 + 0.55 * (x / W) ** 1.6})`);
+  }
+  for (let y = 0; y < H; y += 3) { g.fillStyle = 'rgba(0,0,0,0.16)'; g.fillRect(0, y, W, 1); }
+  bearHead(78 * s, 76 * s, 15 * s, 'rgba(240,178,90,0.8)', '#120e09', 1.6 * s);
+  text('thir', 108 * s, 84 * s, 22 * s, 'rgba(240,178,90,0.8)', 6 * s, 600);
+  text('tracks every packet', 108 * s, 104 * s, 11 * s, 'rgba(240,178,90,0.35)', 2 * s);
+  grain(6);
+}
+if (v === 'C') {            // Blueprint: annotated bear figure on a drafting grid
+  bg([[0, '#0f1d31'], [0.6, '#0a1524'], [1, '#060d17']]);
+  for (let x = 0; x < W; x += 24 * s) { g.fillStyle = x % (120 * s) < 1 ? 'rgba(110,168,255,0.075)' : 'rgba(110,168,255,0.03)'; g.fillRect(x, 0, 1, H); }
+  for (let y = 0; y < H; y += 24 * s) { g.fillStyle = y % (120 * s) < 1 ? 'rgba(110,168,255,0.075)' : 'rgba(110,168,255,0.03)'; g.fillRect(0, y, W, 1); }
+  const b = bearGraph(W - 700 * s, H - 470 * s, 1.15 * s);
+  drawGraph(b, 'rgba(143,188,255,0.30)', 'rgba(190,215,255,0.75)', 1.1 * s, 2.2 * s, true);
+  const lab = [[OUT.length, 'eth0', -70, -30], [OUT.length + 1, '10.0.2.15', -20, -40], [OUT.length + 3, 'gw .2.2', 10, -36], [OUT.length + 5, 'dns .2.3', 20, 40]];
+  for (const [i, t, dx, dy] of lab) {
+    const [x, y] = b.pts[i]; g.strokeStyle = 'rgba(143,188,255,0.28)'; g.lineWidth = 1 * s;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + dx * s, y + dy * s); g.stroke();
+    text(t, x + dx * s + (dx < 0 ? -4 : 4) * s, y + dy * s - 4 * s, 11 * s, 'rgba(190,215,255,0.55)', 1 * s, 500, dx < 0 ? 'right' : 'left');
+  }
+  const y0 = H - 470 * s + 320 * 1.15 * s + 18 * s, x0 = W - 700 * s + 20 * 1.15 * s, x1 = W - 700 * s + 492 * 1.15 * s;
+  g.strokeStyle = 'rgba(143,188,255,0.25)'; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y0); g.moveTo(x0, y0 - 5 * s); g.lineTo(x0, y0 + 5 * s); g.moveTo(x1, y0 - 5 * s); g.lineTo(x1, y0 + 5 * s); g.stroke();
+  text('fig. 1  ursus retis', (x0 + x1) / 2, y0 + 20 * s, 11 * s, 'rgba(190,215,255,0.45)', 2 * s, 500, 'center');
+  const bx = 56 * s, by = H - 128 * s; g.strokeStyle = 'rgba(143,188,255,0.35)'; g.strokeRect(bx, by, 250 * s, 72 * s);
+  g.beginPath(); g.moveTo(bx, by + 40 * s); g.lineTo(bx + 250 * s, by + 40 * s); g.moveTo(bx + 150 * s, by + 40 * s); g.lineTo(bx + 150 * s, by + 72 * s); g.stroke();
+  text('THIR', bx + 14 * s, by + 28 * s, 20 * s, 'rgba(210,228,255,0.85)', 8 * s, 600);
+  text('NETWORK OS', bx + 14 * s, by + 61 * s, 10 * s, 'rgba(190,215,255,0.5)', 2 * s);
+  text('REV 0.1', bx + 164 * s, by + 61 * s, 10 * s, 'rgba(190,215,255,0.5)', 2 * s);
+  grain(5);
+}
+if (v === 'D') {            // Minimal: one small bear mark, warm charcoal
+  bg([[0, '#1a1518'], [0.5, '#110e10'], [1, '#09080a']], 0.5, 1.0);
+  bearHead(W / 2, H - 132 * s, 20 * s, 'rgba(236,214,205,0.62)', '#141113', 1.6 * s);
+  text('thir', W / 2 + 4 * s, H - 74 * s, 18 * s, 'rgba(236,214,205,0.62)', 9 * s, 500, 'center');
+  grain(5);
+}
+</script>
