@@ -7,9 +7,9 @@ No distro, no systemd, no busybox. One kernel image holds the whole userspace as
 Userspace: a PID 1 (`init`), a shell with a line editor (`nsh`), a DHCP client, `login`/`passwd` with Argon2id, `den` (a tiling terminal GUI drawn straight on the framebuffer),
 an editor (`edit`, also `nano`), `find`, `top` and `fetch` (also `neofetch`). It boots in QEMU (aarch64 with HVF, or x86_64 emulated), in VirtualBox on Apple Silicon, and from a USB stick on a UEFI PC.
 
-![thir demo: first-boot setup, login, neofetch, help, files, edit, find, split pane with top](docs/demo.gif)
+![thir running in a VirtualBox window on a Mac: boot, first-boot setup, help, files, edit, find, split pane](docs/demo.gif)
 
-Same recording as video: [docs/demo.mp4](docs/demo.mp4) (90 s, H.264). Recorded headless by `test/demo.sh` (QEMU `sendkey` and `screendump`, no window).
+Same recording as video: [docs/demo.mp4](docs/demo.mp4) (112 s, 2580x1790, H.264). Recorded in the VirtualBox window on an Apple Silicon Mac by `scripts/vm-demo.sh` (keys sent with `VBoxManage controlvm keyboardputstring`, macOS `screencapture -v`). The stills below come from the headless `test/demo.sh`.
 
 | | |
 |---|---|
@@ -36,6 +36,7 @@ Step 2: `den`, a tiling terminal GUI on the framebuffer. Phase 3: a persistent d
 | `./run.sh gui` | Boots den full screen in QEMU (1 guest pixel = 1 Retina pixel); serial shell stays on this terminal. `GUI_RES=WxH` overrides the size (default: asked from macOS), `GUI_FULL=0` uses a window |
 | `./test/smoke.sh` | Headless two-boot test on a fresh disk (first-boot setup, files, passwd, persistence), exit 0 = PASS |
 | `./test/uefi.sh` | Boots `thir.img` on edk2 firmware (x86_64: a USB stick on xHCI; aarch64: virtio-blk), two boots, checks `/data` and persistence |
+| `DEMO_PW=... scripts/vm-demo.sh out.mov` | Records the VirtualBox window (VM `thir` on first boot, window in front; needs Screen Recording permission for the terminal) |
 | `DEMO_PW=... ./test/demo.sh` | Records `docs/demo.mp4`, `docs/demo.gif` and `docs/screenshots/*.png` headless (aarch64, 2560x1600, first user `thir`); refuses to run without `DEMO_PW`, which is never stored |
 | `./test/gui.sh [out.png]` | Headless GUI test: logs in and types via the QEMU monitor on its own fresh disk, screendumps, checks the picture (aarch64) |
 | `docker volume rm thir-build` | Clean kernel tree and caches |
