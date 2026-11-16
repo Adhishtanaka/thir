@@ -33,8 +33,9 @@ still() { local f=$tmp/$1.ppm; mon "screendump $f"; sleep 1.5; [ -s "$f" ] || { 
   magick "$f" -define png:compression-level=9 "$SHOTS/$1.png"; }
 wait_log() { local t=$((SECONDS + $2)); until tr -d '\r' < "$log" | grep -qE "$1"; do
   kill -0 "$qpid" 2>/dev/null && (( SECONDS < t )) || { echo "FAIL: did not see /$1/ within $2s"; exit 1; }; sleep 0.2; done; }
+# raw PPM frames: QEMU encodes PNG on its main loop, which stalls the guest and drops typed keys
 capture() { local n=0 f; while :; do f=$fr/$(printf %05d $n).ppm; mon "screendump $f"; n=$((n + 1))
-  for _ in $(seq 1 50); do [ -s "$f" ] && break; sleep 0.02; done; sleep 0.12; done; }
+  for _ in $(seq 1 50); do [ -s "$f" ] && break; sleep 0.02; done; sleep 0.05; done; }
 
 wait_log 'den: 2560x1600 32bpp$' 30; wait_log '^thir: init ready$' 5; sleep 4
 t0=$(date +%s); capture & cpid=$!
@@ -70,8 +71,9 @@ n=$(ls "$fr"/*.ppm | wc -l | tr -d ' ')
 fps=$(awk -v n="$n" -v s="$secs" 'BEGIN { printf "%.3f", n / s }')
 if grep -qF -- "$DEMO_PW" "$log"; then echo "FAIL: the password is in the serial log"; exit 1; fi
 echo "captured $n frames in ${secs}s ($fps fps)"
-ffmpeg -v error -y -framerate "$fps" -i "$fr/%05d.ppm" -vf "scale=1280:800:flags=lanczos,format=yuv420p" -r 10 \
-  -c:v libx264 -preset slow -crf 27 -movflags +faststart docs/demo.mp4
+# full resolution, text-friendly quality, 30 fps playback
+ffmpeg -v error -y -framerate "$fps" -i "$fr/%05d.ppm" -vf "format=yuv420p" -r 30 \
+  -c:v libx264 -preset slow -crf 18 -tune animation -movflags +faststart docs/demo.mp4
 ffmpeg -v error -y -framerate "$fps" -i "$fr/%05d.ppm" -vf "fps=${GIF_FPS:-6},scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" docs/demo.gif
 ls -l docs/demo.mp4 docs/demo.gif "$SHOTS"
 echo "PASS: docs/demo.mp4 docs/demo.gif $SHOTS/*.png"
