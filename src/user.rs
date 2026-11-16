@@ -7,7 +7,7 @@ use subtle::ConstantTimeEq;
 pub const USERS: &str = "/data/etc/users";
 pub const HOME_ROOT: &str = "/data/home";
 pub const FIRST_UID: u32 = 1000;
-pub const MIN_PASSWORD: usize = 8;
+pub const MIN_PASSWORD: usize = 5;
 pub const MAX_PASSWORD: usize = 128; // bytes
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -174,7 +174,7 @@ mod tests {
         for bad in ["", "root", "Ann", "1a", "-a", "a b", "a:b", &"a".repeat(33)] { assert!(!valid_name(bad), "{bad}"); }
     }
     #[test] fn password_length() {
-        assert!(new("ann", 1000, "short", [0; 16], &FAST).is_err());
+        assert!(new("ann", 1000, "abcd", [0; 16], &FAST).is_err());   // 4 bytes, below MIN_PASSWORD
         assert!(new("ann", 1000, &"x".repeat(129), [0; 16], &FAST).is_err());
         assert!(new("ann", 1000, &"x".repeat(128), [0; 16], &FAST).is_ok());
     }

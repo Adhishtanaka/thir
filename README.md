@@ -121,7 +121,7 @@ The guest clock comes from the RTC (PL031 on aarch64, CMOS on x86_64), so the ba
 
 ## Accounts and sessions
 
-There is no root login. On the first boot `login` asks you to create the first user (name `a-z 0-9 _ -`, password 8 to 128 bytes, uid 1000).
+There is no root login. On the first boot `login` asks you to create the first user (name `a-z 0-9 _ -`, password 5 to 128 bytes, uid 1000).
 After that every console asks `thir login:`. Passwords are hashed with Argon2id (m=19456 KiB, t=2, p=1, 16 byte random salt),
 stored with their parameters, and compared in constant time. After a login `login` makes the home, sets umask 077,
 drops all privileges (`setgroups`, `setgid`, `setuid`, all checked) and execs `nsh`. Files you create are 0600, directories 0700.
