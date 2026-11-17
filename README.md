@@ -85,8 +85,6 @@ You need a Mac with Docker and QEMU (`brew install qemu`).
 ./run.sh gui        # start it in a window
 ```
 
-How it all works (boot, desktop, login, disk layout, tests) is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
 ## License
 
 thir's own code is under the [MIT License](LICENSE). The Linux kernel inside the images is GPL-2.0 (unmodified 6.12.117, [source](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.117.tar.xz)), and the Terminus font is under the SIL Open Font License.
