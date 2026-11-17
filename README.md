@@ -18,10 +18,24 @@ Full video: [docs/demo.mp4](docs/demo.mp4) (about 2 minutes, recorded in Virtual
 - A shell with Tab completion and history (Up and Down arrows).
 - A few apps: `edit` (a simple editor, also called `nano`), `find`, `top` (CPU and memory use) and `neofetch`.
 
-| | |
-|---|---|
-| ![login](docs/screenshots/login.png) | ![neofetch](docs/screenshots/neofetch.png) |
-| ![editor](docs/screenshots/edit.png) | ![split screen with top](docs/screenshots/split-top.png) |
+## How it works
+
+When you turn it on, the computer's firmware loads the Linux kernel. The kernel starts `init`, my first program, and from there everything is thir's own Rust code.
+
+```mermaid
+flowchart TD
+    A[Power on] --> B[UEFI firmware]
+    B --> C[Linux kernel]
+    C --> D["init: starts everything"]
+    D --> E["den: the desktop"]
+    D --> F["dhcp: gets an internet address"]
+    E --> G["login: checks your password"]
+    G --> H["nsh: your shell"]
+    H --> I["your apps: edit, find, top, neofetch"]
+    D -.-> J[("disk: your user and your files")]
+```
+
+The desktop, the login and the network helper run with full rights. Your shell and your apps run as you, so they can only touch your own files.
 
 ## Try it
 
