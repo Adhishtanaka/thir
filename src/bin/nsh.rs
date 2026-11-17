@@ -11,7 +11,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ("session", &[("whoami", "your user name"), ("history", "command history"), ("help [cmd]", "this text, or one command"), ("exit", "log out")]),
     ("programs", &[("edit [file]", "full-screen editor (also: nano)"), ("find [dir] [-name P]", "find files; P uses * and ?; -type f|d"), ("top", "CPU, memory and processes"),
         ("fetch", "system summary with a bear (also: neofetch)"),
-        ("curl [opts] URL", "download a page or file (curl -h for options)"), ("agent [question]", "chat with an AI; will build apps (agent -h)"),
+        ("curl [opts] URL", "download a page or file (curl -h for options)"), ("agent [question]", "chat with an AI, or build apps (agent -h)"),
         ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
 ];
 
@@ -26,7 +26,7 @@ fn help_text() -> String {
         o.push('\n');
         for (i, (u, d)) in rows.iter().enumerate() { o += &format!("  {:<8} {:<20} {}\n", if i == 0 { sec } else { "" }, u, d); }
     }
-    o + "\nApps in ~/apps run by their name; agent list shows them.\nRedirect output with > file or >> file.\nKeys: Tab completes, Up/Down history, Ctrl-A/E start/end, Ctrl-U/K cut to\nstart/end, Ctrl-W cut word, Ctrl-L clear screen, Ctrl-C cancel, Ctrl-D exit.\n"
+    o + "\nApps you make with agent build run by their name.\nRedirect output with > file or >> file.\nKeys: Tab completes, Up/Down history, Ctrl-A/E start/end, Ctrl-U/K cut to\nstart/end, Ctrl-W cut word, Ctrl-L clear screen, Ctrl-C cancel, Ctrl-D exit.\n"
 }
 
 fn help_cmd(name: &str) -> Option<String> {

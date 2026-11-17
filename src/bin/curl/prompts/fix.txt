@@ -1,0 +1,8 @@
+The app below fails. Find the root cause and return the whole fixed app.
+===ERROR===
+{error}
+===SPEC===
+{spec}
+===CURRENT CODE===
+{code}
+Fix the cause, not only the line. Keep every feature, the look, the keys and the stored data format. If a value can be nil, check it and show a message instead of crashing. Reply in the OUTPUT format with the same name.

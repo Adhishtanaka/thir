@@ -55,6 +55,7 @@ class H(BaseHTTPRequestHandler):
         auth = "auth" if (self.headers.get("authorization") or self.headers.get("x-api-key")) else "noauth"
         if p == "/echo": self.send(200, ("POST %s %s\n" % ("same" if body == BIN else "different", auth)).encode())
         elif p in ("/anthropic/v1/messages", "/refuse/v1/messages"): self.anthropic(body, auth, p.startswith("/refuse"))
+        elif p == "/build/v1/messages": self.build(body)
         elif p == "/openai/v1/chat/completions": self.openai(body, auth)
         elif p == "/err/v1/chat/completions": self.send(401, b'{"error":{"message":"Incorrect API key provided"}}', "application/json")
         else: self.send(404, b"not found\n")
@@ -88,6 +89,21 @@ class H(BaseHTTPRequestHandler):
               d({"type": "message_delta", "delta": {"stop_reason": "refusal", "stop_details": {"type": "refusal", "category": "cyber", "explanation": None}} if refuse else {"stop_reason": "end_turn"}}),
               d({"type": "message_stop"})]
         self.sse(ev)
+    def build(self, raw):   # app builds: lenient (no key, no version headers), but stream and the build effort are checked
+        j = json.loads(raw)
+        if j.get("stream") is not True or j.get("output_config") != {"effort": "medium"}: return self.send(400, err("build request")[1], "application/json")
+        m = j["messages"][-1]["content"]; app = lambda f: open(os.path.join(APPS, f)).read()
+        if "===ERROR===" in m: text = app("calc.reply")
+        elif "===CHANGE===" in m: text = "NO: thir apps cannot play sound." if "sound" in m.split("===SPEC===")[0] else app("calc2.reply")
+        elif "===SPEC===" in m: text = app("calc-bad.reply")
+        elif "===REQUEST===" in m: text = "NO: a recipe is not an app." if "lasagna" in m else app("calc.spec")
+        else: return self.send(400, err("unknown step")[1], "application/json")
+        d = lambda o: "event: %s\ndata: %s\n\n" % (o["type"], json.dumps(o, ensure_ascii=False))
+        lines = text.splitlines(True)
+        self.sse([d({"type": "message_start", "message": {"id": "m2", "model": "claude-opus-5-5", "role": "assistant", "content": []}}),
+                  d({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})]
+                 + [d({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "".join(lines[i:i + 8])}}) for i in range(0, len(lines), 8)]
+                 + [d({"type": "content_block_stop", "index": 0}), d({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}), d({"type": "message_stop"})])
     def openai(self, raw, auth):
         j = json.loads(raw)
         if auth != "noauth" or j.get("model") != "mock-model" or j.get("stream") is not True or j["messages"][0]["role"] != "system": return self.send(400, b'{"error":{"message":"mock: bad request"}}', "application/json")

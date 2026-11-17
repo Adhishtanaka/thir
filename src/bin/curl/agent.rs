@@ -6,18 +6,20 @@ use thir::{files::unsafe_char, http::{Body, Sse, Url}, json::{self, Json}, line:
 
 const SYS: &str = "The user reads your reply in a plain-text terminal, so prefer plain text over Markdown.";
 const FALLBACK_MODELS: [&str; 4] = ["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"];
-const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const MAX_ANSWER: usize = 4 << 20;
 const MAX_CONFIG: u64 = 16 * 1024;
 const IDLE: Duration = Duration::from_secs(120);
 
 pub const USAGE: &str = "usage: agent [-p PROVIDER] [-m MODEL] [-e EFFORT] [QUESTION...]
+       agent build \"IDEA\"        make a new app with AI, test it and open it
+       agent edit APP \"CHANGE\"   change an app (asks what to change if no text)
+       agent fix APP [\"PROBLEM\"] fix the last crash, or the problem you describe
        agent run APP [ARGS]      open an app (or just type its name)
-       agent list                list your apps
+       agent list | undo APP | rm APP
        agent --login PROVIDER | --logout PROVIDER | --providers
        agent --use PROVIDER [-m MODEL]
-  agent \"question\"   one answer, then exit
-  agent              a chat: /clear forgets it, /exit or Ctrl-D quits
+  agent \"question\"   one answer, then exit;  agent   a chat (/clear, /exit)
   -p  provider: anthropic (default), openai, gemini, deepseek, ollama, or yours
   -m  model; anthropic uses claude-opus-5-5 unless you choose another
   -e  effort for anthropic: low (default), medium, high, xhigh, max
@@ -26,7 +28,7 @@ Your own providers go in ~/.config/thir/agent, one per line:
 agent --login PROVIDER asks for the API key without showing it and keeps it in
 ~/.config/thir/keys (only you can read it). Using an API costs money.
 Apps live in ~/apps. They can only draw, use the keys, keep their own data and
-reach the web sites you allow.
+reach the web sites you allow. Building costs API money (about 2 to 5 calls).
 ";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -319,13 +321,13 @@ fn me() -> u32 { unsafe { libc::getuid() } }
 fn refuse(path: &Path, why: &str) -> String { format!("agent: refusing to read {}: it {why}. Delete it (rm) and run agent --login again.", path.display()) }
 
 /// (config, its text). Missing file = empty config.
-fn load_config(home: &Path) -> Result<(Config, String), String> {
+pub fn load_config(home: &Path) -> Result<(Config, String), String> {
     let path = home.join(".config/thir/agent");
     let text = read_private(&path, me(), MAX_CONFIG).map_err(|w| refuse(&path, &w))?.unwrap_or_default();
     parse_config(&text).map(|c| (c, text)).map_err(|e| format!("agent: {}: {e}", path.display()))
 }
 
-fn saved_key(home: &Path, name: &str) -> Result<Option<String>, String> {
+pub fn saved_key(home: &Path, name: &str) -> Result<Option<String>, String> {
     let path = home.join(".config/thir/keys").join(name);
     read_private(&path, me(), 1024).map_err(|w| refuse(&path, &w))
 }
@@ -336,13 +338,27 @@ fn key_status(home: &Path, p: &Provider) -> String {
     match saved_key(home, &p.name) { Ok(Some(s)) if s.trim_end().split_once(' ').is_some_and(|(b, k)| b == p.base && valid_key(k)) => "key saved".into(), Ok(_) => "no key".into(), Err(_) => "key file refused".into() }
 }
 
+/// Provider, model and key chosen from the command line: the one path to a key. Err = (exit code, message).
+pub struct Chosen { pub p: Provider, pub model: String, pub key: Option<String>, pub effort: String }
+impl Chosen { pub fn ctx(&self) -> Ctx<'_> { Ctx { p: &self.p, model: &self.model, key: self.key.clone(), effort: &self.effort } } }
+pub fn ctx_for(home: &Path, cfg: &Config, prov: Option<&str>, model: Option<&str>, effort: Option<&str>, default_effort: &str) -> Result<Chosen, (i32, String)> {
+    let (p, model) = resolve(cfg, prov, model).map_err(|m| (2, m))?;
+    if effort.is_some() && p.proto != Proto::Anthropic { return Err((2, "agent: -e works only with the anthropic protocol".into())); }
+    let saved = if p.needs_key() { saved_key(home, &p.name).map_err(|m| (1, m))? } else { None };
+    let key = key_for(&p, &|v| std::env::var(v).ok(), saved.as_deref()).map_err(|m| (1, m))?;
+    Ok(Chosen { p, model, key, effort: effort.unwrap_or(default_effort).to_string() })
+}
+
 fn fail(m: &str) -> i32 { eprintln!("{m}"); 1 }
 
 fn val(it: &mut impl Iterator<Item = String>, n: &str) -> String { it.next().unwrap_or_else(|| { eprintln!("agent: {n} needs a value (agent -h)"); std::process::exit(2) }) }
 
 pub fn main(args: Vec<String>) -> i32 {
     // app commands come first and never reach the key code: running an app reads no key and no provider config
-    match args.first().map(String::as_str) { Some("run") => return crate::make::run(&args[1..]), Some("list") => return crate::make::list(&args[1..]), _ => {} }
+    match args.first().map(String::as_str) {
+        Some(c @ ("run" | "list" | "undo" | "rm" | "build" | "edit" | "fix")) => return crate::make::command(c, &args[1..]),
+        _ => {}
+    }
     let (mut prov, mut model, mut effort, mut words) = (None, None, None, vec![]);
     let (mut login, mut logout, mut use_p, mut list) = (None, None, None, false);
     let mut it = args.into_iter();
@@ -385,11 +401,9 @@ pub fn main(args: Vec<String>) -> i32 {
         let dir = match private_dir(&home, &[]) { Ok(d) => d, Err(m) => return fail(&m) };
         return match write_private(&dir.join("agent"), &out) { Ok(()) => { println!("agent will use {} ({m}) from now on", p.name); 0 } Err(e) => fail(&format!("agent: cannot save: {e}")) };
     }
-    let (p, model) = match resolve(&cfg, prov.as_deref(), model.as_deref()) { Ok(r) => r, Err(m) => { eprintln!("{m}"); return 2 } };
-    if effort.is_some() && p.proto != Proto::Anthropic { eprintln!("agent: -e works only with the anthropic protocol"); return 2; }
-    let saved = if p.needs_key() { match saved_key(&home, &p.name) { Ok(s) => s, Err(m) => return fail(&m) } } else { None };
-    let key = match key_for(&p, &|v| std::env::var(v).ok(), saved.as_deref()) { Ok(k) => k, Err(m) => return fail(&m) };
-    let c = Ctx { p: &p, model: &model, key, effort: effort.as_deref().unwrap_or("low") };
+    let ch = match ctx_for(&home, &cfg, prov.as_deref(), model.as_deref(), effort.as_deref(), "low") { Ok(c) => c, Err((code, m)) => { eprintln!("{m}"); return code } };
+    let (p, model) = (&ch.p, &ch.model);
+    let c = ch.ctx();
     let mut msgs: Vec<Msg> = vec![];
     if !words.is_empty() {
         msgs.push(("user", words.join(" ")));

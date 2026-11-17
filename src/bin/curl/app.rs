@@ -693,7 +693,7 @@ pub fn run(l: Launch) -> i32 {
     match session(&l) {
         Ok(()) => 0,
         Err((ctx, text)) => {
-            eprintln!("{} stopped: {}", l.name, text.lines().next().unwrap_or(""));
+            eprintln!("{} stopped: {}\n(agent fix {} asks the AI to fix it)", l.name, text.lines().next().unwrap_or(""), l.name);
             let saved: String = format!("{ctx}{text}").chars().take(4096).collect();   // the saved copy says what the app was doing
             let _ = crate::agent::write_private(&l.dir.join("last_error"), &saved);
             1

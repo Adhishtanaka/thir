@@ -99,7 +99,7 @@ run 'agent list' '^calc +v1 +A calculator +net: none$'
 send calc; wait_for 'q quit'; sendk '1+2='; wait_for '= 3'; sendk q; wait_for '\$ $'           # an app by name; net none needs no approval
 send hello; wait_for 'connect to 10\.0\.2\.2:18080 \(not encrypted\)'; send n; wait_for 'did not run'; wait_for '\$ $'
 send hello; wait_for 'connect to 10\.0\.2\.2:18080 \(not encrypted\)'; send y; wait_for 'hello from mock'; wait_for 'tz 05:30'; sendk q; wait_for '\$ $'   # tz 05:30: os.date follows ~/.tz
-run 'cat apps/hello/app.json' '"approved":\["http://10\.0\.2\.2:18080"\]'
+run 'cat .config/thir/approvals' '^hello http://10\.0\.2\.2:18080$'   # approvals live outside the app dir; hello.json ships a fake "approved" list that was ignored
 send hello; wait_for 'hello from mock'; sendk q; wait_for '\$ $'                              # approved once: no question the second time
 send 'agent run crash'; wait_for 'q quit'; sendk l; wait_for 'crash stopped: .*more than 2 s' 20; wait_for '\$ $'   # an endless loop is stopped
 send 'agent run crash'; wait_for 'q quit'; sendk x; wait_for 'crash stopped: main\.lua:'; wait_for '\$ $'
@@ -107,6 +107,17 @@ run 'cat apps/crash/last_error' 'main\.lua:'
 send $'cr\t'; wait_for 'q quit'; sendk q; wait_for '\$ $'                                      # Tab completes an app name; the send's newline runs it
 run 'agent run nosuch' 'no app called nosuch'
 run 'agent run ../calc' 'no app called'
+# agent build / edit / fix / undo / rm against the mock (apps made by the AI)
+send 'write .config/thir/agent'; send 'provider mockb anthropic http://10.0.2.2:18080/build/v1'; run '.' '\$ $'
+send 'agent build -p mockb a calculator'; wait_for 'fixing \(1/3\)'; wait_for 'saved calc-2 v1'
+wait_for 'q quit'; sendk '1+2='; wait_for '= 3'; sendk q; wait_for 'Change something'; send ''; wait_for '\$ $'
+run 'agent list' '^calc-2 +v1'
+send 'agent edit -p mockb calc-2 "add memory"'; wait_for 'saved calc-2 v2'; wait_for 'Calc\+'; sendk q; wait_for 'Change'; send ''; wait_for '\$ $'
+run 'agent undo calc-2' 'back to version 1'
+run 'agent fix calc-2' 'no saved crash'
+run 'agent build -p mockb how to cook lasagna' 'not an app I can build: a recipe'
+send 'agent rm calc-2'; wait_for 'Delete calc-2'; send y; wait_for 'removed'
+run 'agent list' '^calc +v1'
 send passwd; wait_for 'old password: '
 send "$PWX"; wait_for 'passwd: wrong password'; t0=$SECONDS
 wait_for 'old password: '
