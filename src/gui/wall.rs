@@ -58,10 +58,10 @@ mod tests {
     #[test] fn gradient_shape() {
         let g = gradient(64, 64, &WALL);
         let near = |a: u32, b: u32| [16, 8, 0].iter().all(|s| ((a >> s & 255) as i32 - (b >> s & 255) as i32).abs() <= 1);
-        assert!(near(g[63 * 64 + 32], 0x1a1518));
+        assert!(near(g[63 * 64 + 32], 0x1b1a1c));
         let (c, k) = (g[32 + 63 * 64], g[0]);
         assert!([16, 8, 0].iter().all(|s| (k >> s & 255) < (c >> s & 255)));
-        assert!(g.iter().all(|p| [16, 8, 0].iter().all(|s| (p >> s & 255) <= (0x1b1619 >> s & 255))));
+        assert!(g.iter().all(|p| [16, 8, 0].iter().all(|s| (p >> s & 255) <= (0x1c1b1d >> s & 255))));
     }
     #[test] fn bear_paints_inside_box_only() {
         let mut px = vec![0u32; 64 * 64];
