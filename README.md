@@ -7,9 +7,9 @@ No distro, no systemd, no busybox. One kernel image holds the whole userspace as
 Userspace: a PID 1 (`init`), a shell with a line editor (`nsh`), a DHCP client, `login`/`passwd` with Argon2id, `den` (a tiling terminal GUI drawn straight on the framebuffer),
 an editor (`edit`, also `nano`), `find`, `top` and `fetch` (also `neofetch`). It boots in QEMU (aarch64 with HVF, or x86_64 emulated), in VirtualBox on Apple Silicon, and from a USB stick on a UEFI PC.
 
-![thir running in a VirtualBox window on a Mac: boot, first-boot setup, help, files, edit, find, split pane](docs/demo.gif)
+![thir in VirtualBox full screen on a Mac: boot, first-boot setup, neofetch, help, files, edit, find, split pane](docs/demo.gif)
 
-Same recording as video: [docs/demo.mp4](docs/demo.mp4) (112 s, 2580x1790, H.264). Recorded in the VirtualBox window on an Apple Silicon Mac by `scripts/vm-demo.sh` (keys sent with `VBoxManage controlvm keyboardputstring`, macOS `screencapture -v`). The stills below come from the headless `test/demo.sh`.
+Same recording as video: [docs/demo.mp4](docs/demo.mp4) (115 s, 2936x1848, H.264). Recorded in VirtualBox full screen on an Apple Silicon Mac, from an empty disk by `scripts/vm-demo.sh` (keys sent with `VBoxManage controlvm keyboardputstring`, macOS `screencapture -v`). The stills below come from the headless `test/demo.sh`.
 
 | | |
 |---|---|

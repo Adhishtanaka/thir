@@ -10,7 +10,7 @@ cmd() { typ "$1"; sleep 0.4; ret; sleep "${2:-1.6}"; }
 ctrl() { vm keyboardputscancode 1d "$1" "$2" 9d; }        # Ctrl + key (make, break)
 secret() { vm keyboardputstring "$DEMO_PW"; }             # one call: the password is never typed char by char into a log
 
-osascript -e 'tell application id "org.virtualbox.app.VirtualBoxVM" to activate'; sleep 1   # the VM window must be in front
+osascript -e 'tell application id "org.virtualbox.app.VirtualBoxVM" to activate'; sleep 1   # the VM must be in front (full screen: VBoxManage setextradata thir GUI/Fullscreen true)
 screencapture -v -V 150 "$OUT" & rec=$!
 sleep 1; vm reset                                         # boot from the firmware on camera
 sleep 16
