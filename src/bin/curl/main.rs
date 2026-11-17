@@ -1,6 +1,8 @@
 //! curl: thir's small HTTP/HTTPS client. Run as `agent` (a symlink to this binary) it is the AI chat instead.
 mod agent;
+mod app;
 mod conn;
+mod make;
 
 use conn::{body_err, exchange, NetErr};
 use std::{fs::{File, OpenOptions}, io::{self, Read, Write}, os::unix::fs::OpenOptionsExt, process::exit, time::{Duration, Instant}};

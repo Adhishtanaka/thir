@@ -14,10 +14,23 @@ pub fn unsafe_char(c: char) -> bool {
 /// Unsafe characters as '?', so a hostile file name cannot drive the terminal.
 pub fn printable(s: &str) -> String { s.chars().map(|c| if unsafe_char(c) { '?' } else { c }).collect() }
 
+/// An app name: a-z first, then a-z, 0-9 and '-', at most 20 characters.
+pub fn app_name_ok(s: &str) -> bool {
+    (1..=20).contains(&s.len()) && s.as_bytes()[0].is_ascii_lowercase() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Names an app may not take: every nsh builtin, every program in /bin, and the names agent itself uses. nsh's tests check it covers the builtins.
+pub const RESERVED: &[&str] = &["cd", "exit", "help", "date", "tz", "clear", "history", "pwd", "echo", "whoami", "mkdir", "rmdir", "touch", "rm", "mv", "cp", "write", "ls", "cat", "ip", "poweroff", "reboot",
+    "edit", "nano", "find", "top", "fetch", "neofetch", "curl", "agent", "passwd", "dhcp", "login", "den", "init", "nsh", "app", "apps"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test] fn printable_hides_control_bytes() { assert_eq!(printable("a\x1b[2Jb\n\u{202e}c\u{2028}"), "a?[2Jb??c?"); }
+    #[test] fn app_names() {
+        for n in ["a", "calc", "weather-2", "a1-b2", "abcdefghijklmnopqrst"] { assert!(app_name_ok(n), "{n}"); }
+        for n in ["", "1a", "-a", "A", "a_b", "a b", "a/b", "..", "abcdefghijklmnopqrstu", "é"] { assert!(!app_name_ok(n), "{n}"); }
+    }
     #[test] fn refused() { for p in ["/", "//", ".", "..", "a/..", "/data/home/x/.", ""] { assert!(rm_refuses(p).is_some(), "{p:?}"); } }
     #[test] fn allowed() { for p in ["a", "a/", "./a", "/data/home/x/docs", "..a"] { assert!(rm_refuses(p).is_none(), "{p:?}"); } }
 }

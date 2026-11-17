@@ -12,13 +12,15 @@ enum St { Ground, Esc, EscSkip, Csi, Osc }
 pub struct Term {
     pub cols: usize, pub rows: usize, pub cells: Vec<Cell>,
     pub cx: usize, pub cy: usize, pub cursor_on: bool, pub dirty: bool,
-    pen: Cell, wrap: bool, st: St, params: Vec<u32>, private: bool, need: u8, acc: u32,
+    /// Window title set by `ESC ] 0 ; text BEL` or `ESC ] 2 ; text BEL` (printable, at most 40 characters); `title_changed` tells the bar to redraw.
+    pub title: String, pub title_changed: bool,
+    pen: Cell, wrap: bool, st: St, params: Vec<u32>, private: bool, need: u8, acc: u32, osc: Vec<u8>,
 }
 
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
         let (cols, rows) = (cols.max(1), rows.max(1));
-        Term { cols, rows, cells: vec![BLANK; cols * rows], cx: 0, cy: 0, cursor_on: true, dirty: true, pen: BLANK, wrap: false, st: St::Ground, params: vec![0], private: false, need: 0, acc: 0 }
+        Term { cols, rows, cells: vec![BLANK; cols * rows], cx: 0, cy: 0, cursor_on: true, dirty: true, title: String::new(), title_changed: false, pen: BLANK, wrap: false, st: St::Ground, params: vec![0], private: false, need: 0, acc: 0, osc: vec![] }
     }
 
     /// Keeps the top-left part of the old content.
@@ -56,13 +58,14 @@ impl Term {
             self.need = 0; self.put('\u{FFFD}');
         }
         match (self.st, b) {
+            (St::Osc, 0x07) => { self.st = St::Ground; self.end_osc(); }
+            (St::Osc, 0x1B) => { self.st = St::Esc; self.end_osc(); }   // ESC \ ends it too; the \ is then swallowed as usual
             (_, 0x1B) => self.st = St::Esc,
-            (_, 0x18 | 0x1A) => self.st = St::Ground,
-            (St::Osc, 0x07) => self.st = St::Ground,
-            (St::Osc, _) => {}
+            (_, 0x18 | 0x1A) => self.st = St::Ground,   // CAN and SUB abandon an OSC without applying it
+            (St::Osc, _) => if self.osc.len() < 128 { self.osc.push(b) },
             (_, 0x00..=0x1F) => self.control(b),
             (St::Esc, b'[') => { self.st = St::Csi; self.params.clear(); self.params.push(0); self.private = false; }
-            (St::Esc, b']') => self.st = St::Osc,
+            (St::Esc, b']') => { self.st = St::Osc; self.osc.clear(); }
             (St::Esc, 0x20..=0x2F) => self.st = St::EscSkip,   // e.g. ESC ( B: one more byte to ignore
             (St::Esc | St::EscSkip, _) => self.st = St::Ground,
             (St::Csi, b'0'..=b'9') => { let l = self.params.last_mut().unwrap(); *l = (*l * 10 + (b - b'0') as u32).min(9999); }
@@ -78,6 +81,13 @@ impl Term {
             (St::Ground, 0x7F) => {}
             (St::Ground, _) => self.put('\u{FFFD}'),
         }
+    }
+
+    fn end_osc(&mut self) {
+        let t = String::from_utf8_lossy(&std::mem::take(&mut self.osc)).into_owned();
+        let Some(text) = t.strip_prefix("0;").or_else(|| t.strip_prefix("2;")) else { return };
+        let title: String = text.chars().filter(|c| !crate::files::unsafe_char(*c)).take(40).collect();
+        if title != self.title { self.title = title; self.title_changed = true; }
     }
 
     fn control(&mut self, b: u8) {
@@ -181,6 +191,20 @@ mod tests {
     #[test] fn split_utf8_and_unknown_sequences() {
         let mut t = Term::new(10, 1); t.feed(&[0xE2, 0x82]); t.feed(&[0xAC]); t.feed(b"\x1b]0;title\x07\x1b(B\x1b[?1049h\x1b[5nx");
         assert_eq!(row(&t, 0), "€x");
+    }
+    #[test] fn osc_title() {
+        let mut t = Term::new(10, 1);
+        t.feed(b"\x1b]2;weather\x07"); assert_eq!(t.title, "weather"); assert!(std::mem::take(&mut t.title_changed));
+        t.feed(b"\x1b]2;weather\x07"); assert!(!t.title_changed);
+        t.feed(b"\x1b]0;a b\x1b\\x"); assert_eq!(t.title, "a b"); assert_eq!(row(&t, 0), "x");
+        t.feed(b"\x1b]2;\x07"); assert_eq!(t.title, "");
+        t.feed(b"\x1b]2;a\x01\x7fb\x1b[2Jc\x07"); assert_eq!(t.title, "ab");   // controls dropped; the ESC ends the title and the rest is a normal sequence
+    }
+    #[test] fn osc_title_limits() {
+        let mut t = Term::new(10, 1);
+        t.feed(b"\x1b]2;"); t.feed(&[b'z'; 200]); t.feed(b"\x07"); assert_eq!(t.title.chars().count(), 40);
+        t.feed(b"\x1b]2;gone\x18"); t.feed(b"\x07"); assert_eq!(t.title.chars().count(), 40);   // CAN: not applied
+        t.feed(b"\x1b]52;c;aGk=\x07"); assert_eq!(t.title.chars().count(), 40);                  // other OSC numbers are ignored
     }
     #[test] fn random_bytes_never_panic() {
         let mut s = 0x1234_5678u32; let mut t = Term::new(7, 4);

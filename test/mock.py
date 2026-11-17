@@ -12,6 +12,7 @@ sh("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", "srv.key", "-ou
 open(os.path.join(W, "ext"), "w").write("subjectAltName=IP:10.0.2.2\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n")
 sh("openssl", "x509", "-req", "-in", "srv.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "2", "-out", "srv.pem", "-extfile", "ext")
 
+APPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps")   # canned apps for the app tests
 BIN = bytes(range(256))
 USER_TEXT = "mock reply %d café"
 
@@ -45,6 +46,7 @@ class H(BaseHTTPRequestHandler):
         elif p == "/ca.pem": self.send(200, open(os.path.join(W, "ca.pem"), "rb").read())
         elif p == "/slow":
             self.send_response(200); self.send_header("Content-Length", "5"); self.end_headers(); self.wfile.flush(); time.sleep(5); self.wfile.write(b"late\n")
+        elif p.startswith("/apps/") and "/" not in p[6:] and not p[6:].startswith(".") and os.path.isfile(os.path.join(APPS, p[6:])): self.send(200, open(os.path.join(APPS, p[6:]), "rb").read())
         elif p == "/downgrade": self.redirect("http://10.0.2.2:18080/hello")
         else: self.send(404, b"not found\n")
     do_HEAD = do_GET

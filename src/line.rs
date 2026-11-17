@@ -39,6 +39,11 @@ impl Decoder {
         }
     }
 
+    /// True while the decoder holds only an ESC: a bare Esc key, or the start of a sequence whose rest has not come yet.
+    pub fn waiting_esc(&self) -> bool { self.esc == [0x1b] }
+    /// Gives up on that ESC (the caller waited and nothing followed): true if there was one, which was then a bare Esc key.
+    pub fn lone_esc(&mut self) -> bool { let w = self.waiting_esc(); if w { self.esc.clear(); } w }
+
     pub fn decode(&mut self, bytes: &[u8]) -> Vec<Key> {
         let mut out = vec![];
         for &b in bytes {
@@ -162,6 +167,14 @@ impl Editor {
 mod tests {
     #[test] fn prefix_never_ends_in_lone_backslash() { assert_eq!(super::common_prefix(&["a\\ b".into(), "a\\>c".into()]), "a"); }
     use super::*;
+    #[test] fn lone_esc_is_a_bare_esc_key() {
+        let mut d = Decoder::new();
+        assert!(d.decode(b"\x1b").is_empty()); assert!(d.waiting_esc());
+        assert!(d.lone_esc()); assert!(!d.waiting_esc() && !d.lone_esc());
+        assert_eq!(d.decode(b"\x1b[A"), vec![Key::Up]); assert!(!d.lone_esc());   // an arrow is not a bare Esc
+        d.decode(b"\x1b["); assert!(!d.waiting_esc() && !d.lone_esc());          // half a sequence is not either
+        assert_eq!(d.decode(b"Aa"), vec![Key::Up, Key::Char('a')]);
+    }
     const P: &str = "$ ";
     fn feed(e: &mut Editor, b: &[u8]) -> (Vec<Act>, Vec<u8>) {
         let (mut acts, mut out) = (vec![], vec![]);

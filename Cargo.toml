@@ -9,6 +9,7 @@ libc = "0.2"
 argon2 = { version = "=0.5.3", default-features = false, features = ["alloc"] }   # Argon2id KDF; the one crypto exception, see README
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }   # TLS for curl and ask; the second crypto exception, see README
 webpki-roots = "=1.0.12"                                                                         # Mozilla root certificates, compiled in
+mlua = { version = "=0.12.2", default-features = false, features = ["lua54", "vendored"] }   # Lua 5.4 (C source built into the binary) for the apps `agent run` opens; used only by curl/agent, see src/bin/curl/app.rs
 subtle = { version = "2", default-features = false }                              # constant-time hash compare
 
 [profile.release]

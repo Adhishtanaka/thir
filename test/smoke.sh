@@ -89,6 +89,24 @@ send $'ca\t/etc/res\t'   # Tab completion; the send's newline runs it. The echo 
 wait_for '^nameserver 10\.0\.2\.3$'
 wait_for '\$ $'
 run history '^ *[0-9]+ +whoami$'
+# apps (after the Tab test above: a calc app would make `ca` ambiguous)
+run 'agent list' 'no apps yet'
+run 'mkdir -p apps/calc apps/hello apps/crash' '\$ $'
+for a in calc hello crash; do   # canned apps from test/apps, fetched from the mock server
+  run "curl -s -o apps/$a/main.lua http://10.0.2.2:18080/apps/$a.lua" '\$ $'; run "curl -s -o apps/$a/app.json http://10.0.2.2:18080/apps/$a.json" '\$ $'
+done
+run 'agent list' '^calc +v1 +A calculator +net: none$'
+send calc; wait_for 'q quit'; sendk '1+2='; wait_for '= 3'; sendk q; wait_for '\$ $'           # an app by name; net none needs no approval
+send hello; wait_for 'connect to 10\.0\.2\.2:18080 \(not encrypted\)'; send n; wait_for 'did not run'; wait_for '\$ $'
+send hello; wait_for 'connect to 10\.0\.2\.2:18080 \(not encrypted\)'; send y; wait_for 'hello from mock'; wait_for 'tz 05:30'; sendk q; wait_for '\$ $'   # tz 05:30: os.date follows ~/.tz
+run 'cat apps/hello/app.json' '"approved":\["http://10\.0\.2\.2:18080"\]'
+send hello; wait_for 'hello from mock'; sendk q; wait_for '\$ $'                              # approved once: no question the second time
+send 'agent run crash'; wait_for 'q quit'; sendk l; wait_for 'crash stopped: .*more than 2 s' 20; wait_for '\$ $'   # an endless loop is stopped
+send 'agent run crash'; wait_for 'q quit'; sendk x; wait_for 'crash stopped: main\.lua:'; wait_for '\$ $'
+run 'cat apps/crash/last_error' 'main\.lua:'
+send $'cr\t'; wait_for 'q quit'; sendk q; wait_for '\$ $'                                      # Tab completes an app name; the send's newline runs it
+run 'agent run nosuch' 'no app called nosuch'
+run 'agent run ../calc' 'no app called'
 send passwd; wait_for 'old password: '
 send "$PWX"; wait_for 'passwd: wrong password'; t0=$SECONDS
 wait_for 'old password: '

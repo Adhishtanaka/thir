@@ -31,7 +31,7 @@ impl Raw {
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = restore_and_raise as extern "C" fn(i32) as usize;
             sa.sa_flags = 0;
-            for s in [libc::SIGTERM, libc::SIGHUP] { libc::sigaction(s, &sa, std::ptr::null_mut()); }
+            for s in [libc::SIGTERM, libc::SIGHUP, libc::SIGALRM, libc::SIGABRT] { libc::sigaction(s, &sa, std::ptr::null_mut()); }
         }
         let prev = std::panic::take_hook();   // panic = abort: the hook is the last code that runs
         std::panic::set_hook(Box::new(move |i| { if let Some(t) = SAVED.get() { unsafe { libc::tcsetattr(0, libc::TCSANOW, t); } } put(b"\x1b[?25h\x1b[0m\r\n"); prev(i); }));
@@ -40,8 +40,9 @@ impl Raw {
 }
 impl Drop for Raw { fn drop(&mut self) { put(b"\x1b[?25h\x1b[0m"); raw_off(&self.0); } }
 
-extern "C" fn restore_and_raise(sig: i32) {
+extern "C" fn restore_and_raise(sig: i32) {   // SIGALRM is the watchdog of `agent run` (nothing else sets an alarm); SIGABRT: a failed allocation under its memory limit
     if let Some(t) = SAVED.get() { unsafe { libc::tcsetattr(0, libc::TCSANOW, t); } }
+    unsafe { const B: &[u8] = b"\x1b[0m\x1b]2;\x07\x1b[?25h"; libc::write(1, B.as_ptr() as *const _, B.len()); }   // colours, den title and cursor back (write is async-signal-safe)
     unsafe { libc::signal(sig, libc::SIG_DFL); libc::raise(sig); }
 }
 

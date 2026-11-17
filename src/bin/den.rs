@@ -138,14 +138,15 @@ impl Den {
         fill(&mut self.back, w, Rect { x: 0, y: m.bar - 1, w: w as i32, h: 1 }, BORDER_DIM);
         let fw = self.font.w as i32;
         let n = self.layout.ids(self.area, m.gap).iter().position(|&id| id == self.layout.focus).map_or(1, |p| p + 1);
-        let mid = if self.uid.is_none() { "pane login".to_string() } else { format!("pane {n}/{}", self.panes.len()) };
-        let mw = mid.len() as i32 * fw;
+        let title = self.panes.iter().find(|p| p.id == self.layout.focus).map_or("", |p| p.term.title.as_str());   // set by the app in the pane (OSC 0/2)
+        let mid = if self.uid.is_none() { "pane login".to_string() } else if title.is_empty() { format!("pane {n}/{}", self.panes.len()) } else { format!("pane {n}/{} \u{b7} {title}", self.panes.len()) };
+        let mw = mid.chars().count() as i32 * fw;
         // as many help items as fit left of the centre label (narrow screens, e.g. 800x600 firmware modes)
         let inset = m.gap + m.border + m.pad;   // the bar text lines up with the text inside the panes
         let room = (((w as i32 - mw) / 2 - inset - 2 * fw) / fw).max(0) as usize;
         let help = fit_items(HELP, " \u{b7} ", room);
         self.text(inset, &help, DIM);
-        self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);
+        self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);   // "pane " is ASCII
         let off = self.tz_path.as_deref().zip(self.uid).and_then(|(p, u)| clock::read_tz(p, u)).or_else(clock::default_offset);
         let right = format!("{}  \u{b7}  {}", ip_string(), clock::bar_line(clock::now(), off));
         let rw = right.len() as i32 * fw;
@@ -303,7 +304,8 @@ fn main() {
             if den.uid.is_none() { den.check_login(); }
             den.zombies.retain(|&p| p > 0 && unsafe { libc::waitpid(p, std::ptr::null_mut(), libc::WNOHANG) } == 0);
         }
-        den.render(tick);
+        let bar = tick | den.panes.iter_mut().fold(false, |a, p| std::mem::take(&mut p.term.title_changed) | a);
+        den.render(bar);
     }
 }
 

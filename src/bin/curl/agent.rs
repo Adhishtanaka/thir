@@ -11,16 +11,22 @@ const MAX_ANSWER: usize = 4 << 20;
 const MAX_CONFIG: u64 = 16 * 1024;
 const IDLE: Duration = Duration::from_secs(120);
 
-const USAGE: &str = "usage: agent [-p PROVIDER] [-m MODEL] [-e EFFORT] [QUESTION...]
-       agent --login PROVIDER | --logout PROVIDER | --use PROVIDER [-m MODEL] | --providers
+pub const USAGE: &str = "usage: agent [-p PROVIDER] [-m MODEL] [-e EFFORT] [QUESTION...]
+       agent run APP [ARGS]      open an app (or just type its name)
+       agent list                list your apps
+       agent --login PROVIDER | --logout PROVIDER | --providers
+       agent --use PROVIDER [-m MODEL]
   agent \"question\"   one answer, then exit
   agent              a chat: /clear forgets it, /exit or Ctrl-D quits
-  -p  provider: anthropic (default), openai, gemini, deepseek, ollama, or your own
+  -p  provider: anthropic (default), openai, gemini, deepseek, ollama, or yours
   -m  model; anthropic uses claude-opus-5-5 unless you choose another
   -e  effort for anthropic: low (default), medium, high, xhigh, max
-Your own providers go in ~/.config/thir/agent:  provider NAME anthropic|openai URL [MODEL]
+Your own providers go in ~/.config/thir/agent, one per line:
+  provider NAME anthropic|openai URL [MODEL]
 agent --login PROVIDER asks for the API key without showing it and keeps it in
 ~/.config/thir/keys (only you can read it). Using an API costs money.
+Apps live in ~/apps. They can only draw, use the keys, keep their own data and
+reach the web sites you allow.
 ";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -335,6 +341,8 @@ fn fail(m: &str) -> i32 { eprintln!("{m}"); 1 }
 fn val(it: &mut impl Iterator<Item = String>, n: &str) -> String { it.next().unwrap_or_else(|| { eprintln!("agent: {n} needs a value (agent -h)"); std::process::exit(2) }) }
 
 pub fn main(args: Vec<String>) -> i32 {
+    // app commands come first and never reach the key code: running an app reads no key and no provider config
+    match args.first().map(String::as_str) { Some("run") => return crate::make::run(&args[1..]), Some("list") => return crate::make::list(&args[1..]), _ => {} }
     let (mut prov, mut model, mut effort, mut words) = (None, None, None, vec![]);
     let (mut login, mut logout, mut use_p, mut list) = (None, None, None, false);
     let mut it = args.into_iter();

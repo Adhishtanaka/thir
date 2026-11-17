@@ -108,12 +108,27 @@ pub fn quote(s: &str) -> String {
     o.push('"'); o
 }
 
+/// `j` as compact JSON text (parse(dump(j)) == j for finite numbers).
+pub fn dump(j: &Json) -> String {
+    match j {
+        Json::Null => "null".into(), Json::Bool(b) => b.to_string(),
+        Json::Num(n) => if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", *n as i64) } else { format!("{n}") },
+        Json::Str(s) => quote(s),
+        Json::Arr(a) => format!("[{}]", a.iter().map(dump).collect::<Vec<_>>().join(",")),
+        Json::Obj(o) => format!("{{{}}}", o.iter().map(|(k, v)| format!("{}:{}", quote(k), dump(v))).collect::<Vec<_>>().join(",")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test] fn quote_round_trip() {
         for b in 0u8..0x80 { let s = (b as char).to_string(); assert_eq!(parse(&quote(&s)).unwrap(), Json::Str(s)); }
         let s = "a\"b\\c\n🐻é"; assert_eq!(parse(&quote(s)).unwrap().str(), Some(s));
+    }
+    #[test] fn dump_round_trip() {
+        let t = r#"{"a":[1,-2,3.5,true,null,"x\"y"],"b":{},"c":[],"d":1700000000}"#;
+        let j = parse(t).unwrap(); assert_eq!(dump(&j), t); assert_eq!(parse(&dump(&j)).unwrap(), j);
     }
     #[test] fn unicode() {
         assert_eq!(parse(r#""\ud83d\udc3b""#).unwrap().str(), Some("🐻"));
