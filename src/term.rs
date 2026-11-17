@@ -1,5 +1,6 @@
 //! Shared full-screen terminal bits for edit and top. Raw mode is restored on drop, on panic and on SIGTERM/SIGHUP.
-use crate::line::{Decoder, Key};
+use crate::line::{Act, Decoder, Editor, Key};
+use std::io::{self, BufRead, Write};
 use std::sync::OnceLock;
 
 static SAVED: OnceLock<libc::termios> = OnceLock::new();
@@ -82,4 +83,28 @@ pub fn prompt(dec: &mut Decoder, row: usize, label: &str) -> Option<String> {
             }
         }
     }
+}
+
+/// One line from the user with editing and Tab completion. None = end of input. Raw mode is always off again on return.
+pub fn read_line(ed: &mut Editor, prompt: &str, complete: &dyn Fn(bool, &str) -> Vec<String>) -> Option<String> {
+    let p = prompt;
+    let Some(old) = raw_on() else {
+        print!("{p}"); let _ = io::stdout().flush();
+        let mut l = String::new();
+        return match io::stdin().lock().read_line(&mut l) { Ok(0) | Err(_) => None, Ok(_) => Some(l) };
+    };
+    put(&ed.redraw(p));
+    let r = 'read: loop {
+        let mut buf = [0u8; 256];
+        let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue }
+        if n <= 0 { break None }
+        for k in ed.decode(&buf[..n as usize]) {   // shortcut: keys after Enter in the same read are dropped
+            if k == Key::Tab { let (first, w) = ed.word(); let o = ed.complete(&complete(first, &w), p); put(&o); continue }
+            let (a, o) = ed.key(k, p); put(&o);
+            match a { Act::Submit(l) => break 'read Some(l), Act::Eof => break 'read None, Act::None => {} }
+        }
+    };
+    raw_off(&old);
+    r
 }

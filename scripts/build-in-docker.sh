@@ -3,6 +3,8 @@ set -euo pipefail
 source /work/env.sh
 export CARGO_HOME=/build/cargo-home CARGO_TARGET_DIR=/build/target
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-gnu-gcc   # the container is arm64
+export CC_aarch64_unknown_linux_musl=gcc AR_aarch64_unknown_linux_musl=ar                              # ring's C/asm; the container is arm64
+export CC_x86_64_unknown_linux_musl=x86_64-linux-gnu-gcc AR_x86_64_unknown_linux_musl=x86_64-linux-gnu-ar
 if [ "${1:-all}" = test ]; then cd /work && exec cargo test; fi
 mkdata() { rm -f "/work/$DATA_IMG"; truncate -s "$DATA_SIZE" "/work/$DATA_IMG"; mkfs.ext4 -q -F -L thirdata "/work/$DATA_IMG"; echo "data image: /work/$DATA_IMG ($DATA_SIZE)"; }
 if [ "${1:-all}" = data ]; then mkdata; exit 0; fi
@@ -13,7 +15,7 @@ KMAKE=(make -C "$SRC" O="$OBJ" ARCH="$KARCH" CROSS_COMPILE="$CROSS_COMPILE")
 mkdir -p "$OBJ" "$O"
 
 cd /work && cargo build --release --target "$RUST_TARGET"
-for b in init nsh dhcp den login passwd edit find top fetch; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
+for b in init nsh dhcp den login passwd edit find top fetch curl; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
 rm -f "$O/initramfs.cpio.gz"
 cat > "$LIST" <<EOL
 dir /dev 0755 0 0
@@ -36,6 +38,8 @@ file /bin/edit $O/edit 0755 0 0
 file /bin/find $O/find 0755 0 0
 file /bin/top $O/top 0755 0 0
 file /bin/fetch $O/fetch 0755 0 0
+file /bin/curl $O/curl 0755 0 0
+slink /bin/agent /bin/curl 0777 0 0
 slink /bin/neofetch /bin/fetch 0777 0 0
 slink /bin/nano /bin/edit 0777 0 0
 file /share/font16.psf /work/assets/fonts/Uni3-Terminus16.psf 0644 0 0

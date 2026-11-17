@@ -1,7 +1,7 @@
 # Shared helpers for test/smoke.sh and test/uefi.sh (sourced after env.sh). Callers set SECRETS=(...) and may set STEP.
 STEP=${STEP:-60}
 d=$(mktemp -d -t thir-test); fifo=$d/fifo; mkfifo "$fifo"; qpid=
-trap 'kill "$qpid" 2>/dev/null || true; rm -rf "$d"' EXIT
+trap 'kill "$qpid" ${mpid:-} 2>/dev/null || true; rm -rf "$d"' EXIT
 log=; mark=0
 
 boot() {  # $1 = log name, rest = full QEMU command

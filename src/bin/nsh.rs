@@ -1,4 +1,4 @@
-use thir::{clock, files::{printable, rm_refuses}, term::{put, raw_off, raw_on}, line::{Act, Editor, Key}, net, parse::parse_cmd};
+use thir::{clock, files::{printable, rm_refuses}, line::Editor, net, parse::parse_cmd};
 use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::{fs::OpenOptionsExt, process::{CommandExt, ExitStatusExt}}, path::Path, process::{exit, Command, Stdio}};
 
 /// Every command nsh offers, by section: (usage, description). Builtins and completion come from here, so they cannot drift.
@@ -11,6 +11,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ("session", &[("whoami", "your user name"), ("history", "command history"), ("help [cmd]", "this text, or one command"), ("exit", "log out")]),
     ("programs", &[("edit [file]", "full-screen editor (also: nano)"), ("find [dir] [-name P]", "find files; P uses * and ?; -type f|d"), ("top", "CPU, memory and processes"),
         ("fetch", "system summary with a bear (also: neofetch)"),
+        ("curl [opts] URL", "download a page or file (curl -h for options)"), ("agent [question]", "chat with an AI; will build apps (agent -h)"),
         ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
 ];
 
@@ -79,30 +80,6 @@ fn candidates(first: bool, word: &str) -> Vec<String> {
         }
     }
     v.sort(); v.dedup(); v
-}
-
-/// One line from the user with editing. None = end of input. Raw mode is always off again on return.
-fn read_cmd(ed: &mut Editor, stdin: &io::Stdin) -> Option<String> {
-    let p = prompt();
-    let Some(old) = raw_on() else {
-        print!("{p}"); let _ = io::stdout().flush();
-        let mut l = String::new();
-        return match stdin.read_line(&mut l) { Ok(0) | Err(_) => None, Ok(_) => Some(l) };
-    };
-    put(&ed.redraw(&p));
-    let r = 'read: loop {
-        let mut buf = [0u8; 256];
-        let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut _, buf.len()) };
-        if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue }
-        if n <= 0 { break None }
-        for k in ed.decode(&buf[..n as usize]) {   // shortcut: keys after Enter in the same read are dropped
-            if k == Key::Tab { let (first, w) = ed.word(); let o = ed.complete(&candidates(first, &w), &p); put(&o); continue }
-            let (a, o) = ed.key(k, &p); put(&o);
-            match a { Act::Submit(l) => break 'read Some(l), Act::Eof => break 'read None, Act::None => {} }
-        }
-    };
-    raw_off(&old);
-    r
 }
 
 fn hist_path() -> String { format!("{}/.nsh_history", std::env::var("HOME").unwrap_or_else(|_| "/".into())) }
@@ -210,7 +187,7 @@ fn main() {
     let old = fs::read_to_string(&path).unwrap_or_default();
     let mut ed = Editor::new(old.lines().rev().take(1000).map(String::from).collect::<Vec<_>>().into_iter().rev().collect());
     loop {
-        let Some(line) = read_cmd(&mut ed, &stdin) else { exit(0) };
+        let Some(line) = thir::term::read_line(&mut ed, &prompt(), &candidates) else { exit(0) };
         if ed.push_history(line.trim()) {
             if let Ok(mut f) = OpenOptions::new().append(true).create(true).mode(0o600).open(&path) { let _ = writeln!(f, "{}", line.trim()); }
         }
@@ -253,7 +230,7 @@ mod tests {
         let mut all: Vec<&str> = HELP.iter().flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
         let n = all.len(); all.sort(); all.dedup(); assert_eq!(all.len(), n);
         let progs: Vec<&str> = HELP.iter().filter(|s| s.0 == "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
-        assert_eq!(progs, ["edit", "find", "top", "fetch", "passwd", "dhcp"]);
+        assert_eq!(progs, ["edit", "find", "top", "fetch", "curl", "agent", "passwd", "dhcp"]);
         assert!(builtins().all(|b| !progs.contains(&b)) && builtins().any(|b| b == "date") && help_cmd("find").unwrap().starts_with("find [dir]"));
     }
 }

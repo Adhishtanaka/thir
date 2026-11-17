@@ -2,9 +2,9 @@
 
 # thir
 
-thir is a tiny operating system I built for fun and to learn how one works from the inside. It uses the Linux kernel, and everything on top of it is my own code, written in Rust: the startup program, the shell, the login, the desktop and the small apps.
+thir is a tiny operating system I built for fun and to learn how one works from the inside. It uses the Linux kernel, and everything on top of it is my own code, written in Rust, apart from two well-known crypto libraries: the password hash and the encryption for web connections. That covers the startup program, the shell, the login, the desktop and the small apps.
 
-The whole system is under 10 MB and boots in a couple of seconds.
+The whole system is about 10 MB and boots in a couple of seconds.
 
 ![thir running in VirtualBox: first boot, help, files, editor, split screen](docs/demo.gif)
 
@@ -17,6 +17,14 @@ Full video: [docs/demo.mp4](docs/demo.mp4) (about 2 minutes, recorded in Virtual
 - Your files are saved on a disk and are still there after a restart.
 - A shell with Tab completion and history (Up and Down arrows).
 - A few apps: `edit` (a simple editor, also called `nano`), `find`, `top` (CPU and memory use) and `neofetch`.
+- `curl` (download web pages and files over HTTP and HTTPS) and `agent`, a chat with an AI in the terminal: Claude, ChatGPT, Gemini, DeepSeek or a local Ollama. You need your own API key (`agent --login <provider>`), and using an API costs money.
+
+```
+agent --login anthropic       # paste your key; it is hidden and only you can read it
+agent "why is the sky blue?"   # one answer
+agent                        # a chat; /clear forgets it, /exit quits
+curl -sI https://example.com # show the headers of a web page
+```
 
 ## How it works
 
@@ -24,20 +32,20 @@ When you turn it on, the computer's firmware loads the Linux kernel. The kernel 
 
 ```mermaid
 block-beta
-  columns 5
-  l1["Apps"] edit["edit / nano"] find["find"] top["top"] fetch["neofetch"]
-  l2["Shell"] shell["nsh: commands, Tab completion, history"]:4
-  l3["Session"] login["login: password check"]:2 den["den: tiling desktop"] dhcp["dhcp: network"]
-  l4["Startup"] init["init: the first program, starts and watches everything"]:4
-  l5["Kernel"] kernel["Linux 6.12: screen, keyboard, disk and network drivers"]:3 disk[("disk: your files")]
-  l6["Hardware"] hw["UEFI firmware on VirtualBox, QEMU or a real PC"]:4
+  columns 6
+  l1["Apps"] edit["edit / nano"] find["find"] top["top"] fetch["neofetch"] net["curl / agent"]
+  l2["Shell"] shell["nsh: commands, Tab completion, history"]:5
+  l3["Session"] login["login: password check"]:2 den["den: tiling desktop"]:2 dhcp["dhcp: network"]
+  l4["Startup"] init["init: the first program, starts and watches everything"]:5
+  l5["Kernel"] kernel["Linux 6.12: screen, keyboard, disk and network drivers"]:4 disk[("disk: your files")]
+  l6["Hardware"] hw["UEFI firmware on VirtualBox, QEMU or a real PC"]:5
 
   classDef label fill:transparent,stroke:transparent,color:#9c8c86
   classDef user fill:#3a2a2f,stroke:#e0b8a8,color:#ecd6cd
   classDef sys fill:#241c1f,stroke:#9c8c86,color:#ecd6cd
   classDef core fill:#171315,stroke:#6e6360,color:#ecd6cd
   class l1,l2,l3,l4,l5,l6 label
-  class edit,find,top,fetch,shell user
+  class edit,find,top,fetch,net,shell user
   class login,den,dhcp,init sys
   class kernel,hw,disk core
 ```
@@ -89,4 +97,4 @@ You need a Mac with Docker and QEMU (`brew install qemu`).
 
 ## License
 
-thir's own code is under the [MIT License](LICENSE). The Linux kernel inside the images is GPL-2.0 (unmodified 6.12.117, [source](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.117.tar.xz)), and the Terminus font is under the SIL Open Font License.
+thir's own code is under the [MIT License](LICENSE). The Linux kernel inside the images is GPL-2.0 (unmodified 6.12.117, [source](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.117.tar.xz)), and the Terminus font is under the SIL Open Font License. rustls and ring (Apache-2.0/MIT/ISC) encrypt web connections; root certificates from webpki-roots (CDLA-Permissive-2.0).

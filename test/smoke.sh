@@ -6,10 +6,13 @@ cd "$(dirname "$0")/.."
 export DATA_IMG=out/${THIR_ARCH:-aarch64}/smoke-data.img
 source ./env.sh
 TIMEOUT=${SMOKE_TIMEOUT:-30}   # argon2 is slow under x86_64 emulation (STEP)
-PW1='correct-horse-1'; PW2='tr0ub4dor-two-2'; PWX='wrongpass-xx'
-SECRETS=("$PW1" "$PW2" "$PWX"); STEP=${SMOKE_STEP_TIMEOUT:-60}
+PW1='correct-horse-1'; PW2='tr0ub4dor-two-2'; PWX='wrongpass-xx'; FAKEKEY=sk-ant-thir-smoke-not-a-key
+SECRETS=("$PW1" "$PW2" "$PWX" "$FAKEKEY"); STEP=${SMOKE_STEP_TIMEOUT:-60}
 source test/lib.sh
 ./build.sh data > /dev/null 2>&1          # fresh disk for this run only
+
+python3 test/mock.py "$d" & mpid=$!      # web server for the curl and agent tests; certificates exist before the guest boots
+for _ in $(seq 1 50); do [ -f "$d/srv.pem" ] && (echo > /dev/tcp/127.0.0.1/18443) 2>/dev/null && break; sleep 0.2; done
 
 boot boot1 "${QEMU[@]}"
 wait_for '^thir: init ready$' "$TIMEOUT"
@@ -47,6 +50,39 @@ run 'cat docs/b.txt' '^line one$'
 send neofetch; wait_for 'alice@thir'; wait_for 'Kernel: 6\.'; wait_for '\$ $'
 send top; wait_for 'PID +USER'
 sendk q; wait_for '\$ $'
+run 'curl http://10.0.2.2:18080/hello' '^hello from mock$'
+run 'curl -s http://10.0.2.2:18080/chunked' '^chunk-two$'
+run 'curl -sL http://10.0.2.2:18080/redirect' '^hello from mock$'
+run 'curl -sL http://10.0.2.2:18080/loop' '\[exit 47\]'
+run 'curl -sf http://10.0.2.2:18080/404' '\[exit 22\]'
+run 'curl -sI http://10.0.2.2:18080/hello' '^HTTP/1\.[01] 200'
+run 'curl -s -o bin.dat http://10.0.2.2:18080/bin' '\$ $'
+run 'curl -s --data-binary @bin.dat http://10.0.2.2:18080/echo' '^POST same noauth$'
+run 'curl -k https://10.0.2.2:18443/hello' 'always checks certificates'
+run 'curl -s https://10.0.2.2:18443/hello' '\[exit 60\]'
+run 'curl -s -o ca.pem http://10.0.2.2:18080/ca.pem' '\$ $'
+run 'curl -s --cacert ca.pem https://10.0.2.2:18443/hello' '^hello from mock$'
+run 'curl -sL --cacert ca.pem https://10.0.2.2:18443/downgrade' 'https to http'
+run 'curl -s --max-time 2 http://10.0.2.2:18080/slow' '\[exit 28\]'
+run 'curl -s http://10.0.2.2:1/' '\[exit 7\]'
+run 'curl -s http://no-such-host.invalid/' '\[exit 6\]'
+run 'mkdir -p .config/thir' '\$ $'
+send 'write .config/thir/agent'; send 'provider mocka anthropic http://10.0.2.2:18080/anthropic/v1'; send 'provider mockr anthropic http://10.0.2.2:18080/refuse/v1'
+send 'provider mocko openai http://10.0.2.2:18080/openai/v1 mock-model'; send 'provider mocke openai http://10.0.2.2:18080/err/v1 mock-model'; run '.' '\$ $'
+run 'agent --providers' 'mocka +anthropic +http://10\.0\.2\.2:18080/anthropic/v1 +no key needed'
+send 'agent -p mocka hi'; wait_for 'mock reply 1 café$'; wait_for '^second line'; wait_for '\$ $'
+run 'agent -p mocko hi' 'openai mock reply 1$'
+run 'agent -p mockr hi' 'declined this request \(category: cyber\)'
+run 'agent -p mocke hi' 'Incorrect API key provided'
+run 'agent --login mocka' 'plain http'
+run 'agent -p openai hi' 'needs a model'
+run 'agent -p anthropic hi' 'no API key for anthropic'
+send 'agent --login anthropic'; wait_for 'key'; send "$FAKEKEY"; wait_for 'saved'
+run 'agent --providers' 'anthropic .*key saved'
+send 'agent -p mocka'; wait_for 'agent> '; send one; wait_for 'mock reply 1 '; send two; wait_for 'mock reply 3 '
+send /clear; wait_for 'agent> '; send three; wait_for 'mock reply 1 '; send /exit; wait_for '\$ $'
+if [ "${ONLINE:-}" = 1 ]; then run 'curl -sI https://example.com/' '^HTTP/1\.1 [23]0[0-9]'; run 'agent hi' 'rejected the API key'; fi
+run 'agent --logout anthropic' 'removed'
 run 'rm /' "refusing to remove '/'"
 run 'cat /proc/sys/kernel/hostname' '^thir$'
 send $'ca\t/etc/res\t'   # Tab completion; the send's newline runs it. The echo is on the old partial line, so only the output proves it
