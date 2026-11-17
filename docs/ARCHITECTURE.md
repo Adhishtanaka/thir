@@ -10,13 +10,7 @@ an editor (`edit`, also `nano`), `find`, `top` and `fetch` (also `neofetch`). It
 
 ![thir in VirtualBox full screen on a Mac: boot, first-boot setup, neofetch, help, files, edit, find, split pane](demo.gif)
 
-Same recording as video: [docs/demo.mp4](demo.mp4) (115 s, 2936x1848, H.264). Recorded in VirtualBox full screen on an Apple Silicon Mac, from an empty disk by `scripts/vm-demo.sh` (keys sent with `VBoxManage controlvm keyboardputstring`, macOS `screencapture -v`). The stills below come from the headless `test/demo.sh`.
-
-| | |
-|---|---|
-| ![login](screenshots/login.png) **login**: the den login screen (the password is never echoed) | ![neofetch](screenshots/neofetch.png) **fetch**: `neofetch` |
-| ![edit](screenshots/edit.png) **edit**: the full-screen editor after Ctrl-S | ![files](screenshots/files.png) **files**: `ls`, `find` with a glob |
-| ![split](screenshots/split-top.png) **split**: Alt+Enter, `top` in the new pane | |
+Same recording as video: [docs/demo.mp4](demo.mp4) (115 s, 2936x1848, H.264). Recorded in VirtualBox full screen on an Apple Silicon Mac, from an empty disk by `scripts/vm-demo.sh` (keys sent with `VBoxManage controlvm keyboardputstring`, macOS `screencapture -v`).
 
 Step 1: a Rust PID 1 (`init`), a small Rust shell (`nsh`) and a Rust DHCP client (`dhcp`).
 Step 2: `den`, a tiling terminal GUI on the framebuffer. Phase 3: a persistent disk, accounts, login and file commands. Phase 4: HiDPI den, Cmd/Option as WM key, a brand footer, a line editor in `nsh`. Phase 5: a UEFI-bootable disk image (`out/<arch>/thir.img`) for a USB stick. Later: `fetch`, the demo recording.
@@ -38,7 +32,7 @@ Step 2: `den`, a tiling terminal GUI on the framebuffer. Phase 3: a persistent d
 | `./test/smoke.sh` | Headless two-boot test on a fresh disk (first-boot setup, files, passwd, persistence), exit 0 = PASS |
 | `./test/uefi.sh` | Boots `thir.img` on edk2 firmware (x86_64: a USB stick on xHCI; aarch64: virtio-blk), two boots, checks `/data` and persistence |
 | `DEMO_PW=... scripts/vm-demo.sh out.mov` | Records the VirtualBox window (VM `thir` on first boot, window in front; needs Screen Recording permission for the terminal) |
-| `DEMO_PW=... ./test/demo.sh` | Records `docs/demo.mp4`, `docs/demo.gif` and `docs/screenshots/*.png` headless (aarch64, 2560x1600, first user `thir`); refuses to run without `DEMO_PW`, which is never stored |
+| `DEMO_PW=... ./test/demo.sh` | Records `docs/demo.mp4`, `docs/demo.gif` and still screenshots (`docs/screenshots/`, not in git) headless (aarch64, 2560x1600, first user `thir`); refuses to run without `DEMO_PW`, which is never stored |
 | `./test/gui.sh [out.png]` | Headless GUI test: logs in and types via the QEMU monitor on its own fresh disk, screendumps, checks the picture (aarch64) |
 | `docker volume rm thir-build` | Clean kernel tree and caches |
 
@@ -212,7 +206,7 @@ The container is always native arm64; x86_64 is cross-built there (`gcc-x86-64-l
 | smoke | `./test/smoke.sh` | two serial boots on a fresh disk: first-boot setup, file commands, permission denials, `edit`, `neofetch`, `top`, `passwd` delay, persistence, old password rejected; the serial log must never contain a password | QEMU, either arch |
 | uefi | `./test/uefi.sh` | boots `thir.img` on edk2 (no `-kernel`), setup, a file on `/data`, second boot | QEMU, either arch |
 | gui | `./test/gui.sh` | den at 2560x1664: types through the QEMU monitor, login, split, Tab completion, screendump checks (size, colours, footer mark), logout | QEMU aarch64 |
-| demo | `DEMO_PW=... ./test/demo.sh` | records `docs/demo.mp4`, `docs/demo.gif` and `docs/screenshots/*`; refuses to run without `DEMO_PW` | QEMU aarch64 |
+| demo | `DEMO_PW=... ./test/demo.sh` | records `docs/demo.mp4`, `docs/demo.gif` and still screenshots (not in git); refuses to run without `DEMO_PW` | QEMU aarch64 |
 
 ## Layout
 
