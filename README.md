@@ -42,7 +42,7 @@ block-beta
   class kernel,hw,disk core
 ```
 
-Each layer only talks to the one below it. The lighter layers (your shell and apps) run as you, so they can only touch your own files. The darker layers run the system.
+Read it from the bottom up: each layer starts the one above it. The lighter boxes (your shell and apps) run as you, so they can only touch your own files. The darker boxes run the system.
 
 ## Try it
 
