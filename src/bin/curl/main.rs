@@ -91,10 +91,11 @@ fn set_data(o: &mut Opts, v: &str, binary: bool) {
 
 fn net_die(e: NetErr) -> ! { die(e.code(), &e.msg) }
 
-/// The file name for -O: the last path segment, without the query.
+/// The file name for -O: the last path segment of the URL the user typed, without the query.
+/// No hidden files and nothing that looks like an option.
 fn remote_name(u: &Url) -> Option<String> {
     let n = u.path.split('?').next().unwrap_or("").rsplit('/').next().unwrap_or("");
-    if n.is_empty() || n == "." || n == ".." || printable(n) != n { None } else { Some(n.to_string()) }
+    if n.is_empty() || n.starts_with('.') || n.starts_with('-') || printable(n) != n { None } else { Some(n.to_string()) }
 }
 
 fn human(n: u64) -> String { if n >= 1 << 20 { format!("{:.1} MiB", n as f64 / 1048576.0) } else if n >= 1024 { format!("{:.1} KiB", n as f64 / 1024.0) } else { format!("{n} B") } }
@@ -106,6 +107,8 @@ fn main() {
     let o = parse_args(&args);
     let Some(first) = o.url.clone() else { eprint!("{USAGE}"); exit(2) };
     let mut url = Url::parse(&first).unwrap_or_else(|e| die(3, &e));
+    // -O names the file from the typed URL, never from a redirect the server chose
+    let oname = if o.remote_name && o.out.is_none() { Some(remote_name(&url).unwrap_or_else(|| die(23, "cannot make a file name from this URL; use -o FILE"))) } else { None };
     let deadline = o.max_time.map(|s| Instant::now() + Duration::from_secs(s));
     let mut method = o.method.clone().unwrap_or_else(|| if o.head { "HEAD".into() } else if o.data.is_some() { "POST".into() } else { "GET".into() });
     let mut body = o.data.clone();
@@ -122,7 +125,8 @@ fn main() {
             let next = url.join(&loc).unwrap_or_else(|e| die(1, &format!("bad redirect: {e}")));
             if url.https && !next.https { die(1, "refusing to follow a redirect from https to http"); }
             if matches!(head.status, 301 | 302 | 303) && method == "POST" { method = "GET".into(); body = None; headers.retain(|(n, _)| !n.eq_ignore_ascii_case("content-type")); }
-            if !url.same_origin(&next) { headers.retain(|(n, _)| !["authorization", "cookie", "proxy-authorization"].contains(&n.to_ascii_lowercase().as_str())); }
+            // another origin gets none of the user's -H headers: any of them could carry a credential
+            if !url.same_origin(&next) { headers.retain(|(n, _)| ["user-agent", "accept", "content-type"].contains(&n.to_ascii_lowercase().as_str())); }
             url = next;
             continue;
         }
@@ -133,7 +137,7 @@ fn main() {
     let mut out: Box<dyn Write> = match (&o.out, o.remote_name) {
         (None, false) => Box::new(io::stdout()),
         (path, _) => {
-            let p = match path { Some(p) => p.clone(), None => remote_name(&url).unwrap_or_else(|| die(23, "cannot make a file name from this URL; use -o FILE")) };
+            let p = match path { Some(p) => p.clone(), None => oname.clone().unwrap_or_default() };
             match OpenOptions::new().write(true).create(true).truncate(true).custom_flags(libc::O_NOFOLLOW).open(&p) {
                 Ok(f) => Box::new(f), Err(e) => die(23, &format!("{p}: {e}")),
             }
@@ -148,12 +152,11 @@ fn main() {
     let total = if let http::Framing::Length(n) = framing { Some(n) } else { None };
     let progress = to_file && !o.silent && unsafe { libc::isatty(2) } == 1;
     let mut body_r = Body::new(reader, framing);
-    let (mut buf, mut done, mut first) = (vec![0u8; 16384], 0u64, true);
+    let (mut buf, mut done) = (vec![0u8; 16384], 0u64);
     let (t0, mut last) = (Instant::now(), Instant::now());
     loop {
         let n = match body_r.read(&mut buf) { Ok(0) => break, Ok(n) => n, Err(e) => { if progress { eprintln!(); } net_die(body_err(&e, framing, tls)) } };
-        if first && tty_out && buf[..n].contains(&0) { die(23, "binary output can mess up your terminal; use -o FILE"); }
-        first = false;
+        if tty_out && buf[..n].contains(&0) { die(23, "binary output can mess up your terminal; use -o FILE"); }
         if out.write_all(&buf[..n]).is_err() { die(23, "write error"); }
         done += n as u64;
         if progress && last.elapsed() >= Duration::from_millis(250) {
@@ -164,4 +167,14 @@ fn main() {
     }
     if out.flush().is_err() { die(23, "write error"); }
     if progress { eprintln!(); }
+}
+
+#[cfg(test)]
+mod remote_name_tests {
+    use super::*;
+    #[test] fn o_names_are_plain_files() {
+        let n = |s: &str| remote_name(&Url::parse(s).unwrap());
+        assert_eq!(n("https://a.example/dir/file.txt?x=1").as_deref(), Some("file.txt"));
+        for bad in ["https://a.example/", "https://a.example/.bashrc", "https://a.example/-rf", "https://a.example/..", "https://a.example/a/."] { assert_eq!(n(bad), None, "{bad}"); }
+    }
 }
