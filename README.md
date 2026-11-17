@@ -2,7 +2,7 @@
 
 # thir
 
-thir is a tiny operating system I built for fun and to learn how one works from the inside. It uses the Linux kernel, and everything on top of it is my own code, written in Rust, apart from two well-known crypto libraries: the password hash and the encryption for web connections. That covers the startup program, the shell, the login, the desktop and the small apps.
+thir is a tiny operating system I built for fun and to learn how one works from the inside. It uses the Linux kernel, and everything on top of it is my own code, written in Rust, apart from a few well-known libraries: the password hash, the encryption for web connections and the Lua interpreter that runs the apps you build. That covers the startup program, the shell, the login, the desktop and the small apps.
 
 The whole system is about 10 MB and boots in a couple of seconds.
 
@@ -26,6 +26,17 @@ agent                        # a chat; /clear forgets it, /exit quits
 curl -sI https://example.com # show the headers of a web page
 ```
 
+- **Build your own apps by asking for them.** `agent build` asks the AI to write a small terminal app, tests it, and opens it. If you want something different, just say what to change. Your apps are saved and run by their name.
+
+```
+agent build "a weather app"            # the AI plans it, writes it, tests it and opens it
+weather                                # run it again later, just by its name
+agent edit weather "add a 5-day forecast"
+agent list                             # your apps;  agent undo / agent rm also work
+```
+
+Apps you build are kept on a short leash. They can draw on the screen, read your keys while they are open, keep their own notes, and reach only the websites you allow (thir asks you first). They cannot open your files, see your API keys or run other programs. A build usually takes 2 to 5 AI calls.
+
 ## How it works
 
 When you turn it on, the computer's firmware loads the Linux kernel. The kernel starts `init`, my first program, and from there everything is thir's own Rust code.
@@ -33,6 +44,7 @@ When you turn it on, the computer's firmware loads the Linux kernel. The kernel 
 ```mermaid
 block-beta
   columns 6
+  l0["Your apps"] mine["apps you build with agent build (Lua, in a sandbox)"]:5
   l1["Apps"] edit["edit / nano"] find["find"] top["top"] fetch["neofetch"] net["curl / agent"]
   l2["Shell"] shell["nsh: commands, Tab completion, history"]:5
   l3["Session"] login["login: password check"]:2 den["den: tiling desktop"]:2 dhcp["dhcp: network"]
@@ -40,17 +52,19 @@ block-beta
   l5["Kernel"] kernel["Linux 6.12: screen, keyboard, disk and network drivers"]:4 disk[("disk: your files")]
   l6["Hardware"] hw["UEFI firmware on VirtualBox, QEMU or a real PC"]:5
 
-  classDef label fill:transparent,stroke:transparent,color:#9c8c86
-  classDef user fill:#3a2a2f,stroke:#e0b8a8,color:#ecd6cd
-  classDef sys fill:#241c1f,stroke:#9c8c86,color:#ecd6cd
-  classDef core fill:#171315,stroke:#6e6360,color:#ecd6cd
-  class l1,l2,l3,l4,l5,l6 label
+  classDef label fill:transparent,stroke:transparent,color:#8f8b89
+  classDef mine fill:#3d3b3e,stroke:#e3dfdc,color:#e3dfdc
+  classDef user fill:#2c2b2d,stroke:#cfc4be,color:#e3dfdc
+  classDef sys fill:#222123,stroke:#8f8b89,color:#e3dfdc
+  classDef core fill:#161617,stroke:#6a6668,color:#e3dfdc
+  class l0,l1,l2,l3,l4,l5,l6 label
+  class mine mine
   class edit,find,top,fetch,net,shell user
   class login,den,dhcp,init sys
   class kernel,hw,disk core
 ```
 
-Read it from the bottom up: each layer starts the one above it. The lighter boxes (your shell and apps) run as you, so they can only touch your own files. The darker boxes run the system.
+Read it from the bottom up: each layer starts the one above it. The lighter boxes (your shell and apps) run as you, so they can only touch your own files. The apps you build sit in a sandbox on top, with even less access. The darker boxes run the system.
 
 ## Try it
 
@@ -84,7 +98,7 @@ Then, on the PC, turn off Secure Boot in the firmware settings, open the boot me
 | Option + q | Close a pane |
 | Option + f | Make a pane full screen |
 
-Some commands to start with: `help`, `ls`, `mkdir notes`, `edit notes/todo.txt`, `find . -name '*.txt'`, `top`, `neofetch`, `date`. Type `help` to see them all.
+Some commands to start with: `help`, `ls`, `mkdir notes`, `edit notes/todo.txt`, `find . -name '*.txt'`, `top`, `neofetch`, `date`, `agent build "a todo list"`. Type `help` to see them all.
 
 ## Build it yourself
 
@@ -97,4 +111,4 @@ You need a Mac with Docker and QEMU (`brew install qemu`).
 
 ## License
 
-thir's own code is under the [MIT License](LICENSE). The Linux kernel inside the images is GPL-2.0 (unmodified 6.12.117, [source](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.117.tar.xz)), and the Terminus font is under the SIL Open Font License. rustls and ring (Apache-2.0/MIT/ISC) encrypt web connections; root certificates from webpki-roots (CDLA-Permissive-2.0).
+thir's own code is under the [MIT License](LICENSE). The Linux kernel inside the images is GPL-2.0 (unmodified 6.12.117, [source](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.117.tar.xz)), and the Terminus font is under the SIL Open Font License. rustls and ring (Apache-2.0/MIT/ISC) encrypt web connections; root certificates from webpki-roots (CDLA-Permissive-2.0). Apps run on Lua 5.4 (MIT).
