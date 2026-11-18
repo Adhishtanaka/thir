@@ -18,7 +18,7 @@ Full video: [docs/demo.mp4](docs/demo.mp4) (about 2 minutes, recorded in Virtual
 - A shell with Tab completion and history (Up and Down arrows).
 - A few apps: `edit` (a simple editor, also called `nano`), `find`, `top` (CPU and memory use) and `neofetch`.
 - `curl`, for downloading web pages and files over HTTP and HTTPS.
-- `agent`, an AI chat in the terminal that can also build small apps for you.
+- `agent`, an AI chat in the terminal that can also build small apps and do file jobs for you.
 
 ## How it works
 
@@ -46,6 +46,16 @@ block-beta
 ```
 
 Read it from the bottom up: each layer starts the one above it. The lighter boxes (your shell and apps) run as you, so they can only touch your own files. The apps `agent` writes sit on top and get even less: no files at all, only the websites you allowed. The darker boxes run the system.
+
+### The "LLM as OS" part
+
+This is the bit I'm most curious about. Normally you go find an app that does roughly what you want. In thir you just say it: `agent build "a weather app"`, and an AI model writes a small app for you on the spot. It plans the app, writes it in Lua, and thir checks the code and test-runs it offline before you ever see it. If the test fails, the model gets the error and tries again.
+
+You can also ask for plain file jobs: `agent do "download this page and put the names in names.txt"`. agent shows you exactly what it's going to write, move or download, and nothing happens until you press `y`. It can't delete anything or run programs.
+
+It remembers small things you tell it, like `agent remember city: Colombo`, so the weather app opens on your city without asking. That memory is one file only you can read.
+
+The model never gets real power. Apps run in a sandbox with no access to your files or keys, and they only reach the websites you said yes to. You bring your own API key (Anthropic, OpenAI, Gemini, DeepSeek, or a local Ollama). It's still rough: small models sometimes need a retry, and a two-minute wait for an app is long. But watching a computer write itself a tool you asked for is pretty fun.
 
 ## Try it
 
