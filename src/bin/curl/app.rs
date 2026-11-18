@@ -17,7 +17,7 @@ const MAX_STORE: usize = 1 << 20;
 const MAX_REDIRECTS: usize = 3;
 const MIN_SIZE: (usize, usize) = (20, 5);
 /// Biggest canvas an app gets; a bigger terminal shows it centred.
-const MAX_CANVAS: (usize, usize) = (110, 36);
+const MAX_CANVAS: (usize, usize) = (80, 30);
 
 /// (w, h, left offset, top offset) of the canvas for a terminal of tw x th cells.
 fn canvas(tw: usize, th: usize) -> (usize, usize, usize, usize) {
@@ -27,7 +27,7 @@ fn canvas(tw: usize, th: usize) -> (usize, usize, usize, usize) {
 const ENC_DEPTH: usize = 32;
 const ENC_MAX: usize = 4 << 20;   // a bigger JSON text from one call is refused: memory is limited too (RLIMIT_AS)
 
-pub const UI: &[&str] = &["text", "center", "pad", "wrap", "width", "fill", "box", "title", "footer", "list", "bar", "input", "pick", "confirm", "size"];
+pub const UI: &[&str] = &["text", "center", "pad", "cols", "wrap", "width", "fill", "box", "title", "footer", "list", "bar", "input", "pick", "confirm", "size"];
 pub const HTTP: &[&str] = &["get", "json", "post", "encode"];
 pub const JSON: &[&str] = &["decode", "encode"];
 pub const STORE: &[&str] = &["get", "set"];
@@ -356,6 +356,17 @@ impl Sandbox {
             let out = l.create_table()?;
             for line in wrap(&t, w) { out.push(line)?; }
             Ok(out)
+        });
+        // columns: widths {10, 14, -5} (negative = right-aligned) and cells, joined by two spaces; cut or padded so text never glues
+        sdk!(lua, ui, st, "cols", |s, l, a: (f64, f64, Table, Table, Option<String>)| {
+            let mut line = String::new();
+            for (i, w) in a.2.sequence_values::<f64>().take(40).enumerate() {
+                let w = w?; let n = w.abs().clamp(0.0, 500.0) as usize;
+                let c: String = match a.3.get::<Value>(i as i64 + 1)? { Value::Nil => String::new(), v => txt(l, &v)? }.chars().take(n).collect();
+                if i > 0 { line += "  "; }
+                line += &if w < 0.0 { format!("{c:>n$}") } else { format!("{c:<n$}") };
+            }
+            s.borrow_mut().put(a.0 as i64, a.1 as i64, &line, role(a.4)?); Ok(())
         });
         sdk!(lua, ui, st, "width", |_s, l, a: Value| Ok(width(&txt(l, &a)?) as i64));
         sdk!(lua, ui, st, "fill", |s, _l, a: (f64, f64, f64, f64, Option<String>)| { s.borrow_mut().fill(a.0 as i64, a.1 as i64, a.2 as i64, a.3 as i64, role(a.4)?); Ok(()) });
@@ -788,9 +799,9 @@ mod tests {
     fn run_keys(src: &str, keys: &[&str]) -> String { dry_run(src, vec![], keys).unwrap() }
 
     #[test] fn canvas_is_capped_and_centred() {
-        assert_eq!(canvas(177, 51), (110, 36, 33, 7));
+        assert_eq!(canvas(177, 51), (80, 30, 48, 10));
         assert_eq!(canvas(80, 24), (80, 24, 0, 0));
-        assert_eq!(canvas(111, 20), (110, 20, 0, 0));
+        assert_eq!(canvas(81, 20), (80, 20, 0, 0));
         assert_eq!(render(None, &[('a', 0)], 1, 33, 7), b"\x1b[2J\x1b[8;34H\x1b[0ma\x1b[0m");
         let s = sb(); s.origin(5, 2); s.st.borrow_mut().cursor = Some((3, 4)); s.st.borrow_mut().tty = false;
         assert_eq!((s.st.borrow().ox, s.st.borrow().oy), (5, 2));
@@ -868,6 +879,10 @@ mod tests {
         assert_eq!(wrap("abcdefghij k", 4), ["abcd", "efgh", "ij k"]);
         assert_eq!(wrap("a\n\nb", 5), ["a", "", "b"]);
         assert_eq!(eval("return ui.pad('héllo wörld', 7) .. '|' .. ui.width('€€') .. ui.pad('ab', 4) .. '|'").unwrap(), "héllo w|2ab  |");
+    }
+    #[test] fn cols_pads_aligns_and_cuts() {
+        let s = sb(); s.load("function draw() ui.cols(1, 1, {6, -4, 3}, {'Wed 18', 7, 'abcdef'}); ui.cols(1, 2, {3}, {}, 'dim') end").unwrap(); s.draw(40, 12).unwrap();
+        let g = s.grid_text(); let l: Vec<&str> = g.lines().collect(); assert!(l[0].starts_with("Wed 18     7  abc"), "{g}");
     }
     #[test] fn tz_string() { assert_eq!(posix_tz(330), "<+0530>-05:30"); assert_eq!(posix_tz(-60), "<-0100>+01:00"); assert_eq!(posix_tz(0), "<+0000>-00:00"); }
     #[test] fn calc_works_in_a_test_run() {

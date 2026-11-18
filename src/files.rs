@@ -1,3 +1,5 @@
+use std::{fs::{self, File, OpenOptions}, io::{self, Write}, os::unix::fs::{OpenOptionsExt, PermissionsExt}, path::Path};
+
 /// Why `rm` must refuse `path`, or None: '/', '.', '..', and paths ending in '/.' or '/..'.
 pub fn rm_refuses(path: &str) -> Option<&'static str> {
     let last = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
@@ -23,6 +25,32 @@ pub fn app_name_ok(s: &str) -> bool {
 pub const RESERVED: &[&str] = &["cd", "exit", "help", "date", "tz", "clear", "history", "pwd", "echo", "whoami", "mkdir", "rmdir", "touch", "rm", "mv", "cp", "write", "ls", "cat", "ip", "poweroff", "reboot",
     "edit", "nano", "find", "top", "fetch", "neofetch", "curl", "agent", "passwd", "dhcp", "login", "den", "init", "nsh", "app", "apps"];
 
+/// Temp file in the same directory, then rename: a crash never leaves half a file. The old mode is kept.
+pub fn save(p: &Path, data: &[u8]) -> io::Result<()> {
+    let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    // a fresh, unguessable name opened with O_EXCL: a file or link planted at the temp path is never written through
+    let (tmp, mut f) = loop {
+        let mut r = [0u8; 8];
+        crate::user::random(&mut r)?;
+        let t = dir.join(format!(".{}.{:016x}.edit-tmp", p.file_name().map_or("file".into(), |n| n.to_string_lossy()), u64::from_ne_bytes(r)));
+        match OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&t) {
+            Ok(f) => break (t, f),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    let r = (|| {
+        // keep only rwx bits: setuid/setgid/sticky are never carried to the new file
+        // only from a regular file: a symlink's own mode is 0777
+        if let Ok(m) = fs::symlink_metadata(p) { if m.file_type().is_file() { f.set_permissions(fs::Permissions::from_mode(m.permissions().mode() & 0o777))?; } }
+        f.write_all(data)?; f.sync_all()?;
+        fs::rename(&tmp, p)?;
+        File::open(dir)?.sync_all()
+    })();
+    if r.is_err() { let _ = fs::remove_file(&tmp); }
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -30,6 +58,14 @@ mod tests {
     #[test] fn app_names() {
         for n in ["a", "calc", "weather-2", "a1-b2", "abcdefghijklmnopqrst"] { assert!(app_name_ok(n), "{n}"); }
         for n in ["", "1a", "-a", "A", "a_b", "a b", "a/b", "..", "abcdefghijklmnopqrstu", "é"] { assert!(!app_name_ok(n), "{n}"); }
+    }
+    #[test] fn save_replaces_content_and_keeps_the_mode() {
+        let d = std::env::temp_dir().join(format!("thir-files-{}", std::process::id())); let _ = fs::remove_dir_all(&d); fs::create_dir_all(&d).unwrap();
+        let p = d.join("f"); fs::write(&p, "old").unwrap(); fs::set_permissions(&p, fs::Permissions::from_mode(0o640)).unwrap();
+        save(&p, b"new\n").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "new\n"); assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o640);
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&d);
     }
     #[test] fn refused() { for p in ["/", "//", ".", "..", "a/..", "/data/home/x/.", ""] { assert!(rm_refuses(p).is_some(), "{p:?}"); } }
     #[test] fn allowed() { for p in ["a", "a/", "./a", "/data/home/x/docs", "..a"] { assert!(rm_refuses(p).is_none(), "{p:?}"); } }

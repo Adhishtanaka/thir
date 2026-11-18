@@ -1,5 +1,5 @@
 use thir::{clock, files::{app_name_ok, printable, rm_refuses}, line::Editor, net, parse::parse_cmd};
-use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::{fs::OpenOptionsExt, process::{CommandExt, ExitStatusExt}}, path::Path, process::{exit, Command, Stdio}};
+use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::{fs::{FileExt, OpenOptionsExt}, process::{CommandExt, ExitStatusExt}}, path::Path, process::{exit, Command, Stdio}};
 
 /// Every command nsh offers, by section: (usage, description). Builtins and completion come from here, so they cannot drift.
 const HELP: &[(&str, &[(&str, &str)])] = &[
@@ -175,7 +175,13 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
             }
         }
         "cat" => for a in args {
-            if let Err(e) = File::open(a).and_then(|mut f| io::copy(&mut f, out)) { eprintln!("nsh: cat: {a}: {e}"); }
+            // on a terminal, end a last line that has no newline, so the next prompt does not draw over it
+            let r = File::open(a).and_then(|mut f| {
+                let n = io::copy(&mut f, out)?; let mut b = [0u8];
+                if color && n > 0 && f.read_at(&mut b, n - 1)? == 1 && b[0] != b'\n' { out.write_all(b"\n")?; }
+                Ok(())
+            });
+            if let Err(e) = r { eprintln!("nsh: cat: {a}: {e}"); }
         },
         "ip" => match net::interfaces() { Ok(v) => for i in &v { let _ = writeln!(out, "{}", i.line()); }, Err(e) => eprintln!("nsh: ip: {e}") },
         "poweroff" => exit(thir::EXIT_POWEROFF),

@@ -1,4 +1,5 @@
 //! curl: thir's small HTTP/HTTPS client. Run as `agent` (a symlink to this binary) it is the AI chat instead.
+mod act;
 mod agent;
 mod app;
 mod conn;
@@ -102,7 +103,7 @@ fn remote_name(u: &Url) -> Option<String> {
     if n.is_empty() || n.starts_with('.') || n.starts_with('-') || printable(n) != n { None } else { Some(n.to_string()) }
 }
 
-fn human(n: u64) -> String { if n >= 1 << 20 { format!("{:.1} MiB", n as f64 / 1048576.0) } else if n >= 1024 { format!("{:.1} KiB", n as f64 / 1024.0) } else { format!("{n} B") } }
+pub fn human(n: u64) -> String { if n >= 1 << 20 { format!("{:.1} MiB", n as f64 / 1048576.0) } else if n >= 1024 { format!("{:.1} KiB", n as f64 / 1024.0) } else { format!("{n} B") } }
 
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();

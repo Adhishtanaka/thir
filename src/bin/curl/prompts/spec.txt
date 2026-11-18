@@ -20,7 +20,7 @@ net: <space-separated origins the app calls, e.g. https://api.open-meteo.com, or
 ===DATA===
 <what is kept in the store (key -> shape); what is fetched from which exact URL and which fields are used; or: nothing>
 ===SCREEN===
-<row by row: title row, content, footer with key help; what shows while loading, when offline, when there is no data yet>
+<row by row: title row, then compact left-aligned content: headings, aligned rows, boxed panels, and a small ASCII-art mark (for weather: sun/cloud/rain icons and one boxed panel per day), footer with key help; what shows while loading, when offline, when there is no data yet>
 ===KEYS===
 <every key and what it does; q and Esc always quit>
 

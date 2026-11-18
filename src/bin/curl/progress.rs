@@ -4,7 +4,7 @@
 use std::{io::Write, sync::{atomic::{AtomicBool, Ordering::SeqCst}, Arc, Mutex}, thread, time::{Duration, Instant}};
 use thir::{files::printable, term};
 
-const ACC: &str = "\x1b[1m"; const DIM: &str = "\x1b[90m"; const GOOD: &str = "\x1b[32m"; const WARN: &str = "\x1b[33m"; const BAD: &str = "\x1b[31m"; const R: &str = "\x1b[0m";
+pub const ACC: &str = "\x1b[1m"; pub const DIM: &str = "\x1b[90m"; const GOOD: &str = "\x1b[32m"; pub const WARN: &str = "\x1b[33m"; const BAD: &str = "\x1b[31m"; pub const R: &str = "\x1b[0m";
 const DOTS: [&str; 4] = ["·", "•", "●", "•"];
 const TICK_MS: u64 = 120;
 
@@ -35,11 +35,12 @@ impl Model {
 
     pub fn begin(&mut self, label: &str, now: u64) {
         if let Some(r) = self.rows.iter_mut().find(|r| r.mark == Mark::Pending && r.label == label) { r.mark = Mark::Active; r.t0 = now; }
+        else if !self.rows.iter().any(|r| r.mark == Mark::Pending && r.label == label) { self.rows.push(row(label, Mark::Active, now)); }   // a step the plan did not list (agent do: read)
         self.reset_text();
     }
     pub fn text(&mut self, t: &str) {
         for c in t.chars() {
-            if c == '\n' { self.nl += 1; if !self.partial.trim().is_empty() { self.last = self.partial.trim().to_string(); } self.partial.clear(); }
+            if c == '\n' { self.nl += 1; if !self.partial.trim().is_empty() && !self.partial.trim().starts_with("===") { self.last = self.partial.trim().to_string(); } /* marker lines are not a preview */ self.partial.clear(); }
             else { self.partial.push(if c == '\t' { ' ' } else { c }); }
         }
     }
@@ -129,7 +130,7 @@ impl Progress {
     pub fn new(header: &str, detail: &str, plain_header: &str, labels: &[&str]) -> Progress {
         if unsafe { libc::isatty(1) } != 1 { println!("{plain_header}"); return Progress { sh: None, th: None, open: AtomicBool::new(false) }; }
         term::cursor_hide();
-        term::put(format!("{ACC}{header}{R}{DIM}{detail}{R}\n").as_bytes());
+        term::put(format!("  {ACC}{header}{R}{DIM}{detail}{R}\n").as_bytes());
         let sh = Arc::new(Shared { m: Mutex::new(Inner { model: Model::new(labels), drawn: 0, last: vec![] }), stop: AtomicBool::new(false), t0: Instant::now() });
         let s2 = sh.clone();
         let th = thread::spawn(move || while !s2.stop.load(SeqCst) {
@@ -165,14 +166,6 @@ impl Progress {
         if self.sh.is_none() { println!("{}fixing ({n}/{max}): {reason}", if self.open.swap(false, SeqCst) { "\n" } else { "" }); }
         self.edit(|m, now| m.retry(n, max, reason, now));
     }
-    /// A message line above the live block.
-    pub fn say(&self, m: &str) {
-        let Some(sh) = &self.sh else { println!("{m}"); return };
-        let mut g = sh.m.lock().unwrap();
-        let up = if g.drawn > 1 { format!("\x1b[{}A", g.drawn - 1) } else { String::new() };
-        term::put(format!("{up}\r{m}\x1b[K\n\x1b[J").as_bytes());
-        g.drawn = 0; g.last.clear(); sh.draw(&mut g);
-    }
     fn close(&mut self) {
         let Some(sh) = self.sh.take() else { return };
         sh.stop.store(true, SeqCst);
@@ -183,15 +176,20 @@ impl Progress {
         term::cursor_show();
     }
     /// Ends the display and prints the last line; returns it for the summary shown again after the app quits.
-    pub fn done(&mut self, what: &str, secs: u64, calls: usize, k: usize) -> String {
-        let more = format!("{secs} s · {calls} calls · about {k}k tokens");
-        if self.sh.is_none() { let l = format!("{what} in {secs} s ({calls} calls, about {k}k tokens)"); println!("{l}"); return l; }
+    /// `hint` is an optional dim second line under the result.
+    pub fn done(&mut self, what: &str, secs: u64, calls: usize, k: usize, hint: &str) -> String {
+        let c = format!("{calls} call{}", if calls == 1 { "" } else { "s" });
+        let more = format!("{secs} s · {c} · about {k}k tokens");
+        if self.sh.is_none() { let l = format!("{what} in {secs} s ({c}, about {k}k tokens)"); println!("{l}"); return l; }
         self.close();
-        let l = format!("  {GOOD}●{R} {what}{DIM} · {more}{R}");
-        term::put(format!("{l}\n").as_bytes());
+        let mut l = format!("  {GOOD}●{R} {ACC}{what}{R}{DIM}  {more}{R}");
+        if !hint.is_empty() { l += &format!("\n    {DIM}{hint}{R}"); }
+        term::put(format!("\n{l}\n").as_bytes());   // a blank line sets the result apart from the step rows
         l
     }
 }
+/// A result line like the progress rows: `  ● text` (green) or `  × text` (red).
+pub fn mark(ok: bool, s: &str) -> String { if ok { format!("  {GOOD}●{R} {s}") } else { format!("  {BAD}×{R} {s}") } }
 impl Drop for Progress { fn drop(&mut self) { self.close(); } }
 
 /// The chat's wait mark on stderr: a breathing dot, `thinking` and the seconds, erased when the first text arrives.
@@ -232,6 +230,12 @@ mod tests {
         m.text("ction a()\n  retu"); assert_eq!(m.last, "local function a()");
         m.text("rn 1\n\n\n"); assert_eq!(m.last, "return 1"); assert_eq!(m.lines(), 4);
         m.text("\tx"); assert_eq!(m.lines(), 5);
+    }
+    #[test] fn a_step_not_in_the_plan_is_added_and_markers_are_no_preview() {
+        let mut m = Model::new(&["plan"]); m.begin("plan", 0); m.text("a\n===END===\n"); assert_eq!(m.last, "a"); m.finish(None, 0);
+        m.begin("read", 0); assert_eq!((m.rows.len(), m.rows[1].mark, m.rows[1].label.as_str()), (2, Mark::Active, "read")); m.finish(None, 0);
+        m.begin("plan", 0); assert_eq!((m.rows.len(), m.rows[2].mark), (3, Mark::Active));
+        assert_eq!(plain(&mark(true, "x")), "  ● x"); assert_eq!(plain(&mark(false, "x")), "  × x");
     }
     #[test] fn steps_settle_in_order_and_show_what_is_left() {
         let mut m = m(); m.begin("plan", 0); m.text("a\nb\n");

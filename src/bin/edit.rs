@@ -1,5 +1,5 @@
 //! edit [file]: full-screen text editor (also reachable as `nano`). Buffer logic lives in thir::edit.
-use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, os::unix::fs::{OpenOptionsExt, PermissionsExt}, path::Path, process::exit};
+use std::{fs::{self, File}, io::Read, path::Path, process::exit};
 use thir::{edit::{render, Buf}, line::{Decoder, Key}, term::{self, put, Raw}};
 
 const MAX: u64 = 4 << 20;
@@ -20,33 +20,6 @@ fn load(name: &str) -> (Buf, &'static str) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Buf::from_text(""), "New file"),
         Err(e) => die(&format!("{name}: {e}")),
     }
-}
-
-/// Temp file in the same directory, then rename: a crash never leaves half a file. The old mode is kept.
-fn save(name: &str, text: &str) -> std::io::Result<()> {
-    let p = Path::new(name);
-    let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    // a fresh, unguessable name opened with O_EXCL: a file or link planted at the temp path is never written through
-    let (tmp, mut f) = loop {
-        let mut r = [0u8; 8];
-        thir::user::random(&mut r)?;
-        let t = dir.join(format!(".{}.{:016x}.edit-tmp", p.file_name().map_or("file".into(), |n| n.to_string_lossy()), u64::from_ne_bytes(r)));
-        match OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&t) {
-            Ok(f) => break (t, f),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    };
-    let r = (|| {
-        // keep only rwx bits: setuid/setgid/sticky are never carried to the new file
-        // only from a regular file: a symlink's own mode is 0777
-        if let Ok(m) = fs::symlink_metadata(p) { if m.file_type().is_file() { f.set_permissions(fs::Permissions::from_mode(m.permissions().mode() & 0o777))?; } }
-        f.write_all(text.as_bytes())?; f.sync_all()?;
-        fs::rename(&tmp, p)?;
-        File::open(dir)?.sync_all()
-    })();
-    if r.is_err() { let _ = fs::remove_file(&tmp); }
-    r
 }
 
 fn main() {
@@ -97,7 +70,7 @@ fn do_save(buf: &mut Buf, name: &mut Option<String>, dec: &mut Decoder, rows: us
         match term::prompt(dec, rows - 1, "Save as: ").filter(|s| !s.is_empty()) { Some(n) => *name = Some(n), None => return "Cancelled".into() }
     }
     let n = name.as_deref().unwrap();
-    match save(n, &buf.text()) {
+    match thir::files::save(Path::new(n), buf.text().as_bytes()) {
         Ok(()) => { buf.modified = false; let c = buf.lines.len(); format!("Saved {c} line{} to {n}", if c == 1 { "" } else { "s" }) }
         Err(e) => format!("Cannot save: {e}"),
     }

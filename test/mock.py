@@ -15,6 +15,7 @@ sh("openssl", "x509", "-req", "-in", "srv.csr", "-CA", "ca.pem", "-CAkey", "ca.k
 APPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps")   # canned apps for the app tests
 BIN = bytes(range(256))
 USER_TEXT = "mock reply %d café"
+PEOPLE = b'{"people":[{"name":"Ada"},{"name":"Linus"},{"name":"Grace"}]}\n'   # agent do downloads and reads it; a key or auth header gets a 403
 
 def err(reason): return 400, json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": "mock: " + reason}}).encode()
 
@@ -50,6 +51,7 @@ class H(BaseHTTPRequestHandler):
         elif p == "/slow":
             self.send_response(200); self.send_header("Content-Length", "5"); self.end_headers(); self.wfile.flush(); time.sleep(5); self.wfile.write(b"late\n")
         elif p.startswith("/apps/") and "/" not in p[6:] and not p[6:].startswith(".") and os.path.isfile(os.path.join(APPS, p[6:])): self.send(200, open(os.path.join(APPS, p[6:]), "rb").read())
+        elif p == "/people.json": self.send(403 if (self.headers.get("authorization") or self.headers.get("x-api-key")) else 200, PEOPLE, "application/json")
         elif p == "/downgrade": self.redirect("http://10.0.2.2:18080/hello")
         else: self.send(404, b"not found\n")
     do_HEAD = do_GET
@@ -59,6 +61,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/echo": self.send(200, ("POST %s %s\n" % ("same" if body == BIN else "different", auth)).encode())
         elif p in ("/anthropic/v1/messages", "/refuse/v1/messages"): self.anthropic(body, auth, p.startswith("/refuse"))
         elif p == "/build/v1/messages": self.build(body)
+        elif p == "/do/v1/messages": self.do(body)
         elif p == "/openai/v1/chat/completions": self.openai(body, auth)
         elif p == "/err/v1/chat/completions": self.send(401, b'{"error":{"message":"Incorrect API key provided"}}', "application/json")
         else: self.send(404, b"not found\n")
@@ -102,12 +105,28 @@ class H(BaseHTTPRequestHandler):
         elif "===REQUEST===" in m and "weather" in m: text = app("weather.spec") if "===ABOUT THE USER===" in m and "city: Colombo" in m else "NO: mock: no city in the request"
         elif "===REQUEST===" in m: text = "NO: a recipe is not an app." if "lasagna" in m else app("calc.spec")
         else: return self.send(400, err("unknown step")[1], "application/json")
+        self.text_reply(text)
+    def text_reply(self, text):
         d = lambda o: "event: %s\ndata: %s\n\n" % (o["type"], json.dumps(o, ensure_ascii=False))
         lines = text.splitlines(True)
         self.sse([d({"type": "message_start", "message": {"id": "m2", "model": "claude-opus-5-5", "role": "assistant", "content": []}}),
                   d({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})]
                  + [d({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "".join(lines[i:i + 8])}}) for i in range(0, len(lines), 8)]
                  + [d({"type": "content_block_stop", "index": 0}), d({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}), d({"type": "message_stop"})])
+    def do(self, raw):   # agent do: canned plans picked by words in the task
+        j = json.loads(raw); ms = j["messages"]; task = ms[0]["content"].split("===REQUEST===\n")[-1]
+        if j.get("stream") is not True or not j.get("system", "").startswith("You turn a user's request into file actions"): return self.send(400, err("do request")[1], "application/json")
+        P = lambda b: "===PLAN===\n" + b + "===END===\n"
+        if "names" in task: text = (P("WRITE names.txt\n<<<\nAda\nLinus\nGrace\n>>>\n") if '"Ada"' in ms[-1]["content"] else "NO: mock: no page") if len(ms) == 3 else "READ http://10.0.2.2:18080/people.json"
+        elif "shopping" in task: text = P("WRITE notes.txt\n<<<\nmilk\neggs\n>>>\n")
+        elif "into docs" in task: text = P("MOVE notes.txt docs/\n")
+        elif "download" in task: text = P("FETCH http://10.0.2.2:18080/people.json data/people.json\n")
+        elif "keys" in task: text = P("WRITE ~/.config/thir/keys/anthropic\n<<<\nx\n>>>\n")
+        elif "calc" in task: text = P("REPLACE ~/apps/calc/main.lua\n<<<\nx\n>>>\n")
+        elif "sneaky" in task: text = P("FETCH http://10.0.2.2:18080/hello hello.txt\n")
+        elif "delete" in task: text = P("RUN rm -rf ~\n")
+        else: text = "NO: mock: unknown task"
+        self.text_reply(text)
     def openai(self, raw, auth):
         j = json.loads(raw)
         if auth != "noauth" or j.get("model") != "mock-model" or j.get("stream") is not True or j["messages"][0]["role"] != "system": return self.send(400, b'{"error":{"message":"mock: bad request"}}', "application/json")

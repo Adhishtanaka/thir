@@ -15,6 +15,7 @@ pub const USAGE: &str = "usage: agent [-p PROVIDER] [-m MODEL] [-e EFFORT] [QUES
        agent build \"IDEA\"        make a new app with AI, test it and open it
        agent edit APP \"CHANGE\"   change an app (asks what to change if no text)
        agent fix APP [\"PROBLEM\"] fix the last crash, or the problem you describe
+       agent do \"TASK\"           write, move or download files; asks first
        agent run APP [ARGS]      open an app (or just type its name)
        agent list | undo APP | rm APP
        agent remember \"FACT\"     keep a fact for next time, e.g. \"city: Colombo\"
@@ -33,6 +34,8 @@ Apps live in ~/apps. They can only draw, use the keys, keep their own data and
 reach the web sites you allow. Building costs API money (about 2 to 5 calls).
 Memory is in ~/.config/thir/memory (only you can read it). agent sends it to
 your AI provider with chats and builds; apps never see it.
+agent do never deletes, never runs programs and only touches files in your
+home folder, never ~/apps or hidden files. It shows the plan and asks first.
 ";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -301,7 +304,7 @@ pub fn stream(c: &Ctx, system: &str, msgs: &[Msg], on_text: &mut dyn FnMut(&str)
 /// The chat's system prompt: how to answer, what thir is, the remembered facts and the installed apps (names and descriptions only).
 fn system(home: &Path) -> Result<String, String> {
     let facts = crate::memory::load(home)?;
-    Ok(format!("{SYS}\nYou run on thir, a tiny operating system. You cannot run commands; tell the user what to type. Typing an app's name opens it. agent build \"IDEA\" makes an app, agent edit APP \"CHANGE\" changes one, agent list lists them, agent remember \"FACT\" keeps a fact.\n{}{}", crate::memory::block(&facts), crate::make::apps_block(home)))
+    Ok(format!("{SYS}\nYou run on thir, a tiny operating system. You cannot run commands; tell the user what to type. Typing an app's name opens it. agent build \"IDEA\" makes an app, agent edit APP \"CHANGE\" changes one, agent list lists them, agent remember \"FACT\" keeps a fact, agent do \"TASK\" writes, moves, copies or downloads files after the user says yes.\n{}{}", crate::memory::block(&facts), crate::make::apps_block(home)))
 }
 
 /// The chat command: streams to the terminal with a "thinking..." mark, then the notes. Ok(answer) or Err(message).
@@ -362,6 +365,7 @@ pub fn main(args: Vec<String>) -> i32 {
     // app commands come first and never reach the key code: running an app reads no key and no provider config
     match args.first().map(String::as_str) {
         Some(c @ ("run" | "list" | "undo" | "rm" | "build" | "edit" | "fix")) => return crate::make::command(c, &args[1..]),
+        Some("do") => return crate::act::command(&args[1..]),
         Some(c @ ("remember" | "forget" | "memory")) => return crate::memory::command(c, &args[1..]),
         _ => {}
     }

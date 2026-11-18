@@ -1,7 +1,7 @@
 //! Apps on disk (~/apps/NAME/main.lua + app.json) and the commands agent build, edit, fix, run, list, undo and rm.
 //! `run`, `list`, `undo` and `rm` never load an API key or the agent config. build, edit and fix use agent::ctx_for, the one path to a key.
 //! Network approvals live in ~/.config/thir/approvals, outside every app directory: an app that ships its own "approved" list gets nothing from it.
-use crate::{memory, progress::Progress, agent::{self, clean, read_private, sanitize, stream, write_private, Chosen, Ctx, EFFORTS}, app};
+use crate::{memory, progress::{self, Progress}, agent::{self, clean, read_private, sanitize, stream, write_private, Chosen, Ctx, EFFORTS}, app};
 use std::{fs, io::BufRead, os::unix::fs::{DirBuilderExt, MetadataExt}, path::{Path, PathBuf}, time::Instant};
 use thir::{clock, files::{app_name_ok, printable, RESERVED}, http::Url, json::{self, Json}, line::Editor, term};
 
@@ -84,10 +84,11 @@ fn save_approvals(home: &Path, text: &str) -> Result<(), String> {
 }
 
 /// The question before an app first connects (or connects somewhere new). `had_some`: the user approved other hosts for it before.
-pub fn approval_text(m: &Manifest, new: &[String], had_some: bool) -> String {
+pub fn approval_text(m: &Manifest, new: &[String], had_some: bool, color: bool) -> String {
+    let (b, d, r) = if color { (progress::ACC, progress::DIM, progress::R) } else { ("", "", "") };
     let hosts: Vec<String> = new.iter().map(|o| Url::parse(o).map_or(printable(o), |u| format!("{}{}", u.host_header(), if u.https { "" } else { " (not encrypted)" }))).collect();
     let (name, also) = (&m.name, if had_some { "now also wants to" } else { "wants to" });
-    format!("{name} {also}:\n  \u{b7} connect to {}\n  \u{b7} keep its own data in ~/apps/{name}/data\nIt cannot read your other files or keys, or run programs.\nAllow and run? (y/N) ", hosts.join(", "))
+    format!("  {b}{name}{r} {also}:\n    {d}\u{b7}{r} connect to {}\n    {d}\u{b7}{r} keep its own data in ~/apps/{name}/data\n  {d}It cannot read your other files or keys, or run programs.{r}\n\n  Allow and run? (y/N) ", hosts.join(", "))
 }
 
 // ---- paths ----
@@ -165,7 +166,7 @@ pub fn parse_net(v: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn no_reason(t: &str) -> Option<String> {
+pub fn no_reason(t: &str) -> Option<String> {
     let t = t.trim();
     let rest = if t.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("no:")) { &t[3..] } else if t.eq_ignore_ascii_case("no") || t.eq_ignore_ascii_case("no.") { "" } else { return None };
     let r: String = printable(rest.trim()).chars().take(200).collect();
@@ -296,7 +297,7 @@ fn undo_app(dir: &Path, name: &str, now: i64) -> Result<i64, String> {
 
 enum Gen { No(String), App(Header, String) }
 
-struct Job<'a> { c: Ctx<'a>, calls: usize, chars: usize, store: Vec<(String, String)>, t0: Instant, p: Progress }
+struct Job<'a> { hint: String, c: Ctx<'a>, calls: usize, chars: usize, store: Vec<(String, String)>, t0: Instant, p: Progress }
 
 impl Job<'_> {
     /// One model call; its text goes to the progress display. (text, cut off at the length limit)
@@ -344,15 +345,15 @@ impl Job<'_> {
 
     fn done(&mut self, what: &str) {
         let k = ((self.chars / 4) + 500) / 1000;   // shortcut: chars/4 estimate; parse usage from message_delta later
-        let line = self.p.done(what, self.t0.elapsed().as_secs(), self.calls, k.max(1));
+        let line = self.p.done(what, self.t0.elapsed().as_secs(), self.calls, k.max(1), &self.hint);
         *SUMMARY.lock().unwrap() = line;   // the app clears the screen when it quits; the line is shown again after it
     }
 }
 
 /// `header` is what is being done ("building"), `name` the app if known; the display starts here.
 fn job<'a>(ch: &'a Chosen, store: Vec<(String, String)>, header: &str, plain: &str, labels: &[&str]) -> Job<'a> {
-    let p = Progress::new(header, &format!(" · {} via {} · uses API credit", ch.model, ch.p.name), plain, labels);
-    Job { c: ch.ctx(), calls: 0, chars: 0, store, t0: Instant::now(), p }
+    let p = Progress::new(header, &format!("  {} via {} · uses API credit", ch.model, ch.p.name), plain, labels);
+    Job { hint: String::new(), c: ch.ctx(), calls: 0, chars: 0, store, t0: Instant::now(), p }
 }
 
 static SUMMARY: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
@@ -372,8 +373,10 @@ fn build(ch: &Chosen, home: &Path, facts: &[String], idea: &str) -> Result<Strin
     let base = plan.name.clone().unwrap_or_default();
     let name = pick_name(&base, &|n| fs::symlink_metadata(apps.join(n)).is_ok() || Path::new("/bin").join(n).exists()).ok_or("agent: could not find a free name for the app")?;
     if name != base {
-        if fs::symlink_metadata(apps.join(&base)).is_ok() { j.p.say(&format!("you already have {base}; this one is {name}. To change {base}: agent edit {base} \"…\"")); }
-        else { j.p.say(&format!("{base} is the name of a command; this app is called {name}")); }
+        if fs::symlink_metadata(apps.join(&base)).is_ok() {
+            j.p.note("name", &format!("{name} · you already have {base}"), &format!("you already have {base}; this one is {name}. To change {base}: agent edit {base} \"…\""));
+            j.hint = format!("to change {base} instead: agent edit {base} \"…\"");
+        } else { j.p.note("name", &format!("{name} · {base} is a command"), &format!("{base} is the name of a command; this app is called {name}")); }
     }
     let (h, code) = match j.generate("writing code", format!("===REQUEST===\n{idea}\n===SPEC===\n{spec}\nWrite this app."), &spec, true)? { Gen::No(r) => return Err(not_buildable(&r)), Gen::App(h, c) => (h, c) };
     let (title, about, net) = (h.title.or(plan.title).unwrap_or_else(|| name.clone()), h.about.or(plan.about).unwrap_or_default(), h.net.or(plan.net).unwrap_or_default());
@@ -416,9 +419,9 @@ fn change(ch: &Chosen, name: &str, kind: Change, facts: &[String], text: &str) -
 
 // ---- commands ----
 
-struct Cli { p: Option<String>, m: Option<String>, e: Option<String>, words: Vec<String> }
+pub struct Cli { pub p: Option<String>, pub m: Option<String>, pub e: Option<String>, pub words: Vec<String> }
 
-fn parse_cli(args: &[String]) -> Result<Cli, String> {
+pub fn parse_cli(args: &[String]) -> Result<Cli, String> {
     let mut c = Cli { p: None, m: None, e: None, words: vec![] };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -475,9 +478,9 @@ fn make(cmd: &str, args: &[String]) -> i32 {
     loop {   // open the app; after it, offer another change
         let rc = run(&[name.clone()]);
         if rc != 0 { return rc; }
-        println!("{}", SUMMARY.lock().unwrap());
-        println!("Change something in {name}? Type it, or press Enter to finish.");
-        let Some(l) = ask_line("change> ") else { return 0 };
+        println!("\n{}", SUMMARY.lock().unwrap());
+        println!("\n  Change something in {name}? {}Type it, or press Enter to finish.{}", progress::DIM, progress::R);
+        let Some(l) = ask_line("  change> ") else { return 0 };
         if l.is_empty() { return 0; }
         if let Err(m) = change(&ch, &name, Change::Edit, &facts, &l) { return fail(&m); }
     }
@@ -499,7 +502,7 @@ pub fn run(args: &[String]) -> i32 {
     let new = unapproved(&m, &have);
     if !new.is_empty() {
         if unsafe { libc::isatty(0) } != 1 { return fail(&format!("agent: {name} must be approved first; run it in a terminal")); }
-        if !ask(&approval_text(&m, &new, !have.is_empty())) { println!("not allowed; {name} did not run"); return 1; }
+        if !ask(&approval_text(&m, &new, !have.is_empty(), unsafe { libc::isatty(1) } == 1)) { println!("  not allowed; {name} did not run"); return 1; }
         if let Err(e) = save_approvals(&home, &add_approvals(&approvals, name, &new)) { return fail(&e); }
     }
     let data = dir.join("data");
@@ -595,11 +598,11 @@ mod tests {
     }
     #[test] fn approval_text_for_new_and_added_hosts() {
         let m = parse_manifest(r#"{"name":"hello","net":["http://10.0.2.2:18080","https://a.example"]}"#).unwrap();
-        let t = approval_text(&m, &unapproved(&m, &[]), false);
-        assert!(t.starts_with("hello wants to:\n") && t.contains("connect to 10.0.2.2:18080 (not encrypted), a.example\n") && t.ends_with("Allow and run? (y/N) "), "{t}");
+        let t = approval_text(&m, &unapproved(&m, &[]), false, false);
+        assert!(t.starts_with("  hello wants to:\n") && t.contains("connect to 10.0.2.2:18080 (not encrypted), a.example\n") && t.ends_with("\n\n  Allow and run? (y/N) "), "{t}");
         let have = s(&["http://10.0.2.2:18080"]);
-        let t = approval_text(&m, &unapproved(&m, &have), true);
-        assert!(t.starts_with("hello now also wants to:") && !t.contains("10.0.2.2"), "{t}");
+        let t = approval_text(&m, &unapproved(&m, &have), true, false);
+        assert!(t.starts_with("  hello now also wants to:") && !t.contains("10.0.2.2"), "{t}");
         assert!(unapproved(&parse_manifest(r#"{"name":"calc","net":[]}"#).unwrap(), &[]).is_empty());
     }
     #[test] fn approvals_file_round_trip_and_rm_clears_it() {

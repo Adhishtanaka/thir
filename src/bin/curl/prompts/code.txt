@@ -14,6 +14,7 @@ ui.text(x, y, s, color)       write s at column x, row y, cut at the right edge;
 ui.center(y, s, color)        s centred on row y
 ui.pad(s, w)                  s cut or padded with spaces to exactly w characters
 ui.wrap(s, w)                 list of lines of at most w characters
+ui.cols(x, y, widths, cells, color)  one row of aligned columns: widths like {12, 16, -6} (a negative width right-aligns, for numbers), cells like {"Wed 18", "Light drizzle", "24°"}; each cell is cut or padded to its width and columns are 2 spaces apart
 ui.width(s)                   number of characters in s (use it instead of #s for text)
 ui.fill(x, y, w, h, color)    fill a rectangle with spaces in color ("sel" makes a highlight bar)
 ui.box(x, y, w, h, title)     a line box; title is optional
@@ -47,6 +48,12 @@ DESIGN (every app must look like thir)
 - A highlight ("sel") must cover exactly the row it marks: ui.fill(x, y, w, 1, "sel") or ui.list with the real width, never one cell past the row.
 - "accent" for headings, "dim" for labels and hints, "sel" for the selected row, and "good", "warn", "bad" only when they mean something (ok, warning, error, rise, fall). No other colours, no colour for decoration.
 - Fit every size from 40x12 upward: compute positions from w and h, and cut long text with ui.pad or ui.wrap.
+- Layout: keep content in one tidy column that starts at x = 2 (the same column as the title and footer text) and is at most 60 characters wide: cw = math.min(w - 3, 60). A row of panels side by side (such as day boxes) may use the full width w - 3. Never stretch content across the whole terminal and never push numbers to the right edge (w - n); on a wide screen the right side stays empty, which is right.
+- Never glue text with .. to line things up (that gives "Wed 18Light drizzle"). Rows of facts, lists and tables use ui.cols with fixed widths: text left-aligned, numbers right-aligned (negative width), units next to the number. Label and value pairs: label in "dim" in a column of its own, value in "text".
+- Structure: heading in "accent" (one per section), content right under it, one empty row between sections, a short "dim" hint or the update time in the title status. Start at row 3 and stay compact from the top; do not centre blocks vertically. Centre only a lone message (loading, error, empty state).
+- Colour a value only when it means something. Temperatures, prices and counts are plain "text".
+- Weather apps look like wego: the current weather is a 5-line icon from ICONS (below) with the values in aligned rows beside it; the forecast is one ui.box per day side by side (15 wide, the day as the box title), each holding the 5-line icon, the condition in full words (never short codes like DRZ or CLR), max / min and the rain chance. Map weather codes to sun, cloud, rain, snow, fog or thunder icons; 5 day boxes of 15 fit in 78 columns, so show 5 when w allows (fewer only on a narrow screen) and title the section to match.
+- House style: small ASCII art and boxed panels, like the terminal weather client wego. Use ui.box(x, y, w, h, title) for panels and cards (several side by side, each the same size), and a few lines of ASCII art for a mark that belongs to the app: a weather icon, a clock, a die, a check mark, a big title. Draw art with one ui.text per line (at most 5 lines and 13 characters wide, plain ASCII plus the box characters listed above; write a backslash as "\\"). Art may use "warn" (sun, flame), "info" (rain, water), "good", "bad"; clouds and the rest stay "text". Even a small app (calculator, to-do list, timer) puts its content in a ui.box and has a short art header, not bare lines.
 - Always say what is going on: "Loading…", "No notes yet. Press a to add one.", "Offline: could not reach api.open-meteo.com. Press r to retry."
 
 RULES
@@ -108,3 +115,18 @@ function tick()
   local d, e = http.json("https://api.open-meteo.com/v1/forecast?latitude=" .. lat .. "&longitude=" .. lon .. "&current=temperature_2m")
   if d and d.current then data, err = d.current, nil else err = e or "no data in the answer" end
 end
+
+A table, with the heading above it and numbers right-aligned:
+ui.text(2, 3, "Expenses", "accent")
+for i, e in ipairs(rows) do ui.cols(2, 3 + i, {10, 20, -8}, {e.date, e.what, string.format("%.2f", e.amount)}) end
+
+Icons as data, drawn line by line (a weather app draws one per day inside a ui.box(x, 11, 15, 12, "Wed 18")):
+local ICONS = {
+  sun = { {"    \\   /    ", "warn"}, {"     .-.     ", "warn"}, {" -- (   ) -- ", "warn"}, {"     `-'     ", "warn"}, {"    /   \\    ", "warn"} },
+  cloud = { {"             ", "text"}, {"     .--.    ", "text"}, {"  .-(    ).  ", "text"}, {" (___.__)__) ", "text"}, {"             ", "text"} },
+  rain = { {"     .--.    ", "text"}, {"  .-(    ).  ", "text"}, {" (___.__)__) ", "text"}, {"   ' ' ' '   ", "info"}, {"  ' ' ' '    ", "info"} },
+  snow = { {"     .--.    ", "text"}, {"  .-(    ).  ", "text"}, {" (___.__)__) ", "text"}, {"   *  *  *   ", "text"}, {"  *  *  *    ", "text"} },
+  fog = { {"             ", "text"}, {" _ - _ - _ - ", "dim"}, {"  _ - _ - _  ", "dim"}, {" _ - _ - _ - ", "dim"}, {"             ", "text"} },
+  thunder = { {"     .--.    ", "text"}, {"  .-(    ).  ", "text"}, {" (___.__)__) ", "text"}, {"    /_  /_   ", "warn"}, {"     /   /   ", "warn"} },
+}
+local function icon(x, y, name) for i, l in ipairs(ICONS[name] or ICONS.cloud) do ui.text(x, y + i - 1, l[1], l[2]) end end
