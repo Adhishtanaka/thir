@@ -1,14 +1,51 @@
-//! Progress display for agent build, edit and fix, and the chat's "thinking" mark. Calm: one breathing dot, grey theme, no totals.
+//! Progress display for agent build, edit and fix, and the chat's "thinking" mark. Calm: a breathing dot and a sweeping bar on the active step, grey theme.
+//! Also the shared frames: `rule` (header), `boxed` (result card, decision dialogs) and `keys` (the answer keys).
 //! The pure part (Model: rows, text counting, line formatting) is tested; Progress adds the ticker thread that redraws the live block.
 //! Not a tty: Progress prints the plain lines of old (no escapes, no thread).
 use std::{io::Write, sync::{atomic::{AtomicBool, Ordering::SeqCst}, Arc, Mutex}, thread, time::{Duration, Instant}};
 use thir::{files::printable, term};
 
-pub const ACC: &str = "\x1b[1m"; pub const DIM: &str = "\x1b[90m"; const GOOD: &str = "\x1b[32m"; pub const WARN: &str = "\x1b[33m"; const BAD: &str = "\x1b[31m"; pub const R: &str = "\x1b[0m";
+pub const ACC: &str = "\x1b[1m"; pub const DIM: &str = "\x1b[90m"; pub const GOOD: &str = "\x1b[32m"; pub const WARN: &str = "\x1b[33m"; pub const BAD: &str = "\x1b[31m"; pub const R: &str = "\x1b[0m";
 const DOTS: [&str; 4] = ["·", "•", "●", "•"];
-const TICK_MS: u64 = 120;
+const TICK_MS: u64 = 100;
 
 fn dot(ms: u64) -> &'static str { DOTS[(ms / 180 % 4) as usize] }
+
+/// Characters of `s` that show: escape sequences do not count.
+pub fn vis(s: &str) -> usize { let mut esc = false; s.chars().filter(|&c| { if c == '\x1b' { esc = true; false } else if esc { esc = !c.is_ascii_alphabetic(); false } else { true } }).count() }
+/// The first `n` visible characters of `s` (escapes kept), then a reset when something was cut.
+fn clip(s: &str, n: usize) -> String {
+    if vis(s) <= n { return s.to_string(); }
+    let (mut o, mut k, mut esc) = (String::new(), 0, false);
+    for c in s.chars() {
+        if c == '\x1b' { esc = true; } else if esc { esc = !c.is_ascii_alphabetic(); } else if k == n.saturating_sub(1) { break; } else { k += 1; }
+        o.push(c);
+    }
+    o + "…" + R
+}
+/// A bright block of 2 sweeping to and fro over a dim track of 6: the active step is alive.
+fn sweep(ms: u64) -> String { let p = (ms / 100 % 8) as usize; let i = if p <= 4 { p } else { 8 - p }; format!("{DIM}{}\x1b[0;37m██{DIM}{}{R}", "░".repeat(i), "░".repeat(4 - i)) }
+/// The header: bold `title`, a rule, then dim `meta`, `w` columns wide.
+pub fn rule(title: &str, meta: &str, w: usize) -> String {
+    let avail = w.saturating_sub(vis(title) + 1);   // after "  title ": the frame is w + 2 wide, like `boxed`
+    if vis(meta) + 5 > avail { return format!("  {ACC}{title}{R} {DIM}{}{R}", "─".repeat(avail)); }
+    format!("  {ACC}{title}{R} {DIM}{} {meta}{R}", "─".repeat(avail - vis(meta) - 1))
+}
+/// Width of a frame: the terminal, at most 64.
+pub fn box_w() -> usize { term::size().0.saturating_sub(3).clamp(30, 64) }
+/// A rounded frame `w` wide (indent 2) with a styled `title`, `body` lines and, under a rule, `foot` lines.
+pub fn boxed(title: &str, body: &[String], foot: &[String], w: usize) -> String {
+    let iw = w.saturating_sub(4);
+    let line = |s: &str| format!("  {DIM}│{R} {}{} {DIM}│{R}\n", clip(s, iw), " ".repeat(iw.saturating_sub(vis(s))));
+    let mut o = format!("  {DIM}╭─{R} {title} {DIM}{}╮{R}\n", "─".repeat(w.saturating_sub(vis(title) + 5)));
+    for l in body { o += &line(l); }
+    if !foot.is_empty() { o += &format!("  {DIM}├{}┤{R}\n", "─".repeat(w - 2)); for l in foot { o += &line(l); } }
+    o + &format!("  {DIM}╰{}╯{R}", "─".repeat(w - 2))
+}
+/// The answer keys of a dialog; the default (`[n]`) is stated.
+pub fn keys(yes: &str, no: &str) -> String { format!("{ACC}[y]{R} {yes}    {ACC}[n]{R} {no} {DIM}(default){R}") }
+/// The styled title of a frame that is a result: a green dot and bold text.
+pub fn ok_title(s: &str) -> String { format!("{GOOD}●{R} {ACC}{s}{R}") }
 
 /// `s` cut to `max` characters, the last one `…` when something was cut.
 pub fn fit(s: &str, max: usize) -> String {
@@ -88,14 +125,16 @@ impl Model {
             Mark::Active => { let s = now.saturating_sub(r.t0) / 1000; if self.lines() > 0 { format!("{} lines · {s} s", self.lines()) } else { format!("thinking {s} s") } }
             _ => r.note.clone(),
         };
-        if note.is_empty() { format!("  {ms}{mark}{R} {ls}{}{R}", r.label) } else { format!("  {ms}{mark}{R} {ls}{:<10}{R}  {DIM}{}{R}", r.label, fit(&note, w.saturating_sub(17))) }
+        if note.is_empty() { format!("  {ms}{mark}{R} {ls}{}{R}", r.label) }
+        else if r.mark == Mark::Active { format!("  {ms}{mark}{R} {ls}{:<10}{R}  {DIM}{:<18}{R}  {}", r.label, fit(&note, 18.min(w.saturating_sub(17))), sweep(now)) }
+        else { format!("  {ms}{mark}{R} {ls}{:<10}{R}  {DIM}{}{R}", r.label, fit(&note, w.saturating_sub(17))) }
     }
     /// The live lines: every row not yet settled, and under the active one a preview of the last line written.
     pub fn block(&self, now: u64, w: usize) -> Vec<String> {
         let mut v = vec![];
         for r in &self.rows[self.shown..] {
             v.push(self.line(r, now, w));
-            if r.mark == Mark::Active && !self.last.is_empty() { v.push(format!("    {DIM}› {}{R}", fit(&printable(&self.last), w.saturating_sub(7)))); }
+            if r.mark == Mark::Active && !self.last.is_empty() { v.push(format!("    {DIM}╰ {}{R}", fit(&printable(&self.last), w.saturating_sub(7)))); }
         }
         v
     }
@@ -130,7 +169,7 @@ impl Progress {
     pub fn new(header: &str, detail: &str, plain_header: &str, labels: &[&str]) -> Progress {
         if unsafe { libc::isatty(1) } != 1 { println!("{plain_header}"); return Progress { sh: None, th: None, open: AtomicBool::new(false) }; }
         term::cursor_hide();
-        term::put(format!("  {ACC}{header}{R}{DIM}{detail}{R}\n").as_bytes());
+        term::put(format!("{}\n", rule(header, detail.trim(), box_w())).as_bytes());
         let sh = Arc::new(Shared { m: Mutex::new(Inner { model: Model::new(labels), drawn: 0, last: vec![] }), stop: AtomicBool::new(false), t0: Instant::now() });
         let s2 = sh.clone();
         let th = thread::spawn(move || while !s2.stop.load(SeqCst) {
@@ -175,15 +214,17 @@ impl Progress {
         sh.draw(&mut g);
         term::cursor_show();
     }
-    /// Ends the display and prints the last line; returns it for the summary shown again after the app quits.
-    /// `hint` is an optional dim second line under the result.
-    pub fn done(&mut self, what: &str, secs: u64, calls: usize, k: usize, hint: &str) -> String {
+    /// Ends the display and prints the result card; returns it for the summary shown again after the app quits.
+    /// `next` are the follow-up commands (rule: easy reversal, user in control), `hint` an optional dim sentence under them.
+    pub fn done(&mut self, what: &str, secs: u64, calls: usize, k: usize, hint: &str, next: &[(&str, String)]) -> String {
         let c = format!("{calls} call{}", if calls == 1 { "" } else { "s" });
-        let more = format!("{secs} s · {c} · about {k}k tokens");
         if self.sh.is_none() { let l = format!("{what} in {secs} s ({c}, about {k}k tokens)"); println!("{l}"); return l; }
         self.close();
-        let mut l = format!("  {GOOD}●{R} {ACC}{what}{R}{DIM}  {more}{R}");
-        if !hint.is_empty() { l += &format!("\n    {DIM}{hint}{R}"); }
+        let mut body = vec![format!("{DIM}{secs} s · {c} · about {k}k tokens{R}")];
+        if !next.is_empty() { body.push(String::new()); }
+        for (v, cmd) in next { body.push(format!("{DIM}{v:<7}{R}{cmd}")); }
+        if !hint.is_empty() { body.push(String::new()); body.push(format!("{DIM}{hint}{R}")); }
+        let l = boxed(&ok_title(what), &body, &[], box_w());
         term::put(format!("\n{l}\n").as_bytes());   // a blank line sets the result apart from the step rows
         l
     }
@@ -192,9 +233,9 @@ impl Progress {
 pub fn mark(ok: bool, s: &str) -> String { if ok { format!("  {GOOD}●{R} {s}") } else { format!("  {BAD}×{R} {s}") } }
 impl Drop for Progress { fn drop(&mut self) { self.close(); } }
 
-/// The chat's wait mark on stderr: a breathing dot, `thinking` and the seconds, erased when the first text arrives.
+/// The chat's wait mark on stderr: a breathing dot, `thinking`, the sweeping bar and the seconds, erased when the first text arrives.
 pub struct Think { st: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)> }
-pub fn think_line(ms: u64) -> String { format!("{DIM}{} thinking {} s{R}", dot(ms), ms / 1000) }
+pub fn think_line(ms: u64) -> String { format!("{ACC}{}{R} {DIM}thinking{R} {} {DIM}{} s{R}", dot(ms), sweep(ms), ms / 1000) }
 fn err(s: &str) { let _ = std::io::stderr().write_all(s.as_bytes()); }
 impl Think {
     pub fn start() -> Think {
@@ -239,10 +280,10 @@ mod tests {
     }
     #[test] fn steps_settle_in_order_and_show_what_is_left() {
         let mut m = m(); m.begin("plan", 0); m.text("a\nb\n");
-        assert_eq!(plain(&m.block(5400, 80).join("|")), "  ● plan        2 lines · 5 s|    › b|  · code|  · check|  · test run");
+        assert_eq!(plain(&m.block(5400, 80).join("|")), "  ● plan        2 lines · 5 s       ░░██░░|    ╰ b|  · code|  · check|  · test run");
         m.finish(None, 9000); m.begin("code", 9000);
         let s = m.take_settled(9000, 80); assert_eq!(s.len(), 1); assert_eq!(plain(&s[0]), "  ● plan        2 lines · 9 s");
-        assert_eq!(plain(&m.block(21000, 80)[0]), "  · code        thinking 12 s");
+        assert_eq!(plain(&m.block(21000, 80)[0]), "  · code        thinking 12 s       ░░██░░");
         assert!(m.take_settled(0, 80).is_empty());
     }
     #[test] fn a_failed_check_adds_a_fix_step_and_fresh_checks() {
@@ -251,9 +292,16 @@ mod tests {
         let s: Vec<String> = m.take_settled(3000, 80).iter().map(|l| plain(l)).collect();
         assert_eq!(s.last().unwrap(), "  × test run    no function main");
         let b: Vec<String> = m.block(3000, 80).iter().map(|l| plain(l)).collect();
-        assert_eq!(b, ["  · fix 1/3     thinking 0 s", "  · check", "  · test run"]);
+        assert_eq!(b, ["  · fix 1/3     thinking 0 s        ░░██░░", "  · check", "  · test run"]);
         m.finish(None, 8000);
         assert_eq!(plain(&m.take_settled(8000, 80)[0]), "  ● fix 1/3     fixing (1/3) · 5 s");
+    }
+    #[test] fn frames_have_equal_visible_width() {
+        let b = boxed(&ok_title("saved x v1"), &["a".into(), format!("{DIM}{}{R}", "y".repeat(90)), String::new()], &[keys("go", "stop")], 40);
+        let w: Vec<usize> = plain(&b).lines().map(|l| l.chars().count()).collect();
+        assert!(w.iter().all(|&n| n == 42), "{w:?}\n{}", plain(&b));
+        assert_eq!(vis(&format!("{ACC}ab{R}c")), 3); assert_eq!(plain(&clip(&format!("{DIM}abcdef{R}"), 4)), "abc…");
+        assert_eq!(vis(&rule("agent · building", "m via p", 60)), 62); assert_eq!(vis(&rule("t", &"m".repeat(80), 40)), 42);
     }
     #[test] fn a_note_goes_before_the_first_unfinished_step() {
         let mut m = m(); m.begin("plan", 0); m.finish(None, 1000); m.note("memory", "city: Colombo");

@@ -54,12 +54,15 @@ DESIGN (every app must look like thir)
 - Colour a value only when it means something. Temperatures, prices and counts are plain "text".
 - Weather apps look like wego: the current weather is a 5-line icon from ICONS (below) with the values in aligned rows beside it; the forecast is one ui.box per day side by side (15 wide, the day as the box title), each holding the 5-line icon, the condition in full words (never short codes like DRZ or CLR), max / min and the rain chance. Map weather codes to sun, cloud, rain, snow, fog or thunder icons; 5 day boxes of 15 fit in 78 columns, so show 5 when w allows (fewer only on a narrow screen) and title the section to match.
 - House style: small ASCII art and boxed panels, like the terminal weather client wego. Use ui.box(x, y, w, h, title) for panels and cards (several side by side, each the same size), and a few lines of ASCII art for a mark that belongs to the app: a weather icon, a clock, a die, a check mark, a big title. Draw art with one ui.text per line (at most 5 lines and 13 characters wide, plain ASCII plus the box characters listed above; write a backslash as "\\"). Art may use "warn" (sun, flame), "info" (rain, water), "good", "bad"; clouds and the rest stay "text". Even a small app (calculator, to-do list, timer) puts its content in a ui.box and has a short art header, not bare lines.
-- Always say what is going on: "Loading…", "No notes yet. Press a to add one.", "Offline: could not reach api.open-meteo.com. Press r to retry."
+- Always say what is going on, and keep every state near the top, in the content column under the title: never a lone line floating mid-screen, never half the screen empty.
+  Loading: a small art mark or a ui.box at row 3 with "Loading <what>…" inside, and "loading…" as the title status.
+  Error: a ui.box(2, 3, cw, 6, "Offline") (title says what failed) holding the reason wrapped with ui.wrap, the origin tried, and a last line "Press r to retry" in "accent"; the title status says "offline" or "error" in "bad". If older data exists, draw it dimmed under the box instead of blanking the screen.
+  Empty: a ui.box at row 3 with one sentence and the key to fix it: "No notes yet. Press a to add one."
 
 RULES
 1. Implement every feature of the plan fully. No mock, sample or placeholder data, no TODOs.
 2. Only call origins from the net line, with exact URLs and fields you are sure of. Never use an API that needs a key the user did not give.
-3. Any http result can be nil: show the message, offer a retry key, never crash when offline.
+3. Any http result can be nil: show the error box from DESIGN (what failed, why, "Press r to retry"), never crash when offline.
 3b. If the app keeps a user choice (a city, a list, a setting), load it at the top level and act on it at start: fetch in tick() (it runs right after the first draw), do not wait for a key press.
 3c. A default from the plan (such as a start city or units) is used when the store has no value yet, e.g. store.get("city", "Colombo"); the user can still change it in the app.
 4. Store values may be missing or come from an older version of the app: always fall back to defaults and check types.

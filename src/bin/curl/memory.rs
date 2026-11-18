@@ -120,9 +120,9 @@ pub fn command(c: &str, args: &[String]) -> i32 {
         _ => {
             if text.is_empty() { eprintln!("usage: agent forget N|WORD|all"); return 2; }
             if facts.is_empty() { println!("agent remembers nothing yet."); return 0; }
-            if text == "all" && !make::ask(&format!("Forget all {} facts? (y/N) ", facts.len())) { println!("kept everything"); return 1; }
+            if text == "all" && !make::confirm("forget everything", &format!("erases all {} remembered facts", facts.len()), "agent stops using them in chats and builds", "forget all", &format!("  Forget all {} facts? (y/N) ", facts.len())) { println!("{}", make::note_line("kept everything")); return 1; }
             match remove(&facts, &text) {
-                Ok((v, gone)) => { if let Err(m) = save(&home, &v) { return fail(&m); } println!("{}", if text == "all" { "forgot everything".to_string() } else { format!("forgot: {gone}") }); 0 }
+                Ok((v, gone)) => { if let Err(m) = save(&home, &v) { return fail(&m); } println!("{}", make::note_line(&if text == "all" { "forgot everything".to_string() } else { format!("forgot: {gone}") })); 0 }
                 Err(m) => fail(&m),
             }
         }

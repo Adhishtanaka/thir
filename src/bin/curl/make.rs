@@ -84,12 +84,35 @@ fn save_approvals(home: &Path, text: &str) -> Result<(), String> {
 }
 
 /// The question before an app first connects (or connects somewhere new). `had_some`: the user approved other hosts for it before.
+/// With `color` it is a frame: what the app may do (risks in yellow), the keys, the default.
 pub fn approval_text(m: &Manifest, new: &[String], had_some: bool, color: bool) -> String {
-    let (b, d, r) = if color { (progress::ACC, progress::DIM, progress::R) } else { ("", "", "") };
-    let hosts: Vec<String> = new.iter().map(|o| Url::parse(o).map_or(printable(o), |u| format!("{}{}", u.host_header(), if u.https { "" } else { " (not encrypted)" }))).collect();
+    let hosts: Vec<(String, bool)> = new.iter().map(|o| Url::parse(o).map_or((printable(o), false), |u| (format!("{}{}", u.host_header(), if u.https { "" } else { " (not encrypted)" }), !u.https))).collect();
     let (name, also) = (&m.name, if had_some { "now also wants to" } else { "wants to" });
-    format!("  {b}{name}{r} {also}:\n    {d}\u{b7}{r} connect to {}\n    {d}\u{b7}{r} keep its own data in ~/apps/{name}/data\n  {d}It cannot read your other files or keys, or run programs.{r}\n\n  Allow and run? (y/N) ", hosts.join(", "))
+    if !color {
+        return format!("  {name} {also}:\n    \u{b7} connect to {}\n    \u{b7} keep its own data in ~/apps/{name}/data\n  It cannot read your other files or keys, or run programs.\n\n  Allow and run? (y/N) ", hosts.iter().map(|h| h.0.as_str()).collect::<Vec<_>>().join(", "));
+    }
+    let (d, w, r) = (progress::DIM, progress::WARN, progress::R);
+    let mut body: Vec<String> = hosts.iter().map(|(h, plain)| format!("{}\u{25b8}{r} connect to {}{h}{r}", if *plain { w } else { d }, if *plain { w } else { "" })).collect();
+    body.push(format!("{d}\u{25b8}{r} keep its own data in ~/apps/{name}/data"));
+    body.push(String::new());
+    body.push(format!("{d}It cannot read your other files or keys, or run programs.{r}"));
+    let title = format!("{}{name}{r} {also}", progress::ACC);
+    format!("\n{}\n\n  \u{203a} ", progress::boxed(&title, &body, &[progress::keys("allow and run", "cancel")], progress::box_w()))
 }
+
+/// A yes/no question that changes something for good: a frame with what happens, then the `question` (default no).
+pub fn confirm(title: &str, risk: &str, note: &str, yes: &str, question: &str) -> bool {
+    if unsafe { libc::isatty(1) } == 1 {
+        let (d, w, r) = (progress::DIM, progress::WARN, progress::R);
+        let body = [format!("{w}\u{25b8}{r} {w}{risk}{r}"), format!("{d}{note}{r}")];
+        println!("\n{}\n", progress::boxed(&format!("{}{title}{r}", progress::ACC), &body, &[progress::keys(yes, "keep it")], progress::box_w()));
+        return ask("  \u{203a} ");   // the frame above shows the keys
+    }
+    ask(question)
+}
+
+/// A finished line: `  \u{25cf} text` on a terminal, plain otherwise.
+pub fn note_line(s: &str) -> String { if unsafe { libc::isatty(1) } == 1 { progress::mark(true, s) } else { s.to_string() } }
 
 // ---- paths ----
 
@@ -343,9 +366,12 @@ impl Job<'_> {
         if !used.is_empty() { self.p.note("memory", &used.join(" · "), &format!("using your memory: {}", used.join(", "))); }
     }
 
-    fn done(&mut self, what: &str) {
+    fn done(&mut self, name: &str, v: i64) {
         let k = ((self.chars / 4) + 500) / 1000;   // shortcut: chars/4 estimate; parse usage from message_delta later
-        let line = self.p.done(what, self.t0.elapsed().as_secs(), self.calls, k.max(1), &self.hint);
+        let mut next = vec![("run", name.to_string()), ("edit", format!("agent edit {name} \"…\""))];
+        if v > 1 { next.push(("undo", format!("agent undo {name}"))); }
+        next.push(("remove", format!("agent rm {name}")));
+        let line = self.p.done(&format!("saved {name} v{v}"), self.t0.elapsed().as_secs(), self.calls, k.max(1), &self.hint, &next);
         *SUMMARY.lock().unwrap() = line;   // the app clears the screen when it quits; the line is shown again after it
     }
 }
@@ -361,7 +387,7 @@ static SUMMARY: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 fn not_buildable(r: &str) -> String { format!("agent: that is not an app I can build: {r}") }
 
 fn build(ch: &Chosen, home: &Path, facts: &[String], idea: &str) -> Result<String, String> {
-    let mut j = job(ch, vec![], "agent · building", &format!("agent: building with {} via {} (API use costs money)", ch.model, ch.p.name), &["plan", "code", "check", "test run"]);
+    let mut j = job(ch, vec![], "building", &format!("agent: building with {} via {} (API use costs money)", ch.model, ch.p.name), &["plan", "code", "check", "test run"]);
     j.p.step("plan", "planning");
     let (spec, _) = j.call(SPEC_PROMPT, format!("{}===REQUEST===\n{idea}", memory::block(facts)))?;
     let plan_lines = spec.lines().count();
@@ -382,7 +408,7 @@ fn build(ch: &Chosen, home: &Path, facts: &[String], idea: &str) -> Result<Strin
     let (title, about, net) = (h.title.or(plan.title).unwrap_or_else(|| name.clone()), h.about.or(plan.about).unwrap_or_default(), h.net.or(plan.net).unwrap_or_default());
     let f = Fields { name: &name, title: &title, about: &about, version: 1, net: &net, provider: &ch.p.name, model: &ch.model, kind: "build", prompt: idea };
     let v = save(&apps, &f, &code, &spec, None)?;
-    j.done(&format!("saved {name} v{v}"));
+    j.done(&name, v);
     Ok(name)
 }
 
@@ -403,7 +429,7 @@ fn change(ch: &Chosen, name: &str, kind: Change, facts: &[String], text: &str) -
             ("fixing", "fixing code", fill(FIX_PROMPT, &[("{error}", &err), ("{spec}", &spec), ("{code}", &code)]))
         }
     };
-    let mut j = job(ch, load_store(&dir), &format!("agent · {verb} {name}"), &format!("agent: {verb} {name} with {} via {} (API use costs money)", ch.model, ch.p.name), &["code", "check", "test run"]);
+    let mut j = job(ch, load_store(&dir), &format!("{verb} {name}"), &format!("agent: {verb} {name} with {} via {} (API use costs money)", ch.model, ch.p.name), &["code", "check", "test run"]);
     let (h, new) = match j.generate(label, user, &spec, false)? { Gen::No(r) => return Err(format!("agent: cannot make that change: {r}")), Gen::App(h, c) => (h, c) };
     if kind == Change::Edit { j.memory_note(&memory::used(facts, &code, &new)); }
     let net = h.net.unwrap_or_else(|| m.net.clone());
@@ -413,7 +439,7 @@ fn change(ch: &Chosen, name: &str, kind: Change, facts: &[String], text: &str) -
     let new_spec = if kind == Change::Edit { add_change(&spec, text) } else { spec };
     let v = save(&dir.parent().unwrap_or(&dir), &f, &new, &new_spec, Some(&m))?;
     if kind == Change::Fix { let _ = fs::remove_file(dir.join("last_error")); }
-    j.done(&format!("saved {name} v{v}"));
+    j.done(name, v);
     Ok(())
 }
 
@@ -549,16 +575,16 @@ pub fn list(args: &[String]) -> i32 {
 fn undo(args: &[String]) -> i32 {
     let [name] = args else { eprintln!("usage: agent undo APP"); return 2 };
     let (_, dir) = match app_dir(name) { Ok(r) => r, Err(m) => return fail(&m) };
-    match undo_app(&dir, name, clock::now()) { Ok(v) => { println!("{name} is back to version {v}"); 0 } Err(m) => fail(&m) }
+    match undo_app(&dir, name, clock::now()) { Ok(v) => { println!("{}", note_line(&format!("{name} is back to version {v}"))); 0 } Err(m) => fail(&m) }
 }
 
 fn rm(args: &[String]) -> i32 {
     let [name] = args else { eprintln!("usage: agent rm APP"); return 2 };
     let (home, dir) = match app_dir(name) { Ok(r) => r, Err(m) => return fail(&m) };
-    if !ask(&format!("Delete {name} and its data? (y/N) ")) { println!("kept {name}"); return 1; }
+    if !confirm(&format!("remove {name}"), "deletes the app, its saved data and every earlier version", "this cannot be undone", "delete", &format!("  Delete {name} and its data? (y/N) ")) { println!("{}", note_line(&format!("kept {name}"))); return 1; }
     if let Err(e) = fs::remove_dir_all(&dir) { return fail(&format!("agent: cannot remove {name}: {e}")); }
     match load_approvals(&home) { Ok(t) if !approved_for(&t, name).is_empty() => { if let Err(m) = save_approvals(&home, &drop_approvals(&t, name)) { return fail(&m); } } Ok(_) => {} Err(m) => return fail(&m) }
-    println!("removed {name}");
+    println!("{}", note_line(&format!("removed {name}")));
     0
 }
 
