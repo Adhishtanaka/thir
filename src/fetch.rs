@@ -11,9 +11,9 @@ pub const LOGO: [&str; 8] = [
     r"  \           /  ",
     r"   '---._.---'   ",
 ];
-const FUR: &str = "\x1b[33m";
-const LABEL: &str = "\x1b[1;33m";
-const NAME: &str = "\x1b[1;91m";
+const FUR: &str = "\x1b[94m";
+const LABEL: &str = "\x1b[1;94m";
+const NAME: &str = "\x1b[1;96m";
 const RST: &str = "\x1b[0m";
 
 /// /sys/class/graphics/fb0/virtual_size is `W,H`.
