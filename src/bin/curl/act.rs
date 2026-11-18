@@ -79,6 +79,8 @@ pub fn resolve(home: &Path, cwd: &Path, p: &str) -> Result<PathBuf, String> {
     let parts: Vec<_> = rest.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
     if parts.is_empty() { return Err(format!("{shown} is your home folder itself")); }
     if parts.iter().any(|c| c.starts_with('.')) { return Err(format!("{shown}: hidden files and folders are off limits")); }
+    // a folder named "~" would show as "~/…" in the undo line, which a shell reads as the home folder
+    if parts.iter().any(|c| c.starts_with('~')) { return Err(format!("{shown}: names starting with ~ are not supported")); }
     if parts[0] == "apps" { return Err(format!("{shown}: ~/apps changes only with agent build, edit and fix")); }
     Ok(norm)
 }
@@ -540,6 +542,7 @@ mod tests {
         assert!(resolve(&h, &h, "apps/x").unwrap_err().contains("~/apps"));
         assert!(resolve(&h, Path::new("/tmp"), "x").unwrap_err().contains("outside your home folder"));
         assert!(resolve(&h, &cwd, "/data/home/ab/x").is_err());   // a longer name with the same start
+        for t in ["./~/x", "a/~/b", "~/~x", "x/~y"] { assert!(r(t).unwrap_err().contains("starting with ~"), "{t:?}"); }   // would print as ~/… in the undo line
     }
     #[test] fn symlinks_and_links_refused() {
         let (h, out) = (tmp("sl"), tmp("slout"));
