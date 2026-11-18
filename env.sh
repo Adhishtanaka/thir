@@ -22,8 +22,10 @@ OUT=out/$THIR_ARCH$FSUF
 DATA_IMG=${DATA_IMG:-$OUT/data.img}   # raw ext4 image; path relative to the repo root (also /work in the container)
 DATA_SIZE=${DATA_SIZE:-128M}
 GUI_RES=${GUI_RES:-1280x800}
+AUDIODEV=${AUDIODEV:-none}   # QEMU audio backend (run.sh gui uses coreaudio; tests use none or wav,path=FILE to capture what the guest plays)
 QEMU_BASE=("$QEMU_BIN" "${QEMU_MACHINE[@]}" -m 256 -smp 1
-      -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -device virtio-rng-pci)
+      -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -device virtio-rng-pci
+      -audiodev "$AUDIODEV,id=snd0" -device intel-hda -device hda-output,audiodev=snd0)
 QEMU_GPU=(-device virtio-gpu-pci,id=gpu0,xres=${GUI_RES%x*},yres=${GUI_RES#*x} -device virtio-keyboard-pci)
 QEMU=("${QEMU_BASE[@]}" "${QEMU_GPU[@]}" -kernel $OUT/Image -append "console=$CONSOLE panic=1"   # initramfs is inside the kernel
       -drive file=$DATA_IMG,format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0)

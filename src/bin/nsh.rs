@@ -1,4 +1,4 @@
-use thir::{clock, files::{printable, rm_refuses}, line::Editor, net, parse::parse_cmd};
+use thir::{clock, files::{printable, rm_refuses}, line::Editor, net, notify, parse::parse_cmd};
 use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::{fs::{FileExt, OpenOptionsExt}, process::{CommandExt, ExitStatusExt}}, path::Path, process::{exit, Command, Stdio}};
 
 /// Every command nsh offers, by section: (usage, description). Builtins and completion come from here, so they cannot drift.
@@ -13,11 +13,13 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("fetch", "system summary with a bear (also: neofetch)"),
         ("curl [opts] URL", "download a page or file (curl -h for options)"),
         ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
+    ("apps", &[("clock", "big time, stopwatch, timer, alarms"), ("calendar", "month view, events, reminders"), ("calc", "calculator with history"), ("contacts", "names, phones, emails"),
+        ("notes", "notes with tags and todos"), ("settings", "time zone, wallpaper, sound"), ("beep [hz ms]", "play the alarm chime or a note")]),
 ];
 
-/// Names of the builtins: every section except "programs", first word of the usage.
+/// Names of the builtins: every section except "programs" and "apps", first word of the usage.
 fn builtins() -> impl Iterator<Item = &'static str> {
-    HELP.iter().filter(|s| s.0 != "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap_or(""))
+    HELP.iter().filter(|s| s.0 != "programs" && s.0 != "apps").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap_or(""))
 }
 
 fn help_text() -> String {
@@ -82,6 +84,19 @@ fn candidates(first: bool, word: &str) -> Vec<String> {
     v.sort(); v.dedup(); v
 }
 
+/// Notices the helper left in ~/.notify that are newer than `seen`, shown once each before the prompt.
+/// shortcut: a notice that arrives while nsh waits at the prompt shows at the next prompt (den's bar shows it at once).
+fn show_notices(seen: &mut i64, uid: u32) {
+    let Ok(h) = std::env::var("HOME") else { return };
+    let off = clock::home_tz().unwrap_or(0);
+    for (t, m) in notify::read(&format!("{h}/.notify"), uid) {
+        if t <= *seen { continue }
+        let l = clock::local(t, off);
+        println!("  \x1b[33m\u{2192}\x1b[0m {:02}:{:02}  {}", l.hour, l.min, printable(&m));
+        *seen = t;
+    }
+}
+
 fn hist_path() -> String { format!("{}/.nsh_history", std::env::var("HOME").unwrap_or_else(|_| "/".into())) }
 
 /// Splits `-x` flags from operands; Err(flag) for a flag not in `allowed`.
@@ -119,6 +134,7 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
         "cd" => { let d = args.first().cloned().or_else(|| std::env::var("HOME").ok()).unwrap_or("/".into()); if let Err(e) = std::env::set_current_dir(&d) { eprintln!("nsh: cd: {d}: {e}"); } }
         "exit" => exit(args.first().and_then(|s| s.parse().ok()).unwrap_or(0)),
         "help" => match args.first() {
+            None if color && Path::new("/bin/help").exists() => { let _ = Command::new("/bin/help").status(); }   // the full-screen guide
             None => { let _ = out.write_all(help_text().as_bytes()); }
             Some(c) => match help_cmd(c) { Some(t) => { let _ = out.write_all(t.as_bytes()); } None => eprintln!("nsh: help: no such command: {}", printable(c)) },
         },
@@ -192,7 +208,9 @@ fn main() {
     let path = hist_path();
     let old = fs::read_to_string(&path).unwrap_or_default();
     let mut ed = Editor::new(old.lines().rev().take(1000).map(String::from).collect::<Vec<_>>().into_iter().rev().collect());
+    let (uid, mut seen) = (unsafe { libc::getuid() }, clock::now() - 600);
     loop {
+        show_notices(&mut seen, uid);
         let Some(line) = thir::term::read_line(&mut ed, &prompt(), &candidates) else { exit(0) };
         if ed.push_history(line.trim()) {
             if let Ok(mut f) = OpenOptions::new().append(true).create(true).mode(0o600).open(&path) { let _ = writeln!(f, "{}", line.trim()); }
@@ -237,6 +255,7 @@ mod tests {
         let n = all.len(); all.sort(); all.dedup(); assert_eq!(all.len(), n);
         let progs: Vec<&str> = HELP.iter().filter(|s| s.0 == "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
         assert_eq!(progs, ["edit", "find", "top", "fetch", "curl", "passwd", "dhcp"]);
+        assert!(HELP.iter().filter(|s| s.0 == "apps").flat_map(|s| s.1.iter()).all(|u| thir::apps::NAMES.contains(&u.0.split(' ').next().unwrap())));
         assert!(builtins().all(|b| !progs.contains(&b)) && builtins().any(|b| b == "date") && help_cmd("find").unwrap().starts_with("find [dir]"));
     }
 }

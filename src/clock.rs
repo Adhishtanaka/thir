@@ -1,5 +1,5 @@
 //! Local time from a UTC offset: pure date math, the ~/.tz reader, and the formats den, `date` and top show.
-use std::{fs::File, io::Read, os::unix::fs::{MetadataExt, OpenOptionsExt}};
+use crate::files::read_small;
 
 pub struct Local { pub year: i64, pub month: u32, pub day: u32, pub wday: u32 /* 0 = Sun */, pub hour: u32, pub min: u32, pub sec: u32 }
 pub const WDAY: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -51,16 +51,8 @@ pub fn bar_line(utc: i64, off: Option<i32>) -> String {
 }
 
 /// The offset in a user's `.tz`. den (root) calls this every second on a user-owned path, so: never follow a symlink, never block on a FIFO,
-/// accept regular files only, read at most 64 bytes, and show nothing but the parsed number.
-/// `owner` must own the file and it must have one link: den reads this as root, so a hard link to someone else's file is refused.
-pub fn read_tz(path: &str, owner: u32) -> Option<i32> {
-    let mut f = File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path).ok()?;
-    let m = f.metadata().ok()?;
-    if !m.file_type().is_file() || m.uid() != owner || m.nlink() != 1 { return None }
-    let mut buf = [0u8; 64];
-    let n = f.read(&mut buf).ok()?;
-    parse_offset(std::str::from_utf8(&buf[..n]).ok()?.trim())
-}
+/// accept regular files only, read at most 64 bytes, and show nothing but the parsed number (see files::read_small).
+pub fn read_tz(path: &str, owner: u32) -> Option<i32> { read_small(path, owner, 64).and_then(|s| parse_offset(s.trim())) }
 
 /// The build host's offset (build.sh passes THIR_TZ), used until a user sets ~/.tz.
 pub fn default_offset() -> Option<i32> { option_env!("THIR_TZ").and_then(parse_offset) }

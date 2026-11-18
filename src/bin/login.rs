@@ -1,9 +1,18 @@
 //! login: the only way into a session. No args: serial console (init). `--as <uid>`: extra den panes.
-use std::{os::unix::{fs::chown, process::CommandExt}, path::Path, process::{exit, Command}, thread::sleep, time::Duration};
+use std::{os::unix::{fs::chown, process::CommandExt}, path::Path, process::{exit, Command, Stdio}, thread::sleep, time::Duration};
 use thir::{clock, user::{self, User}};
 
 fn die(msg: &str) -> ! { eprintln!("login: {msg}"); exit(1) }
 fn die_slow(msg: &str) -> ! { eprintln!("login: {msg}"); sleep(Duration::from_secs(5)); exit(1) }   // slow: init restarts us
+
+/// bell, the background helper (alarms, timers, reminders), as the user: a double fork, so init adopts and reaps it.
+/// login is single-threaded here, so fork in pre_exec is safe. A second copy for the same user exits at once (lock file).
+fn bell(home: &str, user: &str) {
+    let mut d = Command::new("/bin/bell");
+    d.env_clear().env("PATH", "/bin").env("HOME", home).env("USER", user).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    unsafe { d.pre_exec(|| { if libc::fork() != 0 { libc::_exit(0); } libc::setsid(); Ok(()) }); }
+    if let Ok(mut c) = d.spawn() { let _ = c.wait(); }
+}
 
 /// Never returns: becomes the user's shell.
 fn start(u: &User, tz: Option<i32>) -> ! {
@@ -14,6 +23,7 @@ fn start(u: &User, tz: Option<i32>) -> ! {
     if let Err(e) = user::drop_to(u.uid, u.uid) { die(&format!("cannot drop privileges: {e}")); }
     if std::env::set_current_dir(&home).is_err() { let _ = std::env::set_current_dir("/"); }
     if let Some(m) = tz { let _ = std::fs::write(format!("{home}/.tz"), format!("{}\n", clock::format_offset(m))); }   // umask 077 makes it 0600
+    bell(&home, &u.name);
     let e = Command::new("/bin/nsh").env_clear().env("PATH", "/bin").env("HOME", &home).env("USER", &u.name).exec();
     die(&format!("/bin/nsh: {e}"))
 }

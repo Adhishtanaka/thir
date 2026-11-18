@@ -1,3 +1,4 @@
+pub mod apps;
 pub mod clock;
 pub mod dhcp;
 pub mod disk;
@@ -9,9 +10,13 @@ pub mod gui;
 pub mod http;
 pub mod line;
 pub mod net;
+pub mod notify;
 pub mod parse;
 pub mod procinfo;
+pub mod sound;
+pub mod store;
 pub mod term;
+pub mod tui;
 pub mod user;
 
 /// nsh exit codes that init turns into actions. Not 101: that is Rust's panic exit code.

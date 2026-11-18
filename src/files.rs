@@ -1,4 +1,4 @@
-use std::{fs::{self, File, OpenOptions}, io::{self, Write}, os::unix::fs::{OpenOptionsExt, PermissionsExt}, path::Path};
+use std::{fs::{self, File, OpenOptions}, io::{self, Read, Write}, os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt}, path::Path};
 
 /// Why `rm` must refuse `path`, or None: '/', '.', '..', and paths ending in '/.' or '/..'.
 pub fn rm_refuses(path: &str) -> Option<&'static str> {
@@ -15,6 +15,17 @@ pub fn unsafe_char(c: char) -> bool {
 }
 /// Unsafe characters as '?', so a hostile file name cannot drive the terminal.
 pub fn printable(s: &str) -> String { s.chars().map(|c| if unsafe_char(c) { '?' } else { c }).collect() }
+
+/// A small text file in a user's home that root (den) or the user reads on a timer. Never follow a symlink, never block on a FIFO, regular files only,
+/// `owner` must own it with one link (a hard link to someone else's file is refused), at most `max` bytes. None = refused or unreadable.
+pub fn read_small(path: &str, owner: u32, max: usize) -> Option<String> {
+    let f = File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path).ok()?;
+    let m = f.metadata().ok()?;
+    if !m.file_type().is_file() || m.uid() != owner || m.nlink() != 1 || m.len() > max as u64 { return None }
+    let mut b = vec![];
+    f.take(max as u64).read_to_end(&mut b).ok()?;
+    String::from_utf8(b).ok()
+}
 
 /// Temp file in the same directory, then rename: a crash never leaves half a file. The old mode is kept.
 pub fn save(p: &Path, data: &[u8]) -> io::Result<()> {

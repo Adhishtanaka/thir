@@ -38,6 +38,8 @@ impl Font {
                 }
             }
         } else { for g in 0..n.min(256) { map.insert(char::from_u32(g as u32).unwrap_or('?'), g); } }
+        let (mut glyphs, mut map) = (glyphs, map);
+        add_missing(w, h, &mut glyphs, &mut map);
         Ok(Font { w, h, row, glyphs, map })
     }
 
@@ -47,6 +49,28 @@ impl Font {
         &self.glyphs[g * self.h * self.row..(g + 1) * self.h * self.row]
     }
     pub fn row_bytes(&self) -> usize { self.row }
+}
+
+/// Check mark and half circles (the agent screens) that Terminus lacks: 8x16 bitmaps, doubled for the 16x32 font; only added when the font has no such glyph.
+const EXTRA: [(char, [u8; 16]); 6] = [
+    ('\u{2713}', [0, 0, 0, 0, 0, 0x01, 0x03, 0x06, 0xCC, 0x78, 0x30, 0x10, 0, 0, 0, 0]),   // ✓
+    ('\u{25CB}', [0, 0, 0, 0, 0x3C, 0x42, 0x81, 0x81, 0x81, 0x81, 0x81, 0x42, 0x3C, 0, 0, 0]),   // ○
+    ('\u{25D0}', [0, 0, 0, 0, 0x3C, 0x72, 0xF1, 0xF1, 0xF1, 0xF1, 0xF1, 0x72, 0x3C, 0, 0, 0]),   // ◐ left half filled
+    ('\u{25D3}', [0, 0, 0, 0, 0x3C, 0x42, 0x81, 0x81, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0, 0, 0]),   // ◓ bottom
+    ('\u{25D1}', [0, 0, 0, 0, 0x3C, 0x4E, 0x8F, 0x8F, 0x8F, 0x8F, 0x8F, 0x4E, 0x3C, 0, 0, 0]),   // ◑ right
+    ('\u{25D2}', [0, 0, 0, 0, 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0x81, 0x81, 0x42, 0x3C, 0, 0, 0]),   // ◒ top
+];
+fn add_missing(w: usize, h: usize, glyphs: &mut Vec<u8>, map: &mut HashMap<char, usize>) {
+    if w % 8 != 0 || w / 8 == 0 || h != 2 * w { return; }   // the bundled 8x16 and 16x32 only
+    let (k, row) = (w / 8, w / 8);
+    for (c, rows) in EXTRA {
+        if map.contains_key(&c) { continue; }
+        map.insert(c, glyphs.len() / (h * row));
+        for r in rows { for _ in 0..k {
+            let wide: u64 = (0..8).fold(0, |a, b| a | (((r >> b) as u64 & 1) * ((1 << k) - 1)) << (b * k));   // each bit k times
+            glyphs.extend((0..row).rev().map(|i| (wide >> (i * 8)) as u8));
+        } }
+    }
 }
 
 #[cfg(test)]
@@ -80,6 +104,8 @@ mod tests {
         let f = Font::parse(include_bytes!("../../assets/fonts/Uni3-Terminus16.psf")).unwrap();
         assert_eq!((f.w, f.h), (8, 16)); assert_ne!(f.glyph('A'), f.glyph(' '));
         let f = Font::parse(include_bytes!("../../assets/fonts/Uni3-Terminus32x16.psf")).unwrap();
-        assert_eq!((f.w, f.h), (16, 32));
+        assert_eq!((f.w, f.h), (16, 32)); assert_ne!(f.glyph('\u{2713}'), f.glyph('?')); assert_eq!(f.glyph('\u{2713}').len(), 64);
+        assert_eq!(&f.glyph('\u{2713}')[8 * 2..10 * 2], &[0, 0, 0, 0]);   // rows 0..9 empty
+        assert_eq!(&f.glyph('\u{2713}')[10 * 2..10 * 2 + 2], &[0x00, 0x03]);
     }
 }
