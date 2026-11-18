@@ -89,6 +89,11 @@ send $'ca\t/etc/res\t'   # Tab completion; the send's newline runs it. The echo 
 wait_for '^nameserver 10\.0\.2\.3$'
 wait_for '\$ $'
 run history '^ *[0-9]+ +whoami$'
+# autosuggestion (grey rest of the newest matching history line; Right accepts it) and the Tab candidate list
+run 'echo suggestion works' '^suggestion works$'
+send ''; wait_for '\$ $'; sendk 'echo sugg'; sendk $'\x1b[C'; sendk $'\r'; wait_for '^suggestion works$'; wait_for '\$ $'
+run 'mkdir -p tabdir/aa1 tabdir/aa2' '\$ $'
+send ''; wait_for '\$ $'; sendk $'ls tabdir/a\t\t'; wait_for '^aa1/ +aa2/$'; sendk $'\x03'; wait_for '\^C'; wait_for '\$ $'
 # apps (after the Tab test above: a calc app would make `ca` ambiguous)
 run 'agent list' 'no apps yet'
 run 'mkdir -p apps/calc apps/hello apps/crash' '\$ $'

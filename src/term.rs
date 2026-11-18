@@ -109,12 +109,13 @@ pub fn read_line(ed: &mut Editor, prompt: &str, complete: &dyn Fn(bool, &str) ->
         let mut l = String::new();
         return match io::stdin().lock().read_line(&mut l) { Ok(0) | Err(_) => None, Ok(_) => Some(l) };
     };
-    put(&ed.redraw(p));
+    ed.cols = size().0; put(&ed.redraw(p));
     let r = 'read: loop {
         let mut buf = [0u8; 256];
         let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut _, buf.len()) };
         if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue }
         if n <= 0 { break None }
+        ed.cols = size().0;
         for k in ed.decode(&buf[..n as usize]) {   // shortcut: keys after Enter in the same read are dropped
             if k == Key::Tab { let (first, w) = ed.word(); let o = ed.complete(&complete(first, &w), p); put(&o); continue }
             let (a, o) = ed.key(k, p); put(&o);
