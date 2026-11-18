@@ -112,6 +112,8 @@ send 'cat .config/thir/settings'; wait_for '^wall=graphite$'; wait_for '^sound=o
 run beep 'beep: sound is off'
 run 'echo sound=on > .config/thir/settings' '\$ $'
 run 'ls /dev/snd' '^pcmC0D0p$'
+run 'cat /dev/snd/timer' 'Permission denied'   # the mixer and timer (and any capture node: unit-tested) stay root only; only the playback stream is ours
+run 'cat /dev/snd/controlC0' 'Permission denied'
 run beep '\$ $'
 # an alarm one to two minutes ahead (the guest is on +05:30); it rings with no app open, and the notice shows before a later prompt
 AL=$(date -u -v+5H -v+30M -v+90S +%H:%M)
