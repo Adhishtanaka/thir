@@ -20,6 +20,7 @@ fn start(u: &User, tz: Option<i32>) -> ! {
     unsafe { libc::mkdir(format!("{home}\0").as_ptr() as *const _, 0o700); }   // EEXIST is fine
     if let Err(e) = chown(&home, Some(u.uid), Some(u.uid)) { die(&format!("{home}: {e}")); }
     unsafe { libc::umask(0o077); }
+    thir::sound::grant(Some(u.uid));   // the user's own playback stream, nothing else under /dev/snd
     if let Err(e) = user::drop_to(u.uid, u.uid) { die(&format!("cannot drop privileges: {e}")); }
     if std::env::set_current_dir(&home).is_err() { let _ = std::env::set_current_dir("/"); }
     if let Some(m) = tz { let _ = std::fs::write(format!("{home}/.tz"), format!("{}\n", clock::format_offset(m))); }   // umask 077 makes it 0600
@@ -81,6 +82,7 @@ fn main() {
         let uid: u32 = args[2].parse().unwrap_or(0);
         match load_or_die().iter().find(|u| u.uid == uid && uid != 0) { Some(u) => start(u, None), None => exit(1) }
     }
+    thir::sound::grant(None);   // a new login prompt: the last user's playback stream goes back to root
     let mut users = load_or_die();
     if users.is_empty() { match setup() { Some((u, tz)) => start(&u, tz), None => users = load_or_die() } }
     for _ in 0..5 {

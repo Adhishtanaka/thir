@@ -61,14 +61,12 @@ fn mount_data() {
         Err(e) => eprintln!("thir: /data unavailable: {e}"),
     }
 }
-/// The sound device shows up when the HDA driver has probed, often after init is running. Then every user may play on it (volume is software, in `sound`).
+/// The sound card shows up when the HDA driver has probed, often after init is running. Then init (root) unmutes the mixer and locks every node to root 0600;
+/// login hands the playback stream to the user who logs in (thir::sound::grant). The volume setting is in the samples, so users never need the mixer.
 fn open_sound() {
     std::thread::spawn(|| {
         for _ in 0..300 {
-            if let Ok(rd) = fs::read_dir("/dev/snd") {
-                for e in rd.flatten().filter(|e| { let n = e.file_name().to_string_lossy().into_owned(); n.starts_with("pcm") || n.starts_with("control") }) { let _ = fs::set_permissions(e.path(), std::os::unix::fs::PermissionsExt::from_mode(0o666)); }
-                if Path::new("/dev/snd/pcmC0D0p").exists() { return }
-            }
+            if Path::new("/dev/snd/pcmC0D0p").exists() && Path::new("/dev/snd/controlC0").exists() { thir::sound::grant(None); thir::sound::unmute(); return }
             sleep(Duration::from_millis(100));
         }
     });

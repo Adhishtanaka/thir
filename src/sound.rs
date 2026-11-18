@@ -24,9 +24,10 @@ fn params() -> HwParams {
     p.rmask = u32::MAX; p
 }
 
+/// init (root) calls this once when the card is up; users never get the control node.
 /// The HDA codec starts with its outputs muted or at zero. Turn every playback switch on and every playback volume up to the top (the volume setting is in the samples).
 /// Raw `snd_ctl_elem_*` ioctls on /dev/snd/controlC0; offsets are those of the 64-bit kernel structs (id 64 bytes, info 272, value 1224). Failures are ignored: no mixer, no change.
-fn unmute() {
+pub fn unmute() {
     let Ok(f) = OpenOptions::new().read(true).write(true).open("/dev/snd/controlC0") else { return };
     let fd = f.as_raw_fd();
     let (list, info, write) = (0xC050_5510 as libc::c_ulong, 0xC110_5511 as libc::c_ulong, 0xC4C8_5513 as libc::c_ulong);   // _IOWR('U', 0x10 | 0x11 | 0x13, ...)
@@ -49,9 +50,23 @@ fn unmute() {
     }
 }
 
+/// Who owns a /dev/snd node and its mode while `user` (a uid, or None = nobody logged in) is logged in. Only the playback stream goes to the user, mode 0600;
+/// capture (the microphone), the mixer controls and the timer stay root 0600 always.
+pub fn node_policy(name: &str, user: Option<u32>) -> (u32, u32) {
+    if name.starts_with("pcm") && name.ends_with('p') { (user.unwrap_or(0), 0o600) } else { (0, 0o600) }
+}
+/// Applies node_policy to every node in /dev/snd. init calls it with None; login (as root, before it drops privileges) with the user, and again with None at a new login prompt.
+pub fn grant(user: Option<u32>) {
+    let Ok(rd) = std::fs::read_dir("/dev/snd") else { return };
+    for e in rd.flatten() {
+        let (uid, mode) = node_policy(&e.file_name().to_string_lossy(), user);
+        let _ = std::os::unix::fs::chown(e.path(), Some(uid), Some(uid));
+        let _ = std::fs::set_permissions(e.path(), std::os::unix::fs::PermissionsExt::from_mode(mode));
+    }
+}
+
 /// Plays stereo S16 samples (interleaved, 48 kHz) and waits until they are out. Err = no sound device or it refused the format.
 pub fn play(pcm: &[i16]) -> io::Result<()> {
-    unmute();
     let mut f = OpenOptions::new().write(true).open(DEV)?;
     let fd = f.as_raw_fd();
     let mut p = params();
@@ -89,6 +104,10 @@ pub fn config(settings: &str) -> (bool, u32) { (crate::apps::prefs::get(settings
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn only_playback_goes_to_the_user() {
+        assert_eq!(node_policy("pcmC0D0p", Some(1000)), (1000, 0o600)); assert_eq!(node_policy("pcmC0D0p", None), (0, 0o600));
+        for n in ["pcmC0D0c", "controlC0", "timer", "seq", "pcmC0D1c"] { assert_eq!(node_policy(n, Some(1000)), (0, 0o600), "{n}"); }
+    }
     #[test] fn struct_matches_the_kernel_abi() { assert_eq!(std::mem::size_of::<HwParams>(), if cfg!(target_pointer_width = "64") { 608 } else { 600 }); assert_eq!(HW_PARAMS & 0xffff, 0x4111); }
     #[test] fn tone_is_stereo_bounded_and_fades() {
         let t = tone(440.0, 100, 1.0);
