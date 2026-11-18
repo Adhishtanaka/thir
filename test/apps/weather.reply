@@ -1,0 +1,22 @@
+===APP===
+name: weather
+title: Weather
+about: Weather for your city
+net: none
+===CODE===
+local city = store.get("city", "Colombo")
+if type(city) ~= "string" or city == "" then city = "Colombo" end
+
+function draw(w, h)
+  ui.title("Weather", "metric")
+  ui.center(math.floor(h / 2), "Weather for " .. city, "accent")
+  ui.footer("c change city · q quit")
+end
+
+function key(k)
+  if k == "c" then
+    local t = ui.input("City: ")
+    if t and t ~= "" then city = t; store.set("city", city) end
+  end
+end
+===END===

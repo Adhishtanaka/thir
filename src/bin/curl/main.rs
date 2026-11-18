@@ -3,6 +3,8 @@ mod agent;
 mod app;
 mod conn;
 mod make;
+mod memory;
+mod progress;
 
 use conn::{body_err, exchange, NetErr};
 use std::{fs::{File, OpenOptions}, io::{self, Read, Write}, os::unix::fs::OpenOptionsExt, process::exit, time::{Duration, Instant}};

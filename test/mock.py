@@ -18,6 +18,8 @@ USER_TEXT = "mock reply %d café"
 
 def err(reason): return 400, json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": "mock: " + reason}}).encode()
 
+SLOW = float(os.environ.get("THIR_MOCK_SLOW", "0"))   # seconds per chunk (3x before the first byte): slow streams for screenshots
+
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
@@ -26,9 +28,10 @@ class H(BaseHTTPRequestHandler):
         for k, v in extra: self.send_header(k, v)
         self.end_headers(); self.wfile.write(body)
     def chunks(self, parts, ext=None):
+        time.sleep(SLOW * 3)
         self.send_response(200); self.send_header("Content-Type", "text/event-stream" if ext is None else "text/plain"); self.send_header("Transfer-Encoding", "chunked"); self.end_headers()
         for i, p in enumerate(parts):
-            self.wfile.write(b"%x%s\r\n" % (len(p), b";ext=1" if ext and i == 1 else b"") + p + b"\r\n"); self.wfile.flush(); time.sleep(0.02 if ext is None else 0)
+            self.wfile.write(b"%x%s\r\n" % (len(p), b";ext=1" if ext and i == 1 else b"") + p + b"\r\n"); self.wfile.flush(); time.sleep(max(SLOW, 0.02) if ext is None else 0)
         self.wfile.write(b"0\r\n\r\n"); self.wfile.flush()
     def redirect(self, to): self.send(302, b"", extra=[("Location", to)])
     def sse(self, events):   # each event is cut in two so lines are split across chunks
@@ -95,7 +98,8 @@ class H(BaseHTTPRequestHandler):
         m = j["messages"][-1]["content"]; app = lambda f: open(os.path.join(APPS, f)).read()
         if "===ERROR===" in m: text = app("calc.reply")
         elif "===CHANGE===" in m: text = "NO: thir apps cannot play sound." if "sound" in m.split("===SPEC===")[0] else app("calc2.reply")
-        elif "===SPEC===" in m: text = app("calc-bad.reply")
+        elif "===SPEC===" in m: text = app("weather.reply") if "name: weather" in m else app("calc-bad.reply")
+        elif "===REQUEST===" in m and "weather" in m: text = app("weather.spec") if "===ABOUT THE USER===" in m and "city: Colombo" in m else "NO: mock: no city in the request"
         elif "===REQUEST===" in m: text = "NO: a recipe is not an app." if "lasagna" in m else app("calc.spec")
         else: return self.send(400, err("unknown step")[1], "application/json")
         d = lambda o: "event: %s\ndata: %s\n\n" % (o["type"], json.dumps(o, ensure_ascii=False))

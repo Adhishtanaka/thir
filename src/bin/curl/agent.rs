@@ -1,7 +1,7 @@
 //! agent: a terminal chat with an AI provider, over the Anthropic Messages API or the OpenAI-style chat completions API.
 //! Security rules: a key goes only to its own provider's base_url over verified TLS, never over plain http, and is never printed.
 use crate::conn::{body_err, exchange, Kind};
-use std::{fs::{self, DirBuilder, OpenOptions}, io::{Read, Write}, os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt}, path::{Path, PathBuf}, time::Duration};
+use std::{fs::{self, DirBuilder, OpenOptions}, io::{Read, Write}, os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt}, path::{Path, PathBuf}, time::Duration};
 use thir::{files::unsafe_char, http::{Body, Sse, Url}, json::{self, Json}, line::Editor, term, user};
 
 const SYS: &str = "The user reads your reply in a plain-text terminal, so prefer plain text over Markdown.";
@@ -17,6 +17,8 @@ pub const USAGE: &str = "usage: agent [-p PROVIDER] [-m MODEL] [-e EFFORT] [QUES
        agent fix APP [\"PROBLEM\"] fix the last crash, or the problem you describe
        agent run APP [ARGS]      open an app (or just type its name)
        agent list | undo APP | rm APP
+       agent remember \"FACT\"     keep a fact for next time, e.g. \"city: Colombo\"
+       agent memory | forget N|WORD|all  see or remove what agent remembers
        agent --login PROVIDER | --logout PROVIDER | --providers
        agent --use PROVIDER [-m MODEL]
   agent \"question\"   one answer, then exit;  agent   a chat (/clear, /exit)
@@ -29,6 +31,8 @@ agent --login PROVIDER asks for the API key without showing it and keeps it in
 ~/.config/thir/keys (only you can read it). Using an API costs money.
 Apps live in ~/apps. They can only draw, use the keys, keep their own data and
 reach the web sites you allow. Building costs API money (about 2 to 5 calls).
+Memory is in ~/.config/thir/memory (only you can read it). agent sends it to
+your AI provider with chats and builds; apps never see it.
 ";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -240,12 +244,6 @@ pub fn error_message(j: &Json) -> Option<String> {
     match j.get("error")? { Json::Str(s) => Some(s.clone()), e => Some(e.get("message").and_then(Json::str).unwrap_or("unknown error").to_string()) }
 }
 
-struct Think(bool);
-impl Think {
-    fn start() -> Think { let on = unsafe { libc::isatty(2) } == 1; if on { eprint!("thinking..."); } Think(on) }
-    fn clear(&mut self) { if self.0 { eprint!("\r\x1b[K"); self.0 = false; } }
-}
-
 /// A provider, model and key ready to talk to. The reusable part: `stream` takes a system prompt and messages and hands text back through a callback.
 pub struct Ctx<'a> { pub p: &'a Provider, pub model: &'a str, pub key: Option<String>, pub effort: &'a str }
 
@@ -300,11 +298,18 @@ pub fn stream(c: &Ctx, system: &str, msgs: &[Msg], on_text: &mut dyn FnMut(&str)
     Ok(Done { text: answer, stop: st.stop.unwrap_or_default(), category: st.category, answered_by: st.model.filter(|m| m != c.model) })
 }
 
+/// The chat's system prompt: how to answer, what thir is, the remembered facts and the installed apps (names and descriptions only).
+fn system(home: &Path) -> Result<String, String> {
+    let facts = crate::memory::load(home)?;
+    Ok(format!("{SYS}\nYou run on thir, a tiny operating system. You cannot run commands; tell the user what to type. Typing an app's name opens it. agent build \"IDEA\" makes an app, agent edit APP \"CHANGE\" changes one, agent list lists them, agent remember \"FACT\" keeps a fact.\n{}{}", crate::memory::block(&facts), crate::make::apps_block(home)))
+}
+
 /// The chat command: streams to the terminal with a "thinking..." mark, then the notes. Ok(answer) or Err(message).
-fn chat(c: &Ctx, msgs: &[Msg]) -> Result<String, String> {
-    let mut think = Think::start();
+fn chat(c: &Ctx, home: &Path, msgs: &[Msg]) -> Result<String, String> {
+    let system = system(home)?;   // a refused memory file fails the chat, like approvals do
+    let mut think = crate::progress::Think::start();
     let mut out = std::io::stdout();
-    let r = stream(c, SYS, msgs, &mut |t| { think.clear(); let _ = out.write_all(t.as_bytes()); let _ = out.flush(); });
+    let r = stream(c, &system, msgs, &mut |t| { think.clear(); let _ = out.write_all(t.as_bytes()); let _ = out.flush(); });
     think.clear();
     let d = r?;
     if !d.text.is_empty() && !d.text.ends_with('\n') { let _ = writeln!(out); }
@@ -357,6 +362,7 @@ pub fn main(args: Vec<String>) -> i32 {
     // app commands come first and never reach the key code: running an app reads no key and no provider config
     match args.first().map(String::as_str) {
         Some(c @ ("run" | "list" | "undo" | "rm" | "build" | "edit" | "fix")) => return crate::make::command(c, &args[1..]),
+        Some(c @ ("remember" | "forget" | "memory")) => return crate::memory::command(c, &args[1..]),
         _ => {}
     }
     let (mut prov, mut model, mut effort, mut words) = (None, None, None, vec![]);
@@ -407,7 +413,7 @@ pub fn main(args: Vec<String>) -> i32 {
     let mut msgs: Vec<Msg> = vec![];
     if !words.is_empty() {
         msgs.push(("user", words.join(" ")));
-        return match chat(&c, &msgs) { Ok(_) => 0, Err(m) => fail(&m) };
+        return match chat(&c, &home, &msgs) { Ok(_) => 0, Err(m) => fail(&m) };
     }
     println!("agent: {model} via {}. /clear forgets the chat, /exit or Ctrl-D quits.", p.name);
     let mut ed = Editor::new(vec![]);
@@ -422,14 +428,14 @@ pub fn main(args: Vec<String>) -> i32 {
             _ => {}
         }
         msgs.push(("user", l.to_string()));
-        match chat(&c, &msgs) { Ok(a) => msgs.push(("assistant", a)), Err(m) => { eprintln!("{m}"); msgs.pop(); } }
+        match chat(&c, &home, &msgs) { Ok(a) => msgs.push(("assistant", a)), Err(m) => { eprintln!("{m}"); msgs.pop(); } }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{symlink, PermissionsExt};
     fn tmp(n: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("thir-agent-{}-{n}", std::process::id())); let _ = fs::remove_dir_all(&d); fs::create_dir_all(&d).unwrap(); d }
     fn cfg(t: &str) -> Config { parse_config(t).unwrap() }
     fn prov(c: &Config, n: &str) -> Provider { providers(c).into_iter().find(|p| p.name == n).unwrap() }

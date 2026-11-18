@@ -118,6 +118,18 @@ run 'agent fix calc-2' 'no saved crash'
 run 'agent build -p mockb how to cook lasagna' 'not an app I can build: a recipe'
 send 'agent rm calc-2'; wait_for 'Delete calc-2'; send y; wait_for 'removed'
 run 'agent list' '^calc +v1'
+# agent memory: facts kept in ~/.config/thir/memory, sent only with chats and builds; a build uses them
+run 'agent memory' 'remembers nothing yet'
+run 'agent remember city: Colombo' 'remembered: city: Colombo'
+run 'agent remember units: metric' 'remembered: units: metric'
+run 'agent remember my password is hunter2' 'never remembers'   # typed on purpose; hunter2 is not in SECRETS
+run 'agent memory' '^ +1 +city: Colombo$'
+send 'agent build -p mockb a weather app'; wait_for 'memory.*city: Colombo'; wait_for 'saved weather v1'
+wait_for 'Weather for Colombo'; sendk q; wait_for 'Change something'; send ''; wait_for '\$ $'
+run 'agent remember city: Kandy' 'updated: city: Kandy'
+run 'agent forget city' 'forgot: city: Kandy'
+run 'agent build -p mockb a weather app' 'not an app I can build: mock: no city'
+send 'agent forget all'; wait_for 'Forget all'; send y; wait_for 'forgot everything'
 send passwd; wait_for 'old password: '
 send "$PWX"; wait_for 'passwd: wrong password'; t0=$SECONDS
 wait_for 'old password: '

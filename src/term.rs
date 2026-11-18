@@ -46,6 +46,21 @@ extern "C" fn restore_and_raise(sig: i32) {   // SIGALRM is the watchdog of `age
     unsafe { libc::signal(sig, libc::SIG_DFL); libc::raise(sig); }
 }
 
+static CURSOR_SAFE: std::sync::Once = std::sync::Once::new();
+extern "C" fn show_and_raise(sig: i32) {
+    unsafe { const B: &[u8] = b"\x1b[0m\x1b[?25h"; libc::write(1, B.as_ptr() as *const _, B.len()); libc::signal(sig, libc::SIG_DFL); libc::raise(sig); }
+}
+/// Hides the cursor for a progress display. It comes back on `cursor_show`, on a panic, and on SIGINT, SIGTERM and SIGHUP.
+pub fn cursor_hide() {
+    CURSOR_SAFE.call_once(|| {
+        unsafe { for s in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] { libc::signal(s, show_and_raise as extern "C" fn(i32) as usize); } }
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |i| { put(b"\x1b[?25h\x1b[0m"); prev(i); }));
+    });
+    put(b"\x1b[?25l");
+}
+pub fn cursor_show() { put(b"\x1b[?25h"); }
+
 /// (cols, rows) of the terminal; unknown (0 or error, as on a serial line) is 80x24.
 pub fn size() -> (usize, usize) {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };

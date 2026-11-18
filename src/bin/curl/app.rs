@@ -16,6 +16,14 @@ const MAX_BODY: u64 = 2 << 20;
 const MAX_STORE: usize = 1 << 20;
 const MAX_REDIRECTS: usize = 3;
 const MIN_SIZE: (usize, usize) = (20, 5);
+/// Biggest canvas an app gets; a bigger terminal shows it centred.
+const MAX_CANVAS: (usize, usize) = (110, 36);
+
+/// (w, h, left offset, top offset) of the canvas for a terminal of tw x th cells.
+fn canvas(tw: usize, th: usize) -> (usize, usize, usize, usize) {
+    let (w, h) = (tw.min(MAX_CANVAS.0), th.min(MAX_CANVAS.1));
+    (w, h, (tw - w) / 2, (th - h) / 2)
+}
 const ENC_DEPTH: usize = 32;
 const ENC_MAX: usize = 4 << 20;   // a bigger JSON text from one call is refused: memory is limited too (RLIMIT_AS)
 
@@ -39,12 +47,12 @@ fn width(s: &str) -> usize { s.chars().count() }
 // ---- the grid and what reaches the terminal ----
 
 /// The bytes that turn `prev` into `cur` (w*h cells): only changed rows, each as a cursor move and coloured runs. None = nothing shown yet: clear first.
-fn render(prev: Option<&[Cell]>, cur: &[Cell], w: usize) -> Vec<u8> {
+fn render(prev: Option<&[Cell]>, cur: &[Cell], w: usize, ox: usize, oy: usize) -> Vec<u8> {
     let mut o = String::new();
     if prev.is_none() { o += "\x1b[2J"; }
     for (y, row) in cur.chunks(w).enumerate() {
         if prev.is_some_and(|p| p[y * w..(y + 1) * w] == *row) { continue; }
-        o += &format!("\x1b[{};1H", y + 1);
+        o += &format!("\x1b[{};{}H", y + 1 + oy, 1 + ox);
         let mut role = u8::MAX;
         for &(ch, r) in row { if r != role { o += SGR[r as usize]; role = r; } o.push(ch); }
         o += "\x1b[0m";
@@ -55,10 +63,11 @@ fn render(prev: Option<&[Cell]>, cur: &[Cell], w: usize) -> Vec<u8> {
 enum Ev { K(Key), Esc }
 
 /// Keys for the loop and the modals. The Lua hook may move bytes into `pending` while an app runs (to see Ctrl-C), so they are read first.
-struct Input { dec: Decoder, pending: Vec<u8> }
+struct Input { dec: Decoder, pending: Vec<u8>, stash: Vec<Ev> }
 impl Input {
     /// Waits up to `ms` for keys. None = end of input. A bare Esc is an ESC that nothing followed within 50 ms.
     fn events(&mut self, ms: i32) -> Option<Vec<Ev>> {
+        if !self.stash.is_empty() { return Some(std::mem::take(&mut self.stash)); }   // keys a modal left over from one read (fast typing, paste)
         if !self.pending.is_empty() {
             let b = std::mem::take(&mut self.pending);
             let k = self.dec.decode(&b);
@@ -85,7 +94,7 @@ fn key_name(k: &Key) -> Option<String> {
 
 struct Shared {
     w: usize, h: usize, cells: Vec<Cell>, shown: Option<Vec<Cell>>, cursor: Option<(usize, usize)>, cursor_on: bool,
-    tty: bool, offline: bool, input: Input, eof: bool, interrupted: bool, quit: bool, every: Option<Duration>,
+    ox: usize, oy: usize, tty: bool, offline: bool, input: Input, eof: bool, interrupted: bool, quit: bool, every: Option<Duration>,
     store: BTreeMap<String, String>, store_path: Option<PathBuf>, allowed: Vec<Url>,
 }
 
@@ -105,9 +114,9 @@ impl Shared {
     /// Draws the grid on the terminal (changed rows only), with the cursor where a modal asked for it.
     fn flush(&mut self) {
         if !self.tty { return; }
-        let mut o = render(self.shown.as_deref(), &self.cells, self.w);
+        let mut o = render(self.shown.as_deref(), &self.cells, self.w, self.ox, self.oy);
         match self.cursor {
-            Some((x, y)) => { o.extend(format!("\x1b[{y};{x}H\x1b[?25h").bytes()); self.cursor_on = true; }
+            Some((x, y)) => { o.extend(format!("\x1b[{};{}H\x1b[?25h", y + self.oy, x + self.ox).bytes()); self.cursor_on = true; }
             None if self.cursor_on => { o.extend(b"\x1b[?25l"); self.cursor_on = false; }
             None => {}
         }
@@ -118,7 +127,8 @@ impl Shared {
     fn next_ev(&mut self) -> Option<Ev> {
         loop {
             let Some(evs) = self.input.events(250) else { self.eof = true; return None };
-            if let Some(e) = evs.into_iter().next() { return Some(e); }   // shortcut: other keys typed in the same read are dropped
+            let mut it = evs.into_iter();
+            if let Some(e) = it.next() { self.input.stash = it.collect(); return Some(e); }
         }
     }
     fn text_of(&self) -> String {
@@ -305,7 +315,7 @@ impl Sandbox {
         let mut store = BTreeMap::new();
         for (k, v) in o.store { store.insert(k, v); }
         let st = Rc::new(RefCell::new(Shared {
-            w: 0, h: 0, cells: vec![], shown: None, cursor: None, cursor_on: false, tty: o.tty, offline: o.offline, input: Input { dec: Decoder::new(), pending: vec![] }, eof: false, interrupted: false, quit: false,
+            w: 0, h: 0, cells: vec![], shown: None, cursor: None, cursor_on: false, ox: 0, oy: 0, tty: o.tty, offline: o.offline, input: Input { dec: Decoder::new(), pending: vec![], stash: vec![] }, eof: false, interrupted: false, quit: false,
             every: None, store, store_path: o.store_dir.map(|d| d.join("store.json")), allowed: o.allowed,
         }));
         st.borrow_mut().resize(o.size.0, o.size.1);
@@ -315,7 +325,10 @@ impl Sandbox {
         g.get::<Table>("string")?.set("dump", Value::Nil)?;
         let os: Table = g.get("os")?;
         let safe = lua.create_table()?;
-        for n in ["time", "date", "clock", "difftime"] { safe.set(n, os.get::<Value>(n)?)?; }
+        for n in ["time", "date", "difftime"] { safe.set(n, os.get::<Value>(n)?)?; }
+        // os.clock is CPU time in C, which stands still while an app waits for a tick; give seconds since start instead
+        let t0 = Instant::now();
+        safe.set("clock", lua.create_function(move |_, ()| Ok(t0.elapsed().as_secs_f64()))?)?;
         g.set("os", safe)?;
         g.set("print", lua.create_function(|_, _: MultiValue| -> LResult<()> { Err(LErr::runtime("print does not work in apps; use ui.text in draw()")) })?)?;
         Self::sdk(&lua, &st, &ctl, &o.name, &o.args)?;
@@ -520,6 +533,8 @@ impl Sandbox {
         let Some(f) = self.lua.globals().get::<Option<Function>>(name)? else { return Ok(()) };
         self.ctl.start(); let r = f.call::<()>(args); self.ctl.stop(); r
     }
+    /// Where the canvas sits on the terminal (cells from the top left); a move repaints everything.
+    fn origin(&self, ox: usize, oy: usize) { let mut s = self.st.borrow_mut(); if (s.ox, s.oy) != (ox, oy) { (s.ox, s.oy) = (ox, oy); s.shown = None; } }
     pub fn has_draw(&self) -> bool { matches!(self.lua.globals().get::<Value>("draw"), Ok(Value::Function(_))) }
     /// Clears the grid, calls draw(w, h) and shows the result.
     pub fn draw(&self, w: usize, h: usize) -> LResult<()> {
@@ -540,7 +555,13 @@ impl Sandbox {
     pub fn interrupted(&self) -> bool { self.st.borrow().interrupted }
     pub fn eof(&self) -> bool { self.st.borrow().eof }
     pub fn grid_text(&self) -> String { self.st.borrow().text_of() }
-    fn events(&self, ms: i32) -> Option<Vec<Ev>> { self.st.borrow_mut().input.events(ms) }
+    /// One event; the rest of the read waits in the stash, so a modal opened by this key gets the keys typed after it.
+    fn events(&self, ms: i32) -> Option<Vec<Ev>> {
+        let mut st = self.st.borrow_mut();
+        let mut v = st.input.events(ms)?;
+        if v.len() > 1 { st.input.stash = v.split_off(1); }
+        Some(v)
+    }
 }
 
 /// Like `txt` but keeps newlines, for ui.wrap.
@@ -601,6 +622,11 @@ pub fn sdk_names() -> Vec<String> {
 pub fn check(src: &str) -> Result<(), String> {
     let sb = Sandbox::new(Setup { name: "check".into(), args: vec![], allowed: vec![], store_dir: None, store: vec![], tty: false, offline: false, size: (80, 24) }).map_err(|e| e.to_string())?;
     sb.lua.load(src).set_name("=main.lua").set_mode(ChunkMode::Text).into_function().map_err(|e| error_text(&e, src, ""))?;
+    for (n, l) in src.lines().enumerate() {   // keys the model often invents; they never arrive
+        for bad in ["\"space\"", "\"esc\"", "\"escape\"", "\"q\""] {
+            if l.contains(&format!("== {bad}")) { return Err(format!("main.lua:{}: key(k) never gets {bad}: a space arrives as \" \", and q and Esc quit the app before key() sees them", n + 1)); }
+        }
+    }
     lint(src)
 }
 
@@ -709,14 +735,16 @@ fn session(l: &Launch) -> Result<(), (String, String)> {
         Ok(Some(t)) => match json::parse(&t) { Ok(Json::Obj(o)) => o.iter().map(|(k, v)| (k.clone(), json::dump(v))).collect(), _ => vec![] },
         _ => vec![],
     };
-    let (w, h) = term::size();
+    let (tw, th) = term::size();
+    let (w, h, ox, oy) = canvas(tw, th);
     let sb = Sandbox::new(Setup { name: l.name.clone(), args: l.args.clone(), allowed: l.allowed.clone(), store_dir: Some(store_dir), store, tty: true, offline: false, size: (w, h) }).map_err(|e| plain(e.to_string()))?;
     sb.load(&l.src).map_err(|e| plain(error_text(&e, &l.src, "")))?;
     if !sb.has_draw() { return Err(plain("the app has no draw(w, h) function".into())); }
     let Some(raw) = term::Raw::enter() else { return Err(plain("apps need a terminal".into())) };
     let _screen = Screen { _raw: raw };
     term::put(format!("\x1b]2;{}\x07\x1b[?25l", printable(&l.title)).as_bytes());
-    let (mut w, mut h) = (w, h);
+    let (mut w, mut h, mut tsize) = (w, h, (tw, th));
+    sb.origin(ox, oy);
     let mut next_tick: Option<Instant> = None;
     let crash = |e: LErr, ctx: &str| -> Result<(), (String, String)> { if sb.interrupted() { Ok(()) } else { Err((ctx.to_string(), error_text(&e, &l.src, ""))) } };
     macro_rules! go { ($r:expr, $ctx:expr) => { if let Err(e) = $r { return crash(e, $ctx); } } }
@@ -732,7 +760,11 @@ fn session(l: &Launch) -> Result<(), (String, String)> {
             if let Some(n) = name { go!(sb.key(&n), &format!("after key \"{n}\": ")); redraw = true; }
             if sb.quit() { return Ok(()); }
         }
-        if term::size() != (w, h) { (w, h) = term::size(); redraw = true; }
+        if term::size() != tsize {
+            tsize = term::size();
+            let (cw, ch, cx, cy) = canvas(tsize.0, tsize.1);
+            (w, h) = (cw, ch); sb.origin(cx, cy); redraw = true;
+        }
         if next_tick.is_some_and(|t| Instant::now() >= t) {
             go!(sb.tick(), "in tick(): ");
             next_tick = sb.every().map(|d| Instant::now() + d); redraw = true;
@@ -755,6 +787,21 @@ mod tests {
     }
     fn run_keys(src: &str, keys: &[&str]) -> String { dry_run(src, vec![], keys).unwrap() }
 
+    #[test] fn canvas_is_capped_and_centred() {
+        assert_eq!(canvas(177, 51), (110, 36, 33, 7));
+        assert_eq!(canvas(80, 24), (80, 24, 0, 0));
+        assert_eq!(canvas(111, 20), (110, 20, 0, 0));
+        assert_eq!(render(None, &[('a', 0)], 1, 33, 7), b"\x1b[2J\x1b[8;34H\x1b[0ma\x1b[0m");
+        let s = sb(); s.origin(5, 2); s.st.borrow_mut().cursor = Some((3, 4)); s.st.borrow_mut().tty = false;
+        assert_eq!((s.st.borrow().ox, s.st.borrow().oy), (5, 2));
+    }
+    #[test] fn key_name_lint() {
+        for k in ["space", "esc", "escape", "q"] {
+            let e = check(&format!("function draw() end\nfunction key(k)\n  if k == \"{k}\" then end\nend")).unwrap_err();
+            assert!(e.starts_with("main.lua:3:") && e.contains(&format!("\"{k}\"")), "{e}");
+        }
+        assert!(check("function draw() end\nfunction key(k) if k == \" \" or k == \"enter\" then end end").is_ok());
+    }
     #[test] fn removed_functions_are_nil() {
         for n in ["io", "require", "load", "dofile", "loadfile", "package", "debug", "warn", "coroutine", "string.dump", "os.execute", "os.getenv", "os.remove", "os.rename", "os.exit", "os.tmpname", "os.setlocale"] {
             assert_eq!(eval(&format!("return {n}")).unwrap(), "nil", "{n}");
@@ -812,9 +859,9 @@ mod tests {
     #[test] fn grid_diff_bytes() {
         let a: Vec<Cell> = "ab cd ".chars().map(|c| (c, 0)).collect();
         let mut b = a.clone(); b[4] = ('X', 3);
-        assert_eq!(render(None, &a, 3), b"\x1b[2J\x1b[1;1H\x1b[0mab \x1b[0m\x1b[2;1H\x1b[0mcd \x1b[0m");
-        assert_eq!(render(Some(&a), &a, 3), b"");
-        assert_eq!(render(Some(&a), &b, 3), b"\x1b[2;1H\x1b[0mc\x1b[0;32mX\x1b[0m \x1b[0m");
+        assert_eq!(render(None, &a, 3, 0, 0), b"\x1b[2J\x1b[1;1H\x1b[0mab \x1b[0m\x1b[2;1H\x1b[0mcd \x1b[0m");
+        assert_eq!(render(Some(&a), &a, 3, 0, 0), b"");
+        assert_eq!(render(Some(&a), &b, 3, 0, 0), b"\x1b[2;1H\x1b[0mc\x1b[0;32mX\x1b[0m \x1b[0m");
     }
     #[test] fn wrap_and_widths() {
         assert_eq!(wrap("one two three four", 7), ["one two", "three", "four"]);

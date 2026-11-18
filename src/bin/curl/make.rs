@@ -1,7 +1,7 @@
 //! Apps on disk (~/apps/NAME/main.lua + app.json) and the commands agent build, edit, fix, run, list, undo and rm.
 //! `run`, `list`, `undo` and `rm` never load an API key or the agent config. build, edit and fix use agent::ctx_for, the one path to a key.
 //! Network approvals live in ~/.config/thir/approvals, outside every app directory: an app that ships its own "approved" list gets nothing from it.
-use crate::{agent::{self, clean, read_private, sanitize, stream, write_private, Chosen, Ctx, EFFORTS}, app};
+use crate::{memory, progress::Progress, agent::{self, clean, read_private, sanitize, stream, write_private, Chosen, Ctx, EFFORTS}, app};
 use std::{fs, io::BufRead, os::unix::fs::{DirBuilderExt, MetadataExt}, path::{Path, PathBuf}, time::Instant};
 use thir::{clock, files::{app_name_ok, printable, RESERVED}, http::Url, json::{self, Json}, line::Editor, term};
 
@@ -92,7 +92,7 @@ pub fn approval_text(m: &Manifest, new: &[String], had_some: bool) -> String {
 
 // ---- paths ----
 
-fn home() -> Result<PathBuf, String> {
+pub fn home() -> Result<PathBuf, String> {
     std::env::var("HOME").ok().filter(|h| h.starts_with('/')).map(PathBuf::from).ok_or_else(|| "agent: no home directory (HOME is not set)".to_string())
 }
 
@@ -110,14 +110,14 @@ fn mkdir(p: &Path) -> Result<(), String> {
     trusted_dir(p)
 }
 
-fn ask(question: &str) -> bool {
+pub fn ask(question: &str) -> bool {
     print!("{question}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let mut l = String::new();
     std::io::stdin().lock().read_line(&mut l).is_ok_and(|n| n > 0) && matches!(l.trim(), "y" | "Y" | "yes")
 }
 
-fn tty() -> bool { unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 } }
+pub fn tty() -> bool { unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 } }
 fn me() -> u32 { unsafe { libc::getuid() } }
 
 /// (home, ~/apps/NAME) of an app that exists. Err = message.
@@ -296,72 +296,84 @@ fn undo_app(dir: &Path, name: &str, now: i64) -> Result<i64, String> {
 
 enum Gen { No(String), App(Header, String) }
 
-struct Job<'a> { c: Ctx<'a>, calls: usize, chars: usize, store: Vec<(String, String)>, t0: Instant }
+struct Job<'a> { c: Ctx<'a>, calls: usize, chars: usize, store: Vec<(String, String)>, t0: Instant, p: Progress }
 
 impl Job<'_> {
-    /// One model call; prints `label… N lines` unless the label is empty. (text, cut off at the length limit)
-    fn call(&mut self, label: &str, system: &str, user: String) -> Result<(String, bool), String> {
-        if !label.is_empty() { print!("{label}… "); let _ = std::io::Write::flush(&mut std::io::stdout()); }
+    /// One model call; its text goes to the progress display. (text, cut off at the length limit)
+    fn call(&mut self, system: &str, user: String) -> Result<(String, bool), String> {
         self.calls += 1; self.chars += system.len() + user.len();
-        let d = stream(&self.c, system, &[("user", user)], &mut |_| {});
-        let d = d.inspect_err(|_| if !label.is_empty() { println!() })?;
+        let d = stream(&self.c, system, &[("user", user)], &mut |t| self.p.text(t))?;
         self.chars += d.text.len();
-        if !label.is_empty() { println!("{} lines", d.text.lines().count()); }
         if d.stop == "refusal" { return Err(format!("agent: Claude declined to build this (category: {})", clean(d.category.as_deref().unwrap_or("unknown")))); }
         if d.stop == "content_filter" { return Err("agent: the provider declined this request".into()); }
         if d.text.trim().is_empty() { return Err(format!("agent: {} sent an empty answer", self.c.p.name)); }
         Ok((d.text, matches!(d.stop.as_str(), "max_tokens" | "length" | "model_context_window_exceeded")))
     }
 
-    /// Code call, parse, check, test run; up to MAX_FIX fixes. The result is an app that passed every check.
-    fn generate(&mut self, label: &str, mut user: String, spec: &str, need_header: bool) -> Result<Gen, String> {
-        let mut label = label;
+    /// Code call, parse, check, test run; up to MAX_FIX fixes. The result is an app that passed every check. `plain` names the first step when there is no terminal.
+    fn generate(&mut self, plain: &str, mut user: String, spec: &str, need_header: bool) -> Result<Gen, String> {
+        self.p.step("code", plain);
         for attempt in 0..=MAX_FIX {
-            let (text, cut) = self.call(label, CODE_PROMPT, user)?;
+            let (text, cut) = self.call(CODE_PROMPT, user)?;
             let mut code = text.chars().take(MAX_CODE as usize).collect::<String>();
             let err = if cut { "your reply was cut off at the length limit; write a shorter app".to_string() } else {
                 match parse_reply(&text, need_header) {
-                    Ok(Reply::No(r)) => return Ok(Gen::No(r)),
+                    Ok(Reply::No(r)) => { self.p.fail("not buildable"); return Ok(Gen::No(r)) }
                     Ok(Reply::App(h, c)) => {
                         code = c.clone();
-                        println!("checking…");
-                        let r = app::check(&c).and_then(|_| { println!("test run…"); app::dry_run(&c, self.store.clone(), &TEST_KEYS) });
-                        match r { Ok(_) => return Ok(Gen::App(h, c)), Err(e) => e }
+                        self.p.finish(None, &format!("{} lines", text.lines().count()));
+                        self.p.step("check", "checking");
+                        let r = app::check(&c).map(|_| self.p.finish(Some("passed"), "")).and_then(|_| { self.p.step("test run", "test run"); app::dry_run(&c, self.store.clone(), &TEST_KEYS) });
+                        match r { Ok(_) => { self.p.finish(Some("passed"), ""); return Ok(Gen::App(h, c)) } Err(e) => e }
                     }
                     Err(e) => e,
                 }
             };
             let one: String = clean(err.lines().next().unwrap_or("")).chars().take(100).collect();
             if attempt == MAX_FIX { return Err(format!("agent: the app still fails after {MAX_FIX} fixes: {one}. Nothing was saved. Try again or describe it differently.")); }
-            println!("fixing ({}/{MAX_FIX}): {one}", attempt + 1);
+            self.p.retry(attempt + 1, MAX_FIX, &one);
             user = fill(FIX_PROMPT, &[("{error}", &sanitize(&err)), ("{spec}", spec), ("{code}", &code)]);
-            label = "";
         }
         unreachable!()
     }
 
-    fn done(&self, what: &str) {
+    /// A progress row naming the remembered facts the result used (nothing when none).
+    fn memory_note(&self, used: &[String]) {
+        if !used.is_empty() { self.p.note("memory", &used.join(" · "), &format!("using your memory: {}", used.join(", "))); }
+    }
+
+    fn done(&mut self, what: &str) {
         let k = ((self.chars / 4) + 500) / 1000;   // shortcut: chars/4 estimate; parse usage from message_delta later
-        println!("{what} in {} s ({} calls, about {}k tokens)", self.t0.elapsed().as_secs(), self.calls, k.max(1));
+        let line = self.p.done(what, self.t0.elapsed().as_secs(), self.calls, k.max(1));
+        *SUMMARY.lock().unwrap() = line;   // the app clears the screen when it quits; the line is shown again after it
     }
 }
 
-fn job<'a>(ch: &'a Chosen, store: Vec<(String, String)>) -> Job<'a> { Job { c: ch.ctx(), calls: 0, chars: 0, store, t0: Instant::now() } }
+/// `header` is what is being done ("building"), `name` the app if known; the display starts here.
+fn job<'a>(ch: &'a Chosen, store: Vec<(String, String)>, header: &str, plain: &str, labels: &[&str]) -> Job<'a> {
+    let p = Progress::new(header, &format!(" · {} via {} · uses API credit", ch.model, ch.p.name), plain, labels);
+    Job { c: ch.ctx(), calls: 0, chars: 0, store, t0: Instant::now(), p }
+}
+
+static SUMMARY: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 fn not_buildable(r: &str) -> String { format!("agent: that is not an app I can build: {r}") }
 
-fn build(ch: &Chosen, home: &Path, idea: &str) -> Result<String, String> {
-    println!("agent: building with {} via {} (API use costs money)", ch.model, ch.p.name);
-    let mut j = job(ch, vec![]);
-    let (spec, _) = j.call("planning", SPEC_PROMPT, format!("===REQUEST===\n{idea}"))?;
+fn build(ch: &Chosen, home: &Path, facts: &[String], idea: &str) -> Result<String, String> {
+    let mut j = job(ch, vec![], "agent · building", &format!("agent: building with {} via {} (API use costs money)", ch.model, ch.p.name), &["plan", "code", "check", "test run"]);
+    j.p.step("plan", "planning");
+    let (spec, _) = j.call(SPEC_PROMPT, format!("{}===REQUEST===\n{idea}", memory::block(facts)))?;
+    let plan_lines = spec.lines().count();
     let spec: String = unfenced(&spec).join("\n").chars().take(MAX_SPEC).collect::<String>() + "\n";
-    let plan = match parse_spec(&spec).map_err(|e| format!("agent: the plan was not usable: {e}. Nothing was saved. Try again or describe it differently."))? { Spec::No(r) => return Err(not_buildable(&r)), Spec::Plan(h) => h };
+    let plan = match parse_spec(&spec).map_err(|e| format!("agent: the plan was not usable: {e}. Nothing was saved. Try again or describe it differently."))? { Spec::No(r) => { j.p.fail("not buildable"); return Err(not_buildable(&r)) } Spec::Plan(h) => h };
+    j.p.finish(None, &format!("{plan_lines} lines"));
+    j.memory_note(&memory::used(facts, "", &spec));
     let apps = home.join("apps");
     let base = plan.name.clone().unwrap_or_default();
     let name = pick_name(&base, &|n| fs::symlink_metadata(apps.join(n)).is_ok() || Path::new("/bin").join(n).exists()).ok_or("agent: could not find a free name for the app")?;
     if name != base {
-        if fs::symlink_metadata(apps.join(&base)).is_ok() { println!("you already have {base}; this one is {name}. To change {base}: agent edit {base} \"…\""); }
-        else { println!("{base} is the name of a command; this app is called {name}"); }
+        if fs::symlink_metadata(apps.join(&base)).is_ok() { j.p.say(&format!("you already have {base}; this one is {name}. To change {base}: agent edit {base} \"…\"")); }
+        else { j.p.say(&format!("{base} is the name of a command; this app is called {name}")); }
     }
     let (h, code) = match j.generate("writing code", format!("===REQUEST===\n{idea}\n===SPEC===\n{spec}\nWrite this app."), &spec, true)? { Gen::No(r) => return Err(not_buildable(&r)), Gen::App(h, c) => (h, c) };
     let (title, about, net) = (h.title.or(plan.title).unwrap_or_else(|| name.clone()), h.about.or(plan.about).unwrap_or_default(), h.net.or(plan.net).unwrap_or_default());
@@ -375,22 +387,22 @@ fn build(ch: &Chosen, home: &Path, idea: &str) -> Result<String, String> {
 enum Change { Edit, Fix }
 
 /// edit or fix of an existing app: `text` is the change or the problem (a fix may have none and use the saved crash).
-fn change(ch: &Chosen, name: &str, kind: Change, text: &str) -> Result<(), String> {
+fn change(ch: &Chosen, name: &str, kind: Change, facts: &[String], text: &str) -> Result<(), String> {
     let (_, dir) = app_dir(name)?;
     let m = load_manifest(&dir, name)?;
     let code = read_app_file(&dir, "main.lua", MAX_CODE)?.ok_or_else(|| format!("agent: {name} has no main.lua"))?;
     let spec = read_app_file(&dir, "spec.txt", 64 << 10)?.unwrap_or_default();
     let saved = read_app_file(&dir, "last_error", 8192)?.unwrap_or_default();
     let (verb, label, user) = match kind {
-        Change::Edit => ("editing", "changing code", fill(EDIT_PROMPT, &[("{request}", text), ("{spec}", &spec), ("{code}", &code)])),
+        Change::Edit => ("editing", "changing code", fill(EDIT_PROMPT, &[("{about}", &memory::block(facts)), ("{request}", text), ("{spec}", &spec), ("{code}", &code)])),
         Change::Fix => {
             let err = [saved.as_str(), &if text.is_empty() { String::new() } else { format!("the user says: {text}") }].iter().filter(|s| !s.is_empty()).map(|s| sanitize(s)).collect::<Vec<_>>().join("\n");
             ("fixing", "fixing code", fill(FIX_PROMPT, &[("{error}", &err), ("{spec}", &spec), ("{code}", &code)]))
         }
     };
-    println!("agent: {verb} {name} with {} via {} (API use costs money)", ch.model, ch.p.name);
-    let mut j = job(ch, load_store(&dir));
+    let mut j = job(ch, load_store(&dir), &format!("agent · {verb} {name}"), &format!("agent: {verb} {name} with {} via {} (API use costs money)", ch.model, ch.p.name), &["code", "check", "test run"]);
     let (h, new) = match j.generate(label, user, &spec, false)? { Gen::No(r) => return Err(format!("agent: cannot make that change: {r}")), Gen::App(h, c) => (h, c) };
+    if kind == Change::Edit { j.memory_note(&memory::used(facts, &code, &new)); }
     let net = h.net.unwrap_or_else(|| m.net.clone());
     let (title, about) = (h.title.unwrap_or_else(|| m.title.clone()), h.about.unwrap_or_else(|| m.about.clone()));
     let (k, prompt) = if kind == Change::Edit { ("edit", text.to_string()) } else { ("fix", if text.is_empty() { "the last crash".to_string() } else { text.to_string() }) };
@@ -452,24 +464,26 @@ fn make(cmd: &str, args: &[String]) -> i32 {
         match ask_line(&format!("What should {} be? ", if cmd == "edit" { "the change" } else { "the app" })) { Some(l) if !l.is_empty() => text = l, _ => return 1 }
     }
     let home = match home() { Ok(h) => h, Err(m) => return fail(&m) };
+    let facts = match memory::load(&home) { Ok(f) => f, Err(m) => return fail(&m) };   // before any money is spent
     let cfg = match agent::load_config(&home) { Ok((c, _)) => c, Err(m) => return fail(&m) };
     let ch = match agent::ctx_for(&home, &cfg, cli.p.as_deref(), cli.m.as_deref(), cli.e.as_deref(), BUILD_EFFORT) { Ok(c) => c, Err((code, m)) => { eprintln!("{m}"); return code } };
     let name = match name {
-        Some(n) => { if let Err(m) = change(&ch, &n, if cmd == "edit" { Change::Edit } else { Change::Fix }, &text) { return fail(&m); } n }
-        None => match build(&ch, &home, &text) { Ok(n) => n, Err(m) => return fail(&m) },
+        Some(n) => { if let Err(m) = change(&ch, &n, if cmd == "edit" { Change::Edit } else { Change::Fix }, &facts, &text) { return fail(&m); } n }
+        None => match build(&ch, &home, &facts, &text) { Ok(n) => n, Err(m) => return fail(&m) },
     };
     if !tty() { return 0; }
     loop {   // open the app; after it, offer another change
         let rc = run(&[name.clone()]);
         if rc != 0 { return rc; }
+        println!("{}", SUMMARY.lock().unwrap());
         println!("Change something in {name}? Type it, or press Enter to finish.");
         let Some(l) = ask_line("change> ") else { return 0 };
         if l.is_empty() { return 0; }
-        if let Err(m) = change(&ch, &name, Change::Edit, &l) { return fail(&m); }
+        if let Err(m) = change(&ch, &name, Change::Edit, &facts, &l) { return fail(&m); }
     }
 }
 
-fn ask_line(prompt: &str) -> Option<String> {
+pub fn ask_line(prompt: &str) -> Option<String> {
     let mut ed = Editor::new(vec![]);
     term::read_line(&mut ed, prompt, &|_, _| vec![]).map(|l| l.trim().to_string())
 }
@@ -494,26 +508,38 @@ pub fn run(args: &[String]) -> i32 {
     app::run(app::Launch { name: m.name, title: m.title, args: args[1..].to_vec(), allowed, dir, src })
 }
 
+/// Every app in ~/apps, sorted: its name and its manifest (or why it is broken).
+pub fn apps(home: &Path) -> Vec<(String, Result<Manifest, String>)> {
+    let dir = home.join("apps");
+    let mut names: Vec<String> = fs::read_dir(&dir).map(|rd| rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| app_name_ok(n)).collect()).unwrap_or_default();
+    names.sort();
+    names.into_iter().filter(|n| fs::symlink_metadata(dir.join(n)).is_ok_and(|m| m.is_dir())).map(|n| {
+        let m = read_private(&dir.join(&n).join("app.json"), me(), MAX_MANIFEST).map_err(|w| format!("app.json {w}")).and_then(|t| t.ok_or("no app.json".to_string())).and_then(|t| parse_manifest(&t));
+        (n, m)
+    }).collect()
+}
+
+/// The chat's list of installed apps ("" when there are none). It tells the model what exists; it never gets code or data.
+pub fn apps_block(home: &Path) -> String {
+    let l: Vec<String> = apps(home).into_iter().filter_map(|(n, m)| m.ok().map(|m| format!("- {n} v{}: {}, {}\n", m.version, m.title, m.about))).take(30).collect();
+    if l.is_empty() { String::new() } else { format!("===APPS===\nApps installed in ~/apps:\n{}", l.concat()) }
+}
+
 /// `agent list`: one line per app.
 pub fn list(args: &[String]) -> i32 {
     if !args.is_empty() { eprintln!("usage: agent list"); return 2; }
     let home = match home() { Ok(h) => h, Err(m) => return fail(&m) };
-    let dir = home.join("apps");
-    let mut names: Vec<String> = fs::read_dir(&dir).map(|rd| rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| app_name_ok(n)).collect()).unwrap_or_default();
-    names.sort();
-    let mut shown = 0;
-    for n in names {
-        if !fs::symlink_metadata(dir.join(&n)).is_ok_and(|m| m.is_dir()) { continue; }
-        shown += 1;
-        match read_private(&dir.join(&n).join("app.json"), me(), MAX_MANIFEST).map_err(|w| format!("app.json {w}")).and_then(|t| t.ok_or("no app.json".to_string())).and_then(|t| parse_manifest(&t)) {
+    let all = apps(&home);
+    for (n, m) in &all {
+        match m {
             Ok(m) => {
                 let net = if m.net.is_empty() { "none".to_string() } else { m.net.iter().map(|o| Url::parse(o).map_or(String::new(), |u| u.host_header())).collect::<Vec<_>>().join(", ") };
-                println!("{:<9} v{:<2} {:<40} net: {net}", n, m.version, m.about.chars().take(40).collect::<String>());
+                println!("{:<9} v{:<2} {:<40} net: {net}", n, m.version, m.about.chars().take(39).collect::<String>());
             }
-            Err(e) => println!("{n:<9} (broken: {})", printable(&e)),
+            Err(e) => println!("{n:<9} (broken: {})", printable(e)),
         }
     }
-    if shown == 0 { println!("no apps yet; try: agent build \"a calculator\""); }
+    if all.is_empty() { println!("no apps yet; try: agent build \"a calculator\""); }
     0
 }
 
@@ -638,6 +664,7 @@ mod tests {
     #[test] fn template_fill_is_single_pass() {
         assert_eq!(fill("a {x} b {y}", &[("{x}", "{y}"), ("{y}", "2")]), "a {y} b 2");
         for t in [FIX_PROMPT, EDIT_PROMPT] { assert!(t.contains("{spec}") && t.contains("{code}")); }
+        assert!(EDIT_PROMPT.contains("{about}"));
     }
     #[test] fn changes_are_appended_and_capped() {
         let a = add_change("===APP===\nname: x\n", "add memory");
@@ -669,13 +696,13 @@ mod tests {
         let _ = fs::remove_dir_all(apps);
     }
     #[test] fn dry_run_accepts_canned_replies() {
-        for t in [include_str!("../../../test/apps/calc.reply"), include_str!("../../../test/apps/calc2.reply")] {
+        for t in [include_str!("../../../test/apps/calc.reply"), include_str!("../../../test/apps/calc2.reply"), include_str!("../../../test/apps/weather.reply")] {
             let Reply::App(_, c) = parse_reply(t, true).unwrap() else { panic!() };
             app::check(&c).unwrap(); app::dry_run(&c, vec![], &TEST_KEYS).unwrap();
         }
         let Reply::App(_, c) = parse_reply(include_str!("../../../test/apps/calc-bad.reply"), true).unwrap() else { panic!() };
         let e = app::dry_run(&c, vec![], &TEST_KEYS).unwrap_err(); assert!(e.contains("after key") && e.contains("main.lua:"), "{e}");
-        assert!(matches!(parse_spec(include_str!("../../../test/apps/calc.spec")), Ok(Spec::Plan(_))));
+        for t in [include_str!("../../../test/apps/calc.spec"), include_str!("../../../test/apps/weather.spec")] { assert!(matches!(parse_spec(t), Ok(Spec::Plan(_)))); }
     }
     #[test] fn cli_options() {
         let c = parse_cli(&s(&["-p", "mockb", "a", "calculator", "-e", "medium"])).unwrap();
