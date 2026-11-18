@@ -7,7 +7,6 @@ pub mod files;
 pub mod glob;
 pub mod gui;
 pub mod http;
-pub mod json;
 pub mod line;
 pub mod net;
 pub mod parse;

@@ -6,12 +6,12 @@ cd "$(dirname "$0")/.."
 export DATA_IMG=out/${THIR_ARCH:-aarch64}/smoke-data.img
 source ./env.sh
 TIMEOUT=${SMOKE_TIMEOUT:-30}   # argon2 is slow under x86_64 emulation (STEP)
-PW1='correct-horse-1'; PW2='tr0ub4dor-two-2'; PWX='wrongpass-xx'; FAKEKEY=sk-ant-thir-smoke-not-a-key
-SECRETS=("$PW1" "$PW2" "$PWX" "$FAKEKEY"); STEP=${SMOKE_STEP_TIMEOUT:-60}
+PW1='correct-horse-1'; PW2='tr0ub4dor-two-2'; PWX='wrongpass-xx'
+SECRETS=("$PW1" "$PW2" "$PWX"); STEP=${SMOKE_STEP_TIMEOUT:-60}
 source test/lib.sh
 ./build.sh data > /dev/null 2>&1          # fresh disk for this run only
 
-python3 test/mock.py "$d" & mpid=$!      # web server for the curl and agent tests; certificates exist before the guest boots
+python3 test/mock.py "$d" & mpid=$!      # web server for the curl tests; certificates exist before the guest boots
 for _ in $(seq 1 50); do [ -f "$d/srv.pem" ] && (echo > /dev/tcp/127.0.0.1/18443) 2>/dev/null && break; sleep 0.2; done
 
 boot boot1 "${QEMU[@]}"
@@ -66,23 +66,6 @@ run 'curl -sL --cacert ca.pem https://10.0.2.2:18443/downgrade' 'https to http'
 run 'curl -s --max-time 2 http://10.0.2.2:18080/slow' '\[exit 28\]'
 run 'curl -s http://10.0.2.2:1/' '\[exit 7\]'
 run 'curl -s http://no-such-host.invalid/' '\[exit 6\]'
-run 'mkdir -p .config/thir' '\$ $'
-send 'write .config/thir/agent'; send 'provider mocka anthropic http://10.0.2.2:18080/anthropic/v1'; send 'provider mockr anthropic http://10.0.2.2:18080/refuse/v1'
-send 'provider mocko openai http://10.0.2.2:18080/openai/v1 mock-model'; send 'provider mocke openai http://10.0.2.2:18080/err/v1 mock-model'; run '.' '\$ $'
-run 'agent --providers' 'mocka +anthropic +http://10\.0\.2\.2:18080/anthropic/v1 +no key needed'
-send 'agent -p mocka hi'; wait_for 'mock reply 1 café$'; wait_for '^second line'; wait_for '\$ $'
-run 'agent -p mocko hi' 'openai mock reply 1$'
-run 'agent -p mockr hi' 'declined this request \(category: cyber\)'
-run 'agent -p mocke hi' 'Incorrect API key provided'
-run 'agent --login mocka' 'plain http'
-run 'agent -p openai hi' 'needs a model'
-run 'agent -p anthropic hi' 'no API key for anthropic'
-send 'agent --login anthropic'; wait_for 'key'; send "$FAKEKEY"; wait_for 'saved'
-run 'agent --providers' 'anthropic .*key saved'
-send 'agent -p mocka'; wait_for 'agent> '; send one; wait_for 'mock reply 1 '; send two; wait_for 'mock reply 3 '
-send /clear; wait_for 'agent> '; send three; wait_for 'mock reply 1 '; send /exit; wait_for '\$ $'
-if [ "${ONLINE:-}" = 1 ]; then run 'curl -sI https://example.com/' '^HTTP/1\.1 [23]0[0-9]'; run 'agent hi' 'rejected the API key'; fi
-run 'agent --logout anthropic' 'removed'
 run 'rm /' "refusing to remove '/'"
 run 'cat /proc/sys/kernel/hostname' '^thir$'
 send $'ca\t/etc/res\t'   # Tab completion; the send's newline runs it. The echo is on the old partial line, so only the output proves it
@@ -94,68 +77,6 @@ run 'echo suggestion works' '^suggestion works$'
 send ''; wait_for '\$ $'; sendk 'echo sugg'; sendk $'\x1b[C'; sendk $'\r'; wait_for '^suggestion works$'; wait_for '\$ $'
 run 'mkdir -p tabdir/aa1 tabdir/aa2' '\$ $'
 send ''; wait_for '\$ $'; sendk $'ls tabdir/a\t\t'; wait_for '^aa1/ +aa2/$'; sendk $'\x03'; wait_for '\^C'; wait_for '\$ $'
-# apps (after the Tab test above: a calc app would make `ca` ambiguous)
-run 'agent list' 'no apps yet'
-run 'mkdir -p apps/calc apps/hello apps/crash' '\$ $'
-for a in calc hello crash; do   # canned apps from test/apps, fetched from the mock server
-  run "curl -s -o apps/$a/main.lua http://10.0.2.2:18080/apps/$a.lua" '\$ $'; run "curl -s -o apps/$a/app.json http://10.0.2.2:18080/apps/$a.json" '\$ $'
-done
-run 'agent list' '^calc +v1 +A calculator +net: none$'
-send calc; wait_for 'q quit'; sendk '1+2='; wait_for '= 3'; sendk q; wait_for '\$ $'           # an app by name; net none needs no approval
-send hello; wait_for 'connect to 10\.0\.2\.2:18080 \(not encrypted\)'; send n; wait_for 'did not run'; wait_for '\$ $'
-send hello; wait_for 'connect to 10\.0\.2\.2:18080 \(not encrypted\)'; send y; wait_for 'hello from mock'; wait_for 'tz 05:30'; sendk q; wait_for '\$ $'   # tz 05:30: os.date follows ~/.tz
-run 'cat .config/thir/approvals' '^hello http://10\.0\.2\.2:18080$'   # approvals live outside the app dir; hello.json ships a fake "approved" list that was ignored
-send hello; wait_for 'hello from mock'; sendk q; wait_for '\$ $'                              # approved once: no question the second time
-send 'agent run crash'; wait_for 'q quit'; sendk l; wait_for 'crash stopped: .*more than 2 s' 20; wait_for '\$ $'   # an endless loop is stopped
-send 'agent run crash'; wait_for 'q quit'; sendk x; wait_for 'crash stopped: main\.lua:'; wait_for '\$ $'
-run 'cat apps/crash/last_error' 'main\.lua:'
-send $'cr\t'; wait_for 'q quit'; sendk q; wait_for '\$ $'                                      # Tab completes an app name; the send's newline runs it
-run 'agent run nosuch' 'no app called nosuch'
-run 'agent run ../calc' 'no app called'
-# agent build / edit / fix / undo / rm against the mock (apps made by the AI)
-send 'write .config/thir/agent'; send 'provider mockb anthropic http://10.0.2.2:18080/build/v1'; run '.' '\$ $'
-send 'agent build -p mockb a calculator'; wait_for 'fixing \(1/3\)'; wait_for 'saved calc-2 v1'
-wait_for 'q quit'; sendk '1+2='; wait_for '= 3'; sendk q; wait_for 'Change something'; send ''; wait_for '\$ $'
-run 'agent list' '^calc-2 +v1'
-send 'agent edit -p mockb calc-2 "add memory"'; wait_for 'saved calc-2 v2'; wait_for 'Calc\+'; sendk q; wait_for 'Change'; send ''; wait_for '\$ $'
-run 'agent undo calc-2' 'back to version 1'
-run 'agent fix calc-2' 'no saved crash'
-run 'agent build -p mockb how to cook lasagna' 'not an app I can build: a recipe'
-send 'agent rm calc-2'; wait_for 'remove calc-2'; send y; wait_for 'removed'
-run 'agent list' '^calc +v1'
-# agent memory: facts kept in ~/.config/thir/memory, sent only with chats and builds; a build uses them
-run 'agent memory' 'remembers nothing yet'
-run 'agent remember city: Colombo' 'remembered: city: Colombo'
-run 'agent remember units: metric' 'remembered: units: metric'
-run 'agent remember my password is hunter2' 'never remembers'   # typed on purpose; hunter2 is not in SECRETS
-run 'agent memory' '^ +1 +city: Colombo$'
-send 'agent build -p mockb a weather app'; wait_for 'memory.*city: Colombo'; wait_for 'saved weather v1'
-wait_for 'Weather for Colombo'; sendk q; wait_for 'Change something'; send ''; wait_for '\$ $'
-run 'agent remember city: Kandy' 'updated: city: Kandy'
-run 'agent forget city' 'forgot: city: Kandy'
-run 'agent build -p mockb a weather app' 'not an app I can build: mock: no city'
-send 'agent forget all'; wait_for 'forget everything'; send y; wait_for 'forgot everything'
-# agent do: file tasks in plain words; the plan is shown and nothing changes before y
-send 'write .config/thir/agent'; send 'provider mockd anthropic http://10.0.2.2:18080/do/v1'; run '.' '\$ $'
-run 'agent do -p mockd make notes.txt > out.txt' 'needs a terminal'
-send 'agent do -p mockd make notes.txt with my shopping list: milk, eggs'; wait_for '\+ notes\.txt +2 lines'; wait_for '^ +milk'; wait_for 'apply 1 change\? \[y/N\]'
-send y; wait_for 'notes\.txt +ok · 2 lines'; wait_for 'done\. undo: rm notes\.txt'; wait_for '\$ $'
-run 'cat notes.txt' '^eggs$'
-run 'agent do -p mockd make notes.txt with my shopping list: milk, eggs' 'notes\.txt already exists'
-send 'agent do -p mockd move notes.txt into docs/'; wait_for '→ notes\.txt → docs/notes\.txt'; wait_for 'apply 1 change\? \[y/N\]'; send n; wait_for 'nothing changed\.'; wait_for '\$ $'
-run 'cat notes.txt' '^milk$'
-send 'agent do -p mockd move notes.txt into docs/'; wait_for 'apply 1 change'; send y; wait_for 'done\. undo: mv docs/notes\.txt notes\.txt'; wait_for '\$ $'
-run 'cat docs/notes.txt' '^eggs$'
-send 'agent do -p mockd download http://10.0.2.2:18080/people.json to data/people.json'; wait_for '\+ data/'; wait_for '↓ data/people\.json +10\.0\.2\.2:18080 +not encrypted'
-wait_for 'apply 2 changes\? \[y/N\]'; send y; wait_for 'people\.json +ok · '; wait_for 'done\. undo: rm -r data'; wait_for '\$ $'
-run 'cat data/people.json' 'Grace'
-send 'agent do -p mockd write the names in http://10.0.2.2:18080/people.json into names.txt'; wait_for 'read · '; wait_for '^ +Ada'
-wait_for 'apply 1 change'; send y; wait_for 'names\.txt +ok · 3 lines'; wait_for '\$ $'
-run 'cat names.txt' '^Linus$'
-run 'agent do -p mockd save my keys' 'hidden files and folders are off limits'
-run 'agent do -p mockd break calc' '~/apps changes only with agent'
-run 'agent do -p mockd sneaky' 'not in your request'
-run 'agent do -p mockd delete everything' 'unknown action RUN'
 send passwd; wait_for 'old password: '
 send "$PWX"; wait_for 'passwd: wrong password'; t0=$SECONDS
 wait_for 'old password: '

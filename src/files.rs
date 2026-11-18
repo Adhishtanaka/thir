@@ -16,15 +16,6 @@ pub fn unsafe_char(c: char) -> bool {
 /// Unsafe characters as '?', so a hostile file name cannot drive the terminal.
 pub fn printable(s: &str) -> String { s.chars().map(|c| if unsafe_char(c) { '?' } else { c }).collect() }
 
-/// An app name: a-z first, then a-z, 0-9 and '-', at most 20 characters.
-pub fn app_name_ok(s: &str) -> bool {
-    (1..=20).contains(&s.len()) && s.as_bytes()[0].is_ascii_lowercase() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-/// Names an app may not take: every nsh builtin, every program in /bin, and the names agent itself uses. nsh's tests check it covers the builtins.
-pub const RESERVED: &[&str] = &["cd", "exit", "help", "date", "tz", "clear", "history", "pwd", "echo", "whoami", "mkdir", "rmdir", "touch", "rm", "mv", "cp", "write", "ls", "cat", "ip", "poweroff", "reboot",
-    "edit", "nano", "find", "top", "fetch", "neofetch", "curl", "agent", "passwd", "dhcp", "login", "den", "init", "nsh", "app", "apps"];
-
 /// Temp file in the same directory, then rename: a crash never leaves half a file. The old mode is kept.
 pub fn save(p: &Path, data: &[u8]) -> io::Result<()> {
     let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -55,10 +46,6 @@ pub fn save(p: &Path, data: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
     #[test] fn printable_hides_control_bytes() { assert_eq!(printable("a\x1b[2Jb\n\u{202e}c\u{2028}"), "a?[2Jb??c?"); }
-    #[test] fn app_names() {
-        for n in ["a", "calc", "weather-2", "a1-b2", "abcdefghijklmnopqrst"] { assert!(app_name_ok(n), "{n}"); }
-        for n in ["", "1a", "-a", "A", "a_b", "a b", "a/b", "..", "abcdefghijklmnopqrstu", "é"] { assert!(!app_name_ok(n), "{n}"); }
-    }
     #[test] fn save_replaces_content_and_keeps_the_mode() {
         let d = std::env::temp_dir().join(format!("thir-files-{}", std::process::id())); let _ = fs::remove_dir_all(&d); fs::create_dir_all(&d).unwrap();
         let p = d.join("f"); fs::write(&p, "old").unwrap(); fs::set_permissions(&p, fs::Permissions::from_mode(0o640)).unwrap();

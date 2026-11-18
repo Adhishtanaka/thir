@@ -40,7 +40,7 @@ impl Raw {
 }
 impl Drop for Raw { fn drop(&mut self) { put(b"\x1b[?25h\x1b[0m"); raw_off(&self.0); } }
 
-extern "C" fn restore_and_raise(sig: i32) {   // SIGALRM is the watchdog of `agent run` (nothing else sets an alarm); SIGABRT: a failed allocation under its memory limit
+extern "C" fn restore_and_raise(sig: i32) {   // put the terminal back when a signal ends the program
     if let Some(t) = SAVED.get() { unsafe { libc::tcsetattr(0, libc::TCSANOW, t); } }
     unsafe { const B: &[u8] = b"\x1b[0m\x1b]2;\x07\x1b[?25h"; libc::write(1, B.as_ptr() as *const _, B.len()); }   // colours, den title and cursor back (write is async-signal-safe)
     unsafe { libc::signal(sig, libc::SIG_DFL); libc::raise(sig); }

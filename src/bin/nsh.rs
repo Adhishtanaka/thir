@@ -1,4 +1,4 @@
-use thir::{clock, files::{app_name_ok, printable, rm_refuses}, line::Editor, net, parse::parse_cmd};
+use thir::{clock, files::{printable, rm_refuses}, line::Editor, net, parse::parse_cmd};
 use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::{fs::{FileExt, OpenOptionsExt}, process::{CommandExt, ExitStatusExt}}, path::Path, process::{exit, Command, Stdio}};
 
 /// Every command nsh offers, by section: (usage, description). Builtins and completion come from here, so they cannot drift.
@@ -11,7 +11,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ("session", &[("whoami", "your user name"), ("history", "command history"), ("help [cmd]", "this text, or one command"), ("exit", "log out")]),
     ("programs", &[("edit [file]", "full-screen editor (also: nano)"), ("find [dir] [-name P]", "find files; P uses * and ?; -type f|d"), ("top", "CPU, memory and processes"),
         ("fetch", "system summary with a bear (also: neofetch)"),
-        ("curl [opts] URL", "download a page or file (curl -h for options)"), ("agent [question]", "chat with an AI, or build apps (agent -h)"),
+        ("curl [opts] URL", "download a page or file (curl -h for options)"),
         ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
 ];
 
@@ -26,7 +26,7 @@ fn help_text() -> String {
         o.push('\n');
         for (i, (u, d)) in rows.iter().enumerate() { o += &format!("  {:<8} {:<20} {}\n", if i == 0 { sec } else { "" }, u, d); }
     }
-    o + "\nApps you make with agent build run by their name.\nRedirect output with > file or >> file.\nKeys: Tab completes, Up/Down history, Ctrl-A/E start/end, Ctrl-U/K cut to\nstart/end, Ctrl-W cut word, Ctrl-L clear screen, Ctrl-C cancel, Ctrl-D exit.\n"
+    o + "\nRedirect output with > file or >> file.\nKeys: Tab completes, Up/Down history, Ctrl-A/E start/end, Ctrl-U/K cut to\nstart/end, Ctrl-W cut word, Ctrl-L clear screen, Ctrl-C cancel, Ctrl-D exit.\n"
 }
 
 fn help_cmd(name: &str) -> Option<String> {
@@ -66,7 +66,6 @@ fn candidates(first: bool, word: &str) -> Vec<String> {
     let mut v: Vec<String> = vec![];
     if first && !word.contains('/') {
         v.extend(builtins().filter(|b| b.starts_with(word)).map(|b| b.to_string()));
-        if let Ok(rd) = fs::read_dir(app_dir()) { v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(word) && is_app(n))); }
         for dir in std::env::var("PATH").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
             if let Ok(rd) = fs::read_dir(dir) { v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(word) && printable(n) == *n).map(|n| escape(&n))); }
         }
@@ -81,13 +80,6 @@ fn candidates(first: bool, word: &str) -> Vec<String> {
         }
     }
     v.sort(); v.dedup(); v
-}
-
-fn app_dir() -> String { format!("{}/apps/", std::env::var("HOME").unwrap_or_default()) }
-
-/// `name` is an app in ~/apps (it has a main.lua) and no program of that name is on PATH. Apps run through `agent run`: no launcher files, because /data is noexec.
-fn is_app(name: &str) -> bool {
-    app_name_ok(name) && !std::env::var("PATH").unwrap_or_default().split(':').any(|d| Path::new(d).join(name).exists()) && Path::new(&format!("{}{name}/main.lua", app_dir())).is_file()
 }
 
 fn hist_path() -> String { format!("{}/.nsh_history", std::env::var("HOME").unwrap_or_else(|_| "/".into())) }
@@ -216,9 +208,7 @@ fn main() {
         let mut out: Box<dyn Write> = match file.as_ref().map(File::try_clone) { Some(Ok(f)) => Box::new(f), Some(Err(e)) => { eprintln!("nsh: {e}"); continue }, None => Box::new(io::stdout()) };
         let color = cmd.redirect.is_none() && unsafe { libc::isatty(1) } == 1;
         if builtin(&cmd.argv, &mut out, &stdin, ed.history(), color).is_some() { continue }
-        let app = is_app(name);
-        let mut c = Command::new(if app { "/bin/agent" } else { name });
-        if app { c.args(["run", name]); }
+        let mut c = Command::new(name);
         c.args(&cmd.argv[1..]);
         if let Some(f) = file { c.stdout(Stdio::from(f)); }
         match unsafe { c.pre_exec(|| { for s in [libc::SIGINT, libc::SIGQUIT] { libc::signal(s, libc::SIG_DFL); } Ok(()) }) }.status() {
@@ -241,16 +231,12 @@ mod tests {
             assert_eq!(thir::parse::parse_line(&format!("cat {}", escape(n))).unwrap(), vec!["cat", n]);
         }
     }
-    #[test] fn reserved_covers_builtins_and_programs() {
-        for b in builtins() { assert!(thir::files::RESERVED.contains(&b), "{b}"); }
-        for (_, rows) in HELP.iter().filter(|s| s.0 == "programs") { for r in *rows { assert!(thir::files::RESERVED.contains(&r.0.split(' ').next().unwrap()), "{}", r.0); } }
-    }
     #[test] fn help_lines_fit_80_cols() { for l in help_text().lines() { assert!(l.chars().count() <= 80, "{l}"); } }
     #[test] fn help_names_unique_and_programs_known() {
         let mut all: Vec<&str> = HELP.iter().flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
         let n = all.len(); all.sort(); all.dedup(); assert_eq!(all.len(), n);
         let progs: Vec<&str> = HELP.iter().filter(|s| s.0 == "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
-        assert_eq!(progs, ["edit", "find", "top", "fetch", "curl", "agent", "passwd", "dhcp"]);
+        assert_eq!(progs, ["edit", "find", "top", "fetch", "curl", "passwd", "dhcp"]);
         assert!(builtins().all(|b| !progs.contains(&b)) && builtins().any(|b| b == "date") && help_cmd("find").unwrap().starts_with("find [dir]"));
     }
 }
