@@ -18,10 +18,7 @@ Full video: [docs/demo.mp4](docs/demo.mp4) (about 2 minutes, recorded in Virtual
 - A shell with Tab completion and history (Up and Down arrows).
 - A few apps: `edit` (a simple editor, also called `nano`), `find`, `top` (CPU and memory use) and `neofetch`.
 - `curl`, for downloading web pages and files over HTTP and HTTPS.
-
-## Where it's going
-
-I'm trying to turn thir into an "LLM as OS" kind of thing. The idea: you tell the computer what you need, and it writes the small tool for you, right there in the terminal. A weather app, a calculator, whatever you ask for. It's early and still rough, so I'll write it up properly once it holds together.
+- `agent`, an AI chat in the terminal that can also build small apps for you.
 
 ## How it works
 
@@ -30,7 +27,8 @@ When you turn it on, the computer's firmware loads the Linux kernel. The kernel 
 ```mermaid
 block-beta
   columns 6
-  l1["Apps"] edit["edit / nano"] find["find"] top["top"] fetch["neofetch"] net["curl"]
+  l0["Your apps"] built["apps agent wrote for you: weather, calc, todo … each in a Lua sandbox"]:5
+  l1["Apps"] edit["edit / nano"] find["find"] top["top / neofetch"] net["curl"] agent["agent: AI chat and app builder"]
   l2["Shell"] shell["nsh: commands, Tab completion, history"]:5
   l3["Session"] login["login: password check"]:2 den["den: tiling desktop"]:2 dhcp["dhcp: network"]
   l4["Startup"] init["init: the first program, starts and watches everything"]:5
@@ -41,13 +39,13 @@ block-beta
   classDef user fill:#2c2b2d,stroke:#cfc4be,color:#e3dfdc
   classDef sys fill:#222123,stroke:#8f8b89,color:#e3dfdc
   classDef core fill:#161617,stroke:#6a6668,color:#e3dfdc
-  class l1,l2,l3,l4,l5,l6 label
-  class edit,find,top,fetch,net,shell user
+  class l0,l1,l2,l3,l4,l5,l6 label
+  class edit,find,top,net,agent,shell,built user
   class login,den,dhcp,init sys
   class kernel,hw,disk core
 ```
 
-Read it from the bottom up: each layer starts the one above it. The lighter boxes (your shell and apps) run as you, so they can only touch your own files. The darker boxes run the system.
+Read it from the bottom up: each layer starts the one above it. The lighter boxes (your shell and apps) run as you, so they can only touch your own files. The apps `agent` writes sit on top and get even less: no files at all, only the websites you allowed. The darker boxes run the system.
 
 ## Try it
 
