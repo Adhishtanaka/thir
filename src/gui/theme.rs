@@ -10,8 +10,8 @@ pub const BORDER_DIM: u32 = 0x353436; // unfocused border
 #[derive(Clone, Copy)]
 pub struct Metrics { pub bar: i32, pub gap: i32, pub border: i32, pub pad: i32, pub foot: i32 }
 impl Metrics { pub const fn at(s: i32) -> Metrics { Metrics { bar: 28 * s, gap: 10 * s, border: s, pad: 12 * s, foot: 40 * s } } }
-pub const MARK: u32 = 0x8f8b89;   // FG at about 0.62 over the wallpaper, as in wallpaper.html variant D
-pub const WALL: [(f32, u32); 3] = [(0.0, 0x1b1a1c), (0.5, 0x111112), (1.0, 0x09090a)];   // radial stops, centre bottom-middle
+pub const MARK: u32 = 0x8b9bb4;   // FG at about 0.62 over the wallpaper, as in wallpaper.html variant D
+pub const WALL: [(f32, u32); 3] = [(0.0, 0x1d3557), (0.5, 0x101d33), (1.0, 0x070c16)];   // radial stops, centre bottom-middle
 pub const HELP: &str = "alt|cmd + enter split \u{b7} arrows focus \u{b7} q close \u{b7} f full";
 
 /// ANSI colors 0..15 (30-37, 90-97 and their backgrounds).
