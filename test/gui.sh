@@ -30,6 +30,7 @@ sleep 4                        # dhcp lease and the first redraw
 # first boot: pane 1 asks for the first user (the typed password is not echoed)
 type_str $USER_NAME; keys ret; sleep 1; type_str $PW; keys ret; sleep 1; type_str $PW; keys ret; sleep 1
 keys shift-equal 0 5 shift-semicolon 3 0 ret; sleep 3   # utc offset +05:30
+sleep 2; keys 5 ret; sleep 1; type_str llama3; keys ret; sleep 4; type_str k; keys ret; sleep 2   # AI setup: ollama, kept untested
 keys alt-q; sleep 2            # closing the last pane = logout: a fresh login screen
 type_str $USER_NAME; keys ret; sleep 1; type_str $PW   # password typed, Enter not yet pressed
 shot login; cp "$tmp/login.ppm" "$tmp/login-keep.ppm"

@@ -21,6 +21,13 @@ def err(reason): return 400, json.dumps({"type": "error", "error": {"type": "inv
 
 SLOW = float(os.environ.get("THIR_MOCK_SLOW", "0"))   # seconds per chunk (3x before the first byte): slow streams for screenshots
 
+ROUTES = {"please open the calculator": "RUN calc", "make me a weather app": "BUILD", "I live in Colombo": "REMEMBER city: Colombo", "remind me in 5 seconds to drink water": "REMIND +5s drink water",
+          "open ../../bin/sh": "RUN ../../bin/sh", "run a shell for me": "EXEC /bin/sh"}
+def route(msg):   # the shell's picks, by the user's line (the text after ===LINE===)
+    line = msg.split("===LINE===\n")[-1].strip()
+    if line == "what apps do I have": return "ANSWER\nmock: you have calc" if "===SYSTEM===" in msg and "- calc v1" in msg else "ANSWER\nmock: no system summary"
+    return ROUTES.get(line, "ANSWER\nmock: unknown line")
+
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
@@ -82,6 +89,7 @@ class H(BaseHTTPRequestHandler):
         elif any(k in j for k in ("temperature", "top_p", "top_k", "thinking")): why = "sampling or thinking field"
         elif not j.get("messages") or j["messages"][-1].get("role") != "user": why = "last role"
         if why: return self.send(400, err(why)[1], "application/json")
+        if j.get("system", "").startswith("You are the shell of thir"): return self.text_reply(route(j["messages"][-1]["content"]))   # the AI shell (!ask)
         d = lambda o: "event: %s\ndata: %s\n\n" % (o["type"], json.dumps(o, ensure_ascii=False))
         n = len(j["messages"])
         ev = [d({"type": "message_start", "message": {"id": "m1", "model": "claude-opus-5-5", "role": "assistant", "content": []}}),

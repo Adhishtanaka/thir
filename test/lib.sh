@@ -34,3 +34,5 @@ off() {
   if kill -0 "$qpid" 2>/dev/null; then echo "FAIL: QEMU still running after poweroff"; exit 1; fi
   exec 3>&-
 }
+ai_offline() {  # first-boot AI setup with no provider reachable: ollama, kept untested
+  wait_for 'provider \[1\]: '; send 5; wait_for 'model'; send llama3; wait_for '\[k\] keep it untested'; send k; wait_for 'agent will use ollama'; }

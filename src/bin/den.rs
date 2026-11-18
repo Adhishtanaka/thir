@@ -1,6 +1,6 @@
 //! den: tiling terminal GUI drawn straight to /dev/fb0. Alt is the window-manager key.
 use std::{fs::{self, File, OpenOptions}, io, os::{fd::IntoRawFd, unix::{fs::OpenOptionsExt, process::CommandExt}}, process::{exit, Command, Stdio}, thread::sleep, time::Duration};
-use thir::{clock, decide, user, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, theme::*, wall::{self, blend}, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
+use thir::{clock, decide, files::printable, notify, user, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, theme::*, wall::{self, blend}, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
 
 const LOGIN_COLS: i32 = 60;
 const LOGIN_ROWS: i32 = 12;
@@ -12,7 +12,7 @@ struct Den {
     panes: Vec<Pane>, layout: Layout, next_id: usize, area: Rect, full_redraw: bool, dirty_y: (usize, usize),
     keys: Keys, inputs: Vec<(String, i32)>, zombies: Vec<i32>,
     uid: Option<u32>,   // None = nobody is logged in: one centered login pane
-    tz_path: Option<String>,   // the logged-in user's ~/.tz, for the bar clock
+    home: Option<String>,   // the logged-in user's home: ~/.tz for the bar clock, ~/.notify for notices
 }
 
 fn fill(back: &mut [u32], w: usize, r: Rect, c: u32) {
@@ -72,7 +72,7 @@ impl Den {
         let uid = fs::read_to_string(format!("/proc/{}/status", p.pid)).ok()
             .and_then(|s| s.lines().find_map(|l| l.strip_prefix("Uid:")?.split_whitespace().next()?.parse::<u32>().ok()));
         if let Some(u) = uid.filter(|&u| u != 0) {
-            self.tz_path = user::load().ok().and_then(|v| v.into_iter().find(|x| x.uid == u)).map(|x| format!("{}/.tz", x.home()));
+            self.home = user::load().ok().and_then(|v| v.into_iter().find(|x| x.uid == u)).map(|x| x.home());
             self.uid = Some(u); self.relayout();
         }
     }
@@ -98,7 +98,7 @@ impl Den {
         if hup { unsafe { libc::kill(p.pid, libc::SIGHUP); } }
         unsafe { libc::close(p.master); }
         self.zombies.push(p.pid);
-        if !self.layout.close(id) { self.uid = None; self.tz_path = None; let n = self.new_pane(); self.layout = Layout::new(n); }   // last pane closed: logout
+        if !self.layout.close(id) { self.uid = None; self.home = None; let n = self.new_pane(); self.layout = Layout::new(n); }   // last pane closed: logout
         self.relayout();
     }
 
@@ -144,10 +144,13 @@ impl Den {
         // as many help items as fit left of the centre label (narrow screens, e.g. 800x600 firmware modes)
         let inset = m.gap + m.border + m.pad;   // the bar text lines up with the text inside the panes
         let room = (((w as i32 - mw) / 2 - inset - 2 * fw) / fw).max(0) as usize;
-        let help = fit_items(HELP, " \u{b7} ", room);
-        self.text(inset, &help, DIM);
+        let notice = self.home.as_deref().zip(self.uid).and_then(|(h, u)| notify::latest(&format!("{h}/.notify"), u, clock::now()));
+        match notice {   // a notice from the helper replaces the help items while it is fresh
+            Some(n) => { let t: String = format!("\u{2192} {}", printable(&n)).chars().take(room).collect(); self.text(inset, &t, NOTE); }
+            None => { let help = fit_items(HELP, " \u{b7} ", room); self.text(inset, &help, DIM); }
+        }
         self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);   // "pane " is ASCII
-        let off = self.tz_path.as_deref().zip(self.uid).and_then(|(p, u)| clock::read_tz(p, u)).or_else(clock::default_offset);
+        let off = self.home.as_deref().zip(self.uid).and_then(|(h, u)| clock::read_tz(&format!("{h}/.tz"), u)).or_else(clock::default_offset);
         let right = format!("{}  \u{b7}  {}", ip_string(), clock::bar_line(clock::now(), off));
         let rw = right.len() as i32 * fw;
         self.text(w as i32 - rw - inset, &right, FG);
@@ -249,7 +252,7 @@ fn main() {
     let mut panel: Vec<u32> = wall.iter().map(|&p| blend(PANEL, p, PANEL_ALPHA)).collect();
     for (d, s) in panel[..m.bar as usize * w].iter_mut().zip(&wall) { *d = blend(BAR, *s, BAR_ALPHA); }
     let area = Rect { x: m.gap, y: m.bar + m.gap, w: w as i32 - 2 * m.gap, h: h as i32 - m.bar - m.foot - 2 * m.gap };
-    let mut den = Den { fb, font, m, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None, tz_path: None };
+    let mut den = Den { fb, font, m, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None, home: None };
     let first = den.new_pane(); den.layout = Layout::new(first);
     den.relayout(); den.scan_inputs(); den.render(true);
 

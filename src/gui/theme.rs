@@ -6,6 +6,7 @@ pub const BAR_ALPHA: u32 = 230;
 pub const FG: u32 = 0xe3dfdc;         // default text
 pub const DIM: u32 = 0x7b7876;        // FG at about 0.5 over PANEL
 pub const ACCENT: u32 = 0xcfc4be;     // focused border, cursor, bar highlights
+pub const NOTE: u32 = 0xe0c080;      // a helper notice in the bar (the palette's yellow)
 pub const BORDER_DIM: u32 = 0x353436; // unfocused border
 #[derive(Clone, Copy)]
 pub struct Metrics { pub bar: i32, pub gap: i32, pub border: i32, pub pad: i32, pub foot: i32 }

@@ -1,8 +1,8 @@
-//! agent do "TASK": the AI plans file actions, agent shows the plan and does it only after the user types y.
+//! !do "TASK": the AI plans file actions, agent shows the plan and does it only after the user types y.
 //! Model output is untrusted: it passes a strict parser and the path rules, nothing touches disk before `y`, and no key is ever used for a download.
 //! Paths stay inside the home folder (no .., no hidden names, no ~/apps, no links); only REPLACE overwrites; there is no delete and no command.
 use crate::{agent::{clean, ctx_for, load_config, sanitize, stream, Chosen, Msg}, conn::{body_err, exchange}, human, make::{ask, home, no_reason, parse_cli, tty}, memory,
-            progress::{fit, vis, ACC, BAD, DIM, GOOD, R, WARN}};
+            progress::{self, dots, fit, hdr, head, rule, spin, tw, vis, BAD, CYAN, DIM, GOOD, R, WARN}};
 use std::{fs::{self, OpenOptions}, io::{self, Read, Write}, os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt}, path::{Path, PathBuf}, sync::{atomic::{AtomicBool, Ordering::SeqCst}, Arc, Mutex}, thread, time::{Duration, Instant}};
 use thir::{files::{printable, save}, http::{Body, Url}, term};
 
@@ -81,7 +81,7 @@ pub fn resolve(home: &Path, cwd: &Path, p: &str) -> Result<PathBuf, String> {
     if parts.iter().any(|c| c.starts_with('.')) { return Err(format!("{shown}: hidden files and folders are off limits")); }
     // a folder named "~" would show as "~/…" in the undo line, which a shell reads as the home folder
     if parts.iter().any(|c| c.starts_with('~')) { return Err(format!("{shown}: names starting with ~ are not supported")); }
-    if parts[0] == "apps" { return Err(format!("{shown}: ~/apps changes only with agent build, edit and fix")); }
+    if parts[0] == "apps" { return Err(format!("{shown}: ~/apps changes only with !build, !edit and !fix")); }
     Ok(norm)
 }
 
@@ -174,7 +174,7 @@ pub fn check(home: &Path, cwd: &Path, request: &str, acts: &[Act]) -> Result<Vec
                 let sname = s.show(&src);
                 let size = match s.state(&src)? {
                     St::Missing => return Err(format!("{sname} does not exist")),
-                    St::Dir if copy => return Err(format!("{sname} is a folder; agent do copies only files")),
+                    St::Dir if copy => return Err(format!("{sname} is a folder; !do copies only files")),
                     St::File(n) if copy && n > MAX_FETCH as u64 => return Err(format!("{sname} is bigger than 4 MiB")),
                     St::File(n) => n, St::Dir => 0,
                 };
@@ -182,7 +182,7 @@ pub fn check(home: &Path, cwd: &Path, request: &str, acts: &[Act]) -> Result<Vec
                 let t = s.target(&src, b, r(b)?)?;
                 if !copy && t.starts_with(&src) { return Err(format!("cannot move {sname} into itself")); }
                 s.parents(&t)?;
-                if !matches!(s.state(&t)?, St::Missing) { return Err(format!("{} already exists; agent do never overwrites by {}", s.show(&t), if copy { "copying" } else { "moving" })); }
+                if !matches!(s.state(&t)?, St::Missing) { return Err(format!("{} already exists; !do never overwrites by {}", s.show(&t), if copy { "copying" } else { "moving" })); }
                 if copy { s.steps.push(Step::Copy(src, t.clone(), size)); } else {
                     s.made.retain(|m| !m.0.starts_with(&src)); s.gone.push(src.clone()); s.steps.push(Step::Move(src, t.clone()));
                 }
@@ -192,7 +192,7 @@ pub fn check(home: &Path, cwd: &Path, request: &str, acts: &[Act]) -> Result<Vec
                 if !typed(request, url) { return Err(format!("{} is not in your request; agent downloads only URLs you typed", clean(url))); }
                 Url::parse(url).map_err(|e| format!("{}: {e}", clean(url)))?;
                 let t = r(p)?; s.parents(&t)?;
-                if !matches!(s.state(&t)?, St::Missing) { return Err(format!("{} already exists; agent do never overwrites a download", s.show(&t))); }
+                if !matches!(s.state(&t)?, St::Missing) { return Err(format!("{} already exists; !do never overwrites a download", s.show(&t))); }
                 s.steps.push(Step::Fetch(url.clone(), t.clone())); s.make(&t, false, 0);
             }
         }
@@ -219,35 +219,73 @@ fn rows(home: &Path, cwd: &Path, steps: &[Step]) -> Vec<Row> {
     let sh = |p: &Path| show(home, cwd, p);
     let row = |sym, sc, path: String, note: String, nc, prev| Row { sym, sc, path, note, nc, prev };
     steps.iter().map(|s| match s {
-        Step::Mkdir(p) => row("+", GOOD, format!("{}/", sh(p)), String::new(), DIM, vec![]),
-        Step::New(p, t) => row("+", GOOD, sh(p), lines(t.lines().count()), DIM, preview(t)),
+        Step::Mkdir(p) => row("+", GOOD, format!("{}/", sh(p)), "new folder".into(), "", vec![]),
+        Step::New(p, t) => row("+", GOOD, sh(p), format!("new · {}", lines(t.lines().count())), "", preview(t)),
         Step::Replace(p, t, old) => row("~", WARN, sh(p), format!("overwrites {}", human(*old)), WARN, preview(t)),
-        Step::Append(p, t, true) => row("+", GOOD, sh(p), lines(t.lines().count()), DIM, preview(t)),
-        Step::Append(p, t, false) => row("»", "", sh(p), format!("adds {}", lines(t.lines().count())), DIM, preview(t)),
-        Step::Move(a, b) => row("→", "", format!("{} → {}", sh(a), sh(b)), String::new(), DIM, vec![]),
-        Step::Copy(a, b, _) => row("+", GOOD, sh(b), format!("copy of {}", sh(a)), DIM, vec![]),
+        Step::Append(p, t, true) => row("+", GOOD, sh(p), format!("new · {}", lines(t.lines().count())), "", preview(t)),
+        Step::Append(p, t, false) => row("»", CYAN, sh(p), format!("adds {}", lines(t.lines().count())), "", preview(t)),
+        Step::Move(a, b) => row("→", CYAN, format!("{} → {}", sh(a), sh(b)), "move".into(), "", vec![]),
+        Step::Copy(a, b, _) => row("+", GOOD, sh(b), format!("copy of {}", sh(a)), "", vec![]),
         Step::Fetch(u, p) => {
             let (host, plain) = Url::parse(u).map_or((u.clone(), true), |x| (if x.port == if x.https { 443 } else { 80 } { x.host.clone() } else { format!("{}:{}", x.host, x.port) }, !x.https));
-            row("↓", GOOD, sh(p), format!("{}{}", printable(&host), if plain { format!("{R}  {WARN}not encrypted") } else { String::new() }), DIM, vec![])
+            row("↓", CYAN, sh(p), format!("{}{}", printable(&host), if plain { format!("{R}  {WARN}not encrypted") } else { String::new() }), "", vec![])
         }
     }).collect()
 }
 
 /// Width of the path column: the longest path, at most 36 (a longer one is never cut, it only pushes its detail right).
-fn path_w(rs: &[Row]) -> usize { rs.iter().map(|r| r.path.chars().count()).max().unwrap_or(0).min(36) }
+fn path_w(rs: &[Row]) -> usize { rs.iter().map(|r| r.path.chars().count()).max().unwrap_or(0).clamp(6, 36) }
 
-/// A row up to its detail column.
-fn lead(r: &Row, pw: usize, sym: &str, sc: &str) -> String { format!("    {sc}{sym}{R} {}{}  ", r.path, " ".repeat(pw.saturating_sub(r.path.chars().count()))) }
+/// The width of the rule: wide enough for the longest row, at most what the terminal holds.
+fn table_w(rs: &[Row], pw: usize) -> usize { let want = rs.iter().map(|r| 8 + pw.max(r.path.chars().count()) + 2 + vis(&r.note)).max().unwrap_or(0); want.max(tw().min(54)).min(term::size().0.saturating_sub(3).max(54)) }
 
-/// What agent will do, one row per step; text to be written is shown (6 lines) so nothing is a surprise.
+/// `  N  S  path  detail`: `gc` colours the glyph, `pc` the path, `nc` the detail.
+fn row_line(i: usize, g: &str, gc: &str, pc: &str, path: &str, pw: usize, note: &str, nc: &str) -> String {
+    let l = format!("  {:<2} {gc}{g}{R}  {pc}{path}{R}", i + 1);
+    if note.is_empty() { l } else { format!("{l}{}  {nc}{note}{R}", " ".repeat(pw.saturating_sub(path.chars().count()))) }
+}
+
+/// The header row and the rule above the rows.
+fn table_head(pw: usize, w: usize) -> [String; 2] { [hdr(&format!("#  S  {:<pw$}  DETAIL", "CHANGE")), rule(w)] }
+
+/// What agent will do: the table from its header row to the closing rule, one row per step; text to be written is shown (6 lines) so nothing is a surprise.
 pub fn describe(home: &Path, cwd: &Path, steps: &[Step]) -> String {
     let rs = rows(home, cwd, steps);
     let pw = path_w(&rs);
-    rs.iter().map(|r| {
-        let mut l = lead(r, pw, r.sym, r.sc);
-        if !r.note.is_empty() { l += &format!("{}{}{R}", r.nc, r.note); } else { l = l.trim_end().to_string(); }
-        r.prev.iter().fold(l, |o, p| format!("{o}\n        {DIM}{p}{R}"))
-    }).collect::<Vec<_>>().join("\n")
+    let w = table_w(&rs, pw);
+    let mut o = table_head(pw, w).to_vec();
+    for (i, r) in rs.iter().enumerate() {
+        o.push(row_line(i, r.sym, r.sc, "", &r.path, pw, &r.note, r.nc));
+        o.extend(r.prev.iter().map(|p| format!("        {DIM}{p}{R}")));
+    }
+    o.push(rule(w));
+    o.join("\n")
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum Stat { Wait, Run, Ok(String), Err(String) }
+
+/// The table while the steps run: the S column turns ◐ (cyan) then ✓ (green) row by row, a failed row is red; the footer counts them.
+fn run_lines(rs: &[Row], st: &[Stat], pw: usize, w: usize, ms: u64) -> Vec<String> {
+    let avail = (w + 2).saturating_sub(8 + pw + 2).max(8);
+    let mut v = table_head(pw, w).to_vec();
+    for (i, (r, s)) in rs.iter().zip(st).enumerate() {
+        v.push(match s {
+            Stat::Wait => row_line(i, "\u{25cb}", "", "", &r.path, pw, &r.note, r.nc),
+            Stat::Run => row_line(i, spin(ms), CYAN, CYAN, &r.path, pw, &r.note, CYAN),
+            Stat::Ok(f) => row_line(i, "\u{2713}", GOOD, "", &r.path, pw, if f.is_empty() { &r.note } else { f }, ""),
+            Stat::Err(e) => row_line(i, "\u{d7}", BAD, "", &r.path, pw, &fit(&clean(e), avail), BAD),
+        });
+    }
+    v.push(rule(w));
+    let n = |f: fn(&Stat) -> bool| st.iter().filter(|s| f(s)).count();
+    let (done, run, bad) = (n(|s| matches!(s, Stat::Ok(_))), n(|s| *s == Stat::Run), n(|s| matches!(s, Stat::Err(_))));
+    let mut p = vec![format!("{} total", st.len()), if done > 0 { format!("{GOOD}{done} done{R}") } else { "0 done".into() }];
+    if run > 0 { p.push(format!("{CYAN}{run} active{R}")); }
+    if bad > 0 { p.push(format!("{BAD}{bad} failed{R}")); }
+    p.push(format!("{DIM}{} s{R}", ms / 1000));
+    v.push(dots(&p));
+    v
 }
 
 /// A name the shell takes as one word: a backslash before anything but plain characters; a leading ~/ stays.
@@ -282,9 +320,6 @@ fn undo(home: &Path, cwd: &Path, done: &[Step]) -> String {
 }
 
 // ---- a line (or two) that moves while we wait ----
-
-const SPIN: [&str; 4] = ["|", "/", "-", "\\"];
-fn spin(ms: u64) -> &'static str { SPIN[(ms / 100 % 4) as usize] }
 
 fn paint(drawn: &mut usize, lines: &[String]) {
     let mut s = String::new();
@@ -349,7 +384,7 @@ fn read_src(home: &Path, cwd: &Path, src: &str) -> Result<(String, bool), String
         let mut b = vec![]; f.take(MAX_SEE as u64 + 1).read_to_end(&mut b).map_err(|e| e.to_string())?;
         let cut = b.len() > MAX_SEE; b.truncate(MAX_SEE); (b, cut)
     };
-    if bytes.contains(&0) { return Err(format!("{} is not text. To save it, ask: agent do \"download URL to FILE\"", clean(src))); }
+    if bytes.contains(&0) { return Err(format!("{} is not text. To save it, ask: !do \"download URL to FILE\"", clean(src))); }
     Ok((sanitize(&String::from_utf8_lossy(&bytes)), cut))
 }
 
@@ -417,21 +452,18 @@ fn file_or_dir(home: &Path, p: &Path) -> Result<(), String> { if on_disk(home, p
 
 fn fail(m: &str) -> i32 { eprintln!("{m}"); 1 }
 
-/// Asks the AI for a plan (one READ allowed) and checks it. The header line moves while it works and settles when it is over.
+/// Asks the AI for a plan (one READ allowed) and checks it. A cyan line turns while it works and goes when it is over (a page it read stays as a green line).
 fn plan(ch: &Chosen, home: &Path, cwd: &Path, facts: &[String], task: &str) -> Result<Vec<Step>, String> {
-    let t0 = Instant::now();
-    let model = fit(&printable(&ch.model), 30);
-    let head = move |tail: String| format!("  {ACC}agent do{R} {DIM}· {model} · {tail}{R}");
     let read: Arc<Mutex<Option<(String, bool)>>> = Arc::new(Mutex::new(None));
-    let (h2, r2) = (head.clone(), read.clone());
+    let r2 = read.clone();
     let live = Live::start(move |ms| {
-        let mut v = vec![h2(format!("{} planning… {} s", spin(ms), ms / 1000))];
-        match &*r2.lock().unwrap() { Some((t, false)) => v.push(format!("    {DIM}{} {t}{R}", spin(ms))), Some((t, true)) => v.push(format!("    {DIM}{t}{R}")), None => {} }
+        let mut v = vec![format!("  {CYAN}{} planning…{R} {DIM}{} s{R}", spin(ms), ms / 1000)];
+        match &*r2.lock().unwrap() { Some((t, false)) => v.push(format!("  {CYAN}{} {t}{R}", spin(ms))), Some((t, true)) => v.push(format!("  {GOOD}\u{2713}{R} {t}")), None => {} }
         v
     });
     let r = ask_plan(ch, home, cwd, facts, task, &read);
-    let mut last = vec![head(format!("{} s", t0.elapsed().as_secs()))];
-    if let Some((t, true)) = &*read.lock().unwrap() { last.push(format!("    {DIM}{t}{R}")); }
+    let mut last = vec![];
+    if let Some((t, true)) = &*read.lock().unwrap() { last.push(format!("  {GOOD}\u{2713}{R} {t}")); last.push(String::new()); }
     live.stop(last);
     r
 }
@@ -468,9 +500,9 @@ fn ask_plan(ch: &Chosen, home: &Path, cwd: &Path, facts: &[String], task: &str, 
 pub fn command(args: &[String]) -> i32 {
     let cli = match parse_cli(args) { Ok(c) => c, Err(m) => { eprintln!("{m}"); return 2 } };
     let task = cli.words.join(" ").trim().to_string();
-    if task.is_empty() { eprintln!("usage: agent do \"TASK\""); return 2; }
+    if task.is_empty() { eprintln!("usage: !do \"TASK\""); return 2; }
     if task.chars().count() > MAX_TASK { return fail("agent: that text is too long"); }
-    if !tty() { return fail("agent: agent do shows its plan and asks first, so it needs a terminal"); }   // before any key is read or money is spent
+    if !tty() { return fail("agent: !do shows its plan and asks first, so it needs a terminal"); }   // before any key is read or money is spent
     let home = match home().and_then(|h| fs::canonicalize(h).map_err(|e| format!("agent: cannot find your home folder: {e}"))) { Ok(h) => h, Err(m) => return fail(&m) };
     let cwd = match std::env::current_dir() { Ok(c) => c, Err(e) => return fail(&format!("agent: cannot tell which folder you are in: {e}")) };
     let facts = match memory::load(&home) { Ok(f) => f, Err(m) => return fail(&m) };
@@ -479,29 +511,34 @@ pub fn command(args: &[String]) -> i32 {
     let steps = match plan(&ch, &home, &cwd, &facts, &task) { Ok(s) => s, Err(m) => return fail(&m) };
     if steps.is_empty() { println!("\n  nothing to do, it is all there already."); return 0; }
     let n = steps.len();
-    println!("\n{}\n", describe(&home, &cwd, &steps));
-    if !ask(&format!("  apply {n} change{}? [y/N] ", if n == 1 { "" } else { "s" })) { println!("\n  nothing changed."); return 1; }
-    println!();
     let rs = rows(&home, &cwd, &steps);
-    let pw = path_w(&rs);
+    let (pw, w) = (path_w(&rs), table_w(&rs, path_w(&rs)));
+    let title = head(&format!("DO  {n} change{}", if n == 1 { "" } else { "s" }), &fit(&printable(&ch.model), 24), w);
+    println!("{title}\n{}", describe(&home, &cwd, &steps));
+    if !ask(&format!("  {}apply {n} change{}?{R} {DIM}[y/N]{R} ", progress::ACC, if n == 1 { "" } else { "s" })) { println!("\n  nothing changed."); return 1; }
+    println!();
+    let st = Arc::new(Mutex::new(vec![Stat::Wait; n]));
     let width = term::size().0;
-    for (i, (s, r)) in steps.iter().zip(&rs).enumerate() {
-        let lead_ok = lead(r, pw, r.sym, r.sc);
-        let live = (vis(&lead_ok) + 8 < width).then(|| { let l = lead_ok.clone(); Live::start(move |ms| vec![format!("{l}{DIM}{}{R}", spin(ms))]) });
+    let live = (width >= w + 3).then(|| { let (rs2, st2) = (rows(&home, &cwd, &steps), st.clone()); Live::start(move |ms| run_lines(&rs2, &st2.lock().unwrap(), pw, w, ms)) });
+    let t0 = Instant::now();
+    let mut stopped = None;
+    for (i, s) in steps.iter().enumerate() {
+        st.lock().unwrap()[i] = Stat::Run;
         let res = run_step(&home, s);
-        let line = match &res {
-            Ok(f) => format!("{lead_ok}{GOOD}ok{R}{}", if f.is_empty() { String::new() } else { format!("{DIM} · {f}{R}") }),
-            Err(e) => format!("{}{BAD}{}{R}", lead(r, pw, "×", BAD), fit(&clean(e), width.saturating_sub(vis(&lead_ok) + 1).max(20))),
-        };
-        match live { Some(l) => l.stop(vec![line]), None => println!("{line}") }
-        if res.is_err() {
-            let u = undo(&home, &cwd, &steps[..i]);
-            println!("\n  stopped: {i} of {n} done.{}", if u.is_empty() { String::new() } else { format!("  {u}") });
-            return 1;
-        }
+        let bad = res.is_err();
+        st.lock().unwrap()[i] = match res { Ok(f) => Stat::Ok(f), Err(e) => Stat::Err(e) };
+        if bad { stopped = Some(i); break; }
+    }
+    let last = run_lines(&rs, &st.lock().unwrap(), pw, w, t0.elapsed().as_millis() as u64);
+    match live { Some(l) => l.stop(last), None => println!("{}\n", last.join("\n")) }
+    let hint = |u: &str| u.replacen("undo:", &format!("{CYAN}undo:{R}"), 1);
+    if let Some(i) = stopped {
+        let u = undo(&home, &cwd, &steps[..i]);
+        println!("  {BAD}stopped:{R} {i} of {n} done.{}", if u.is_empty() { String::new() } else { format!("  {}", hint(&u)) });
+        return 1;
     }
     let u = undo(&home, &cwd, &steps);
-    println!("\n  done.{}", if u.is_empty() { String::new() } else { format!(" {u}") });
+    if !u.is_empty() { println!("  {}", hint(&u)); }
     0
 }
 
@@ -586,10 +623,22 @@ mod tests {
         let text: String = (1..=8).map(|i| if i == 1 { "milk\n".to_string() } else { format!("l{i}\n") }).collect();
         let d = plain(&describe(&h, &h, &[Step::Mkdir(h.join("data")), Step::New(h.join("n.txt"), text.clone()), Step::Replace(h.join("o.txt"), "a\nb\n".into(), 14), Step::Append(h.join("n.txt"), "x\n".into(), false),
             Step::Move(h.join("a"), h.join("docs/a")), Step::Copy(h.join("a"), h.join("b"), 1300), Step::Fetch("http://10.0.2.2:1/p.json".into(), h.join("data/p.json")), Step::Fetch("https://x.example/p".into(), h.join("p"))]));
-        for want in ["+ data/", "+ n.txt        8 lines", "        milk", "        … 2 more lines", "~ o.txt        overwrites 14 B", "» n.txt        adds 1 line", "→ a → docs/a", "+ b            copy of a",
-                     "↓ data/p.json  10.0.2.2:1  not encrypted", "↓ p            x.example"] { assert!(d.contains(want), "{want}\n{d}"); }
-        assert!(!d.contains("x.example  not encrypted"));
+        let n: Vec<String> = d.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect();   // columns collapsed
+        for want in ["# S CHANGE DETAIL", "1 + data/ new folder", "2 + n.txt new · 8 lines", "milk", "… 2 more lines", "3 ~ o.txt overwrites 14 B", "4 » n.txt adds 1 line", "5 → a → docs/a move", "6 + b copy of a",
+                     "7 ↓ data/p.json 10.0.2.2:1 not encrypted", "8 ↓ p x.example"] { assert!(n.iter().any(|l| l == want), "{want}\n{d}"); }
+        assert!(d.contains("        milk") && d.lines().last().unwrap().contains("──────"));
         assert!(describe(&h, &h, &[Step::New(h.join("a"), "x\u{1b}[2J\n".into())]).contains("x?[2J"));
+    }
+    #[test] fn the_run_table_turns_rows_and_counts_them() {
+        let h = PathBuf::from("/h");
+        let rs = rows(&h, &h, &[Step::Mkdir(h.join("d")), Step::New(h.join("d/a"), "x\n".into()), Step::Move(h.join("a"), h.join("b"))]);
+        let t = |st: &[Stat]| run_lines(&rs, st, path_w(&rs), 54, 2500);
+        let v = t(&[Stat::Ok(String::new()), Stat::Run, Stat::Wait]);
+        let p: Vec<String> = v.iter().map(|l| plain(l)).collect();
+        assert!(p[2].starts_with("  1  ✓  d/") && p[3].starts_with("  2  ◐  d/a") && p[4].starts_with("  3  ○  a → b"), "{p:?}");
+        assert!(v[2].contains(GOOD) && v[3].contains(CYAN) && p.last().unwrap() == "  3 total · 1 done · 1 active · 2 s", "{p:?}");
+        let p: Vec<String> = t(&[Stat::Ok("1 line".into()), Stat::Err("it is gone\x1b[2J".into()), Stat::Wait]).iter().map(|l| plain(l)).collect();
+        assert!(p[2].ends_with("1 line") && p[3].contains("×") && p[3].ends_with("it is gone[2J") && p.last().unwrap().contains("1 failed"), "{p:?}");
     }
     #[test] fn undo_names_exactly_what_to_do() {
         let h = PathBuf::from("/h");

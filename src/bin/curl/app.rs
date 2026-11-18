@@ -1,4 +1,4 @@
-//! thir apps: a Lua 5.4 sandbox, the thir SDK, a character grid and the event loop behind `agent run`.
+//! thir apps: a Lua 5.4 sandbox, the thir SDK, a character grid and the event loop behind `!run`.
 //! Security rules: an app sees only the SDK below (no io, os.execute, load, require, debug, env or print), draws only through the grid
 //! (every string is cleaned, so it cannot emit escape sequences), reaches only the origins its manifest lists, and is stopped when a call runs
 //! over 2 s, uses over 32 MiB, or the process runs over its watchdog time. Running an app never reads keys or the agent config.
@@ -730,7 +730,7 @@ pub fn run(l: Launch) -> i32 {
     match session(&l) {
         Ok(()) => 0,
         Err((ctx, text)) => {
-            eprintln!("{} stopped: {}\n(agent fix {} asks the AI to fix it)", l.name, text.lines().next().unwrap_or(""), l.name);
+            eprintln!("{} stopped: {}", l.name, text.lines().next().unwrap_or(""));
             let saved: String = format!("{ctx}{text}").chars().take(4096).collect();   // the saved copy says what the app was doing
             let _ = crate::agent::write_private(&l.dir.join("last_error"), &saved);
             1
@@ -789,6 +789,7 @@ mod tests {
     use super::*;
     const CODE_PROMPT: &str = include_str!("prompts/code.txt");
     const CALC: &str = include_str!("../../../test/apps/calc.lua");
+    const TODO: &str = include_str!("../../../test/apps/todo.lua");   // the prompt's example: the table language
     const CALC_BAD: &str = include_str!("../../../test/apps/crash.lua");
 
     fn sb() -> Sandbox { Sandbox::new(Setup { name: "t".into(), args: vec!["a".into(), "b".into()], allowed: vec![Url::parse("http://10.0.2.2:18080").unwrap()], store_dir: None, store: vec![], tty: false, offline: false, size: (80, 24) }).unwrap() }
@@ -891,6 +892,12 @@ mod tests {
         assert!(run_keys(CALC, &["1", "/", "0", "="]).contains("division by zero"));
         let off = dry_run("function draw() local b, e = http.get('http://10.0.2.2:18080/x'); ui.text(1, 1, tostring(b) .. tostring(e)) end", vec![], &[]).unwrap();
         assert_eq!(off, "niloffline (test run)");
+    }
+    #[test] fn the_todo_example_draws_its_table() {
+        let t = dry_run(TODO, vec![], &[" ", "down", "d"]).unwrap();
+        assert!(t.contains("No tasks yet") && t.contains("0 total · 0 done · 0 open"), "{t}");
+        let t = dry_run(TODO, vec![("items".into(), r#"[{"text":"Milk","done":true},{"text":"Eggs","done":false}]"#.into())], &["down"]).unwrap();
+        assert!(t.contains("TODO") && t.contains("#  S  TASK") && t.contains("1  ✓  Milk") && t.contains("2  ○  Eggs") && t.contains("2 total · 1 done · 1 open"), "{t}");
     }
     #[test] fn crashing_app_reports_the_line() {
         let e = dry_run(CALC_BAD, vec![], &["x"]).unwrap_err();

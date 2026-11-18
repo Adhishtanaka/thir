@@ -128,12 +128,15 @@ impl Editor {
         (act, out)
     }
 
-    /// (is_first_word, the word that ends at the cursor)
-    pub fn word(&self) -> (bool, String) {
+    /// (the text before the word that ends at the cursor, that word)
+    pub fn split_word(&self) -> (String, String) {
         let before = &self.buf[..self.cur];
         let start = (0..before.len()).rev().find(|&i| before[i] == ' ' && (i == 0 || before[i - 1] != '\\')).map_or(0, |i| i + 1);   // an escaped space stays in the word
-        (before[..start].iter().all(|&c| c == ' '), s(&before[start..]))
+        (s(&before[..start]), s(&before[start..]))
     }
+
+    /// (is_first_word, the word that ends at the cursor)
+    pub fn word(&self) -> (bool, String) { let (b, w) = self.split_word(); (b.chars().all(|c| c == ' '), w) }
 
     pub fn complete(&mut self, cands: &[String], prompt: &str) -> Vec<u8> {
         let wl = self.word().1.chars().count();

@@ -42,6 +42,7 @@ t0=$(date +%s); capture & cpid=$!
 sleep 2.5                                               # the first-boot screen
 typ thir; key ret; sleep 1; typ "$DEMO_PW"; key ret; sleep 1; typ "$DEMO_PW"; key ret; sleep 1
 key ret; sleep 3.5                                      # time zone prompt: accept the default; Argon2 hashes meanwhile
+sleep 2; key 5; key ret; sleep 1; typ llama3; key ret; sleep 5; typ k; key ret; sleep 2   # AI setup: ollama, kept untested
 mon "sendkey alt-q"; sleep 2.5                          # close the only pane = log out: the login screen
 typ thir; key ret; sleep 1; still login                 # user name typed, password not yet (and never echoed)
 typ "$DEMO_PW"; key ret; sleep 4

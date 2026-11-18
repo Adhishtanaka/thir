@@ -10,6 +10,7 @@ pub mod http;
 pub mod json;
 pub mod line;
 pub mod net;
+pub mod notify;
 pub mod parse;
 pub mod procinfo;
 pub mod term;

@@ -1,5 +1,5 @@
-//! Apps on disk (~/apps/NAME/main.lua + app.json) and the commands agent build, edit, fix, run, list, undo and rm.
-//! `run`, `list`, `undo` and `rm` never load an API key or the agent config. build, edit and fix use agent::ctx_for, the one path to a key.
+//! Apps on disk (~/apps/NAME/main.lua + app.json) and the commands !build, edit, fix, run, list, undo and rm.
+//! `list`, `undo` and `rm` never load an API key or the agent config; `run` reads a key only after the user says yes to fixing a crash. build, edit and fix use agent::ctx_for, the one path to a key.
 //! Network approvals live in ~/.config/thir/approvals, outside every app directory: an app that ships its own "approved" list gets nothing from it.
 use crate::{memory, progress::{self, Progress}, agent::{self, clean, read_private, sanitize, stream, write_private, Chosen, Ctx, EFFORTS}, app};
 use std::{fs, io::BufRead, os::unix::fs::{DirBuilderExt, MetadataExt}, path::{Path, PathBuf}, time::Instant};
@@ -91,27 +91,25 @@ pub fn approval_text(m: &Manifest, new: &[String], had_some: bool, color: bool) 
     if !color {
         return format!("  {name} {also}:\n    \u{b7} connect to {}\n    \u{b7} keep its own data in ~/apps/{name}/data\n  It cannot read your other files or keys, or run programs.\n\n  Allow and run? (y/N) ", hosts.iter().map(|h| h.0.as_str()).collect::<Vec<_>>().join(", "));
     }
-    let (d, w, r) = (progress::DIM, progress::WARN, progress::R);
-    let mut body: Vec<String> = hosts.iter().map(|(h, plain)| format!("{}\u{25b8}{r} connect to {}{h}{r}", if *plain { w } else { d }, if *plain { w } else { "" })).collect();
-    body.push(format!("{d}\u{25b8}{r} keep its own data in ~/apps/{name}/data"));
-    body.push(String::new());
-    body.push(format!("{d}It cannot read your other files or keys, or run programs.{r}"));
-    let title = format!("{}{name}{r} {also}", progress::ACC);
-    format!("\n{}\n\n  \u{203a} ", progress::boxed(&title, &body, &[progress::keys("allow and run", "cancel")], progress::box_w()))
+    use progress::{CYAN, GOOD, R, WARN};
+    let mut rows: Vec<String> = hosts.iter().map(|(h, plain)| if *plain { format!("  {WARN}!{R}  {WARN}connect to {h}{R}") } else { format!("  {CYAN}\u{2192}{R}  connect to {CYAN}{h}{R}") }).collect();
+    rows.push(format!("  {GOOD}+{R}  keep its own data in ~/apps/{name}/data"));
+    rows.push(format!("  {GOOD}\u{2713}{R}  cannot read your other files or keys, or run programs"));
+    format!("\n{}\n\n{}\n{}\n{}\n\n  \u{203a} ", progress::hdr(&format!("{} {}", name.to_uppercase(), also.to_uppercase())), rows.join("\n"), progress::rule(progress::tw()), progress::keys("allow and run", "cancel"))
 }
 
-/// A yes/no question that changes something for good: a frame with what happens, then the `question` (default no).
-pub fn confirm(title: &str, risk: &str, note: &str, yes: &str, question: &str) -> bool {
+/// A yes/no question that changes something for good: a table of what happens (`lost`: the note is a loss that cannot be taken back), the keys, then the `question` (default no).
+pub fn confirm(title: &str, risk: &str, note: &str, lost: bool, yes: &str, question: &str) -> bool {
     if unsafe { libc::isatty(1) } == 1 {
-        let (d, w, r) = (progress::DIM, progress::WARN, progress::R);
-        let body = [format!("{w}\u{25b8}{r} {w}{risk}{r}"), format!("{d}{note}{r}")];
-        println!("\n{}\n", progress::boxed(&format!("{}{title}{r}", progress::ACC), &body, &[progress::keys(yes, "keep it")], progress::box_w()));
-        return ask("  \u{203a} ");   // the frame above shows the keys
+        use progress::{BAD, CYAN, R, WARN};
+        let n = if lost { format!("  {BAD}\u{d7}{R}  {BAD}{note}{R}") } else { format!("  {CYAN}\u{2192}{R}  {note}") };
+        println!("\n{}\n\n  {WARN}!{R}  {WARN}{risk}{R}\n{n}\n{}\n{}\n", progress::hdr(&title.to_uppercase()), progress::rule(progress::tw()), progress::keys(yes, "keep it"));
+        return ask("  \u{203a} ");   // the table above shows the keys
     }
     ask(question)
 }
 
-/// A finished line: `  \u{25cf} text` on a terminal, plain otherwise.
+/// A finished line: `  \u{2713} text` on a terminal, plain otherwise.
 pub fn note_line(s: &str) -> String { if unsafe { libc::isatty(1) } == 1 { progress::mark(true, s) } else { s.to_string() } }
 
 // ---- paths ----
@@ -146,10 +144,10 @@ fn me() -> u32 { unsafe { libc::getuid() } }
 
 /// (home, ~/apps/NAME) of an app that exists. Err = message.
 fn app_dir(name: &str) -> Result<(PathBuf, PathBuf), String> {
-    if !app_name_ok(name) { return Err(format!("agent: no app called {} (names use a-z, 0-9 and -; agent list shows your apps)", printable(name))); }
+    if !app_name_ok(name) { return Err(format!("agent: no app called {} (names use a-z, 0-9 and -; !list shows your apps)", printable(name))); }
     let home = home()?;
     let dir = home.join("apps").join(name);
-    if fs::symlink_metadata(&dir).is_err() { return Err(format!("agent: no app called {name} (agent list shows your apps)")); }
+    if fs::symlink_metadata(&dir).is_err() { return Err(format!("agent: no app called {name} (!list shows your apps)")); }
     trusted_dir(&home.join("apps")).and_then(|_| trusted_dir(&dir))?;
     Ok((home, dir))
 }
@@ -298,7 +296,7 @@ fn save(apps: &Path, f: &Fields, code: &str, spec: &str, old: Option<&Manifest>)
     Ok(f.version)
 }
 
-/// `agent undo`: back one version. Returns the version now current.
+/// `!undo`: back one version. Returns the version now current.
 fn undo_app(dir: &Path, name: &str, now: i64) -> Result<i64, String> {
     let m = load_manifest(dir, name)?;
     let v = m.version;
@@ -368,17 +366,17 @@ impl Job<'_> {
 
     fn done(&mut self, name: &str, v: i64) {
         let k = ((self.chars / 4) + 500) / 1000;   // shortcut: chars/4 estimate; parse usage from message_delta later
-        let mut next = vec![("run", name.to_string()), ("edit", format!("agent edit {name} \"…\""))];
-        if v > 1 { next.push(("undo", format!("agent undo {name}"))); }
-        next.push(("remove", format!("agent rm {name}")));
+        let mut next = vec![("run", name.to_string()), ("edit", format!("!edit {name} \"…\""))];
+        if v > 1 { next.push(("undo", format!("!undo {name}"))); }
+        next.push(("remove", format!("!rm {name}")));
         let line = self.p.done(&format!("saved {name} v{v}"), self.t0.elapsed().as_secs(), self.calls, k.max(1), &self.hint, &next);
         *SUMMARY.lock().unwrap() = line;   // the app clears the screen when it quits; the line is shown again after it
     }
 }
 
 /// `header` is what is being done ("building"), `name` the app if known; the display starts here.
-fn job<'a>(ch: &'a Chosen, store: Vec<(String, String)>, header: &str, plain: &str, labels: &[&str]) -> Job<'a> {
-    let p = Progress::new(header, &format!("  {} via {} · uses API credit", ch.model, ch.p.name), plain, labels);
+fn job<'a>(ch: &'a Chosen, store: Vec<(String, String)>, title: &str, plain: &str, labels: &[&str]) -> Job<'a> {
+    let p = Progress::new(title, &progress::fit(&printable(&ch.model), 24), &format!("via {} · uses API credit", ch.p.name), plain, labels);
     Job { hint: String::new(), c: ch.ctx(), calls: 0, chars: 0, store, t0: Instant::now(), p }
 }
 
@@ -387,7 +385,7 @@ static SUMMARY: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 fn not_buildable(r: &str) -> String { format!("agent: that is not an app I can build: {r}") }
 
 fn build(ch: &Chosen, home: &Path, facts: &[String], idea: &str) -> Result<String, String> {
-    let mut j = job(ch, vec![], "building", &format!("agent: building with {} via {} (API use costs money)", ch.model, ch.p.name), &["plan", "code", "check", "test run"]);
+    let mut j = job(ch, vec![], &format!("BUILD  {}", progress::fit(&printable(idea), 30)), &format!("agent: building with {} via {} (API use costs money)", ch.model, ch.p.name), &["plan", "code", "check", "test run"]);
     j.p.step("plan", "planning");
     let (spec, _) = j.call(SPEC_PROMPT, format!("{}===REQUEST===\n{idea}", memory::block(facts)))?;
     let plan_lines = spec.lines().count();
@@ -400,8 +398,8 @@ fn build(ch: &Chosen, home: &Path, facts: &[String], idea: &str) -> Result<Strin
     let name = pick_name(&base, &|n| fs::symlink_metadata(apps.join(n)).is_ok() || Path::new("/bin").join(n).exists()).ok_or("agent: could not find a free name for the app")?;
     if name != base {
         if fs::symlink_metadata(apps.join(&base)).is_ok() {
-            j.p.note("name", &format!("{name} · you already have {base}"), &format!("you already have {base}; this one is {name}. To change {base}: agent edit {base} \"…\""));
-            j.hint = format!("to change {base} instead: agent edit {base} \"…\"");
+            j.p.note("name", &format!("{name} · you already have {base}"), &format!("you already have {base}; this one is {name}. To change {base}: !edit {base} \"…\""));
+            j.hint = format!("to change {base} instead: !edit {base} \"…\"");
         } else { j.p.note("name", &format!("{name} · {base} is a command"), &format!("{base} is the name of a command; this app is called {name}")); }
     }
     let (h, code) = match j.generate("writing code", format!("===REQUEST===\n{idea}\n===SPEC===\n{spec}\nWrite this app."), &spec, true)? { Gen::No(r) => return Err(not_buildable(&r)), Gen::App(h, c) => (h, c) };
@@ -429,7 +427,7 @@ fn change(ch: &Chosen, name: &str, kind: Change, facts: &[String], text: &str) -
             ("fixing", "fixing code", fill(FIX_PROMPT, &[("{error}", &err), ("{spec}", &spec), ("{code}", &code)]))
         }
     };
-    let mut j = job(ch, load_store(&dir), &format!("{verb} {name}"), &format!("agent: {verb} {name} with {} via {} (API use costs money)", ch.model, ch.p.name), &["code", "check", "test run"]);
+    let mut j = job(ch, load_store(&dir), &format!("{}  {name}", verb.trim_end_matches("ing").to_uppercase()), &format!("agent: {verb} {name} with {} via {} (API use costs money)", ch.model, ch.p.name), &["code", "check", "test run"]);
     let (h, new) = match j.generate(label, user, &spec, false)? { Gen::No(r) => return Err(format!("agent: cannot make that change: {r}")), Gen::App(h, c) => (h, c) };
     if kind == Change::Edit { j.memory_note(&memory::used(facts, &code, &new)); }
     let net = h.net.unwrap_or_else(|| m.net.clone());
@@ -451,11 +449,11 @@ pub fn parse_cli(args: &[String]) -> Result<Cli, String> {
     let mut c = Cli { p: None, m: None, e: None, words: vec![] };
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut val = |n: &str| it.next().cloned().ok_or_else(|| format!("agent: {n} needs a value (agent -h)"));
+        let mut val = |n: &str| it.next().cloned().ok_or_else(|| format!("agent: {n} needs a value (type ! for help)"));
         match a.as_str() {
             "-p" => c.p = Some(val("-p")?), "-m" => c.m = Some(val("-m")?), "-e" => c.e = Some(val("-e")?),
             "--" => { c.words.extend(it.by_ref().cloned()); }
-            s if s.starts_with('-') && s.len() > 1 => return Err(format!("agent: unknown option {} (agent -h)", clean(s))),
+            s if s.starts_with('-') && s.len() > 1 => return Err(format!("agent: unknown option {} (type ! for help)", clean(s))),
             _ => c.words.push(a.clone()),
         }
     }
@@ -473,7 +471,7 @@ fn fail(m: &str) -> i32 { eprintln!("{m}"); 1 }
 /// build, edit and fix: the only commands that talk to a provider.
 fn make(cmd: &str, args: &[String]) -> i32 {
     let cli = match parse_cli(args) { Ok(c) => c, Err(m) => { eprintln!("{m}"); return 2 } };
-    let usage = |u: &str| { eprintln!("usage: agent {u}"); 2 };
+    let usage = |u: &str| { eprintln!("usage: !{u}"); 2 };
     let mut w = cli.words.into_iter();
     let (name, mut text) = match cmd {
         "build" => (None, w.collect::<Vec<_>>().join(" ")),
@@ -485,7 +483,7 @@ fn make(cmd: &str, args: &[String]) -> i32 {
         let r = app_dir(n).and_then(|(_, d)| load_manifest(&d, n));
         if let Err(m) = r { return fail(&m); }
         if cmd == "fix" && text.is_empty() && !fs::symlink_metadata(app_dir(n).map(|d| d.1.join("last_error")).unwrap_or_default()).is_ok() {
-            return fail(&format!("{n} has no saved crash. Describe the problem: agent fix {n} \"the total is wrong\""));
+            return fail(&format!("{n} has no saved crash. Describe the problem: !fix {n} \"the total is wrong\""));
         }
     }
     if text.is_empty() && cmd != "fix" {
@@ -517,9 +515,45 @@ pub fn ask_line(prompt: &str) -> Option<String> {
     term::read_line(&mut ed, prompt, &|_, _| vec![]).map(|l| l.trim().to_string())
 }
 
-/// `agent run APP [ARGS]`.
+/// A yes/no question where Enter means yes. No, anything else and end of input mean no.
+pub fn ask_yes(question: &str) -> bool {
+    print!("{question}");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let mut l = String::new();
+    std::io::stdin().lock().read_line(&mut l).is_ok_and(|n| n > 0) && matches!(l.trim(), "" | "y" | "Y" | "yes")
+}
+
+/// When the app's last crash was saved: changes with every new crash.
+fn crash_stamp(name: &str) -> Option<(i64, i64)> {
+    let m = fs::symlink_metadata(app_dir(name).ok()?.1.join("last_error")).ok()?;
+    Some((m.mtime(), m.mtime_nsec()))
+}
+
+/// `!run APP [ARGS]`. After a new crash on a terminal it offers to fix the app now. It reads a key only after the user says yes.
 pub fn run(args: &[String]) -> i32 {
-    let Some(name) = args.first() else { eprintln!("usage: agent run APP [ARGS]"); return 2 };
+    let Some(name) = args.first() else { return run_once(args) };
+    loop {
+        let before = crash_stamp(name);
+        let rc = run_once(args);
+        let after = crash_stamp(name);
+        if rc != 1 || !tty() || after.is_none() || after == before { return rc; }
+        use progress::{DIM, R};
+        if !ask_yes(&format!("  fix {name} now with AI? {DIM}uses API credit{R} [Y/n] ")) { println!("  later: !fix {name}"); return rc; }
+        if let Err(m) = fix_now(name) { return fail(&m); }
+    }
+}
+
+/// The saved crash goes to the existing fix pipeline (table UI); the caller runs the app again.
+fn fix_now(name: &str) -> Result<(), String> {
+    let home = home()?;
+    let facts = memory::load(&home)?;
+    let (cfg, _) = agent::load_config(&home)?;
+    let ch = agent::ctx_for(&home, &cfg, None, None, None, BUILD_EFFORT).map_err(|e| e.1)?;
+    change(&ch, name, Change::Fix, &facts, "")
+}
+
+fn run_once(args: &[String]) -> i32 {
+    let Some(name) = args.first() else { eprintln!("usage: !run APP [ARGS]"); return 2 };
     let (home, dir) = match app_dir(name) { Ok(r) => r, Err(m) => return fail(&m) };
     let src = match read_app_file(&dir, "main.lua", MAX_CODE) { Ok(Some(s)) => s, Ok(None) => return fail(&format!("agent: {name} has no main.lua")), Err(m) => return fail(&m) };
     let m = match load_manifest(&dir, name) { Ok(m) => m, Err(m) => return fail(&m) };
@@ -548,40 +582,51 @@ pub fn apps(home: &Path) -> Vec<(String, Result<Manifest, String>)> {
     }).collect()
 }
 
-/// The chat's list of installed apps ("" when there are none). It tells the model what exists; it never gets code or data.
-pub fn apps_block(home: &Path) -> String {
-    let l: Vec<String> = apps(home).into_iter().filter_map(|(n, m)| m.ok().map(|m| format!("- {n} v{}: {}, {}\n", m.version, m.title, m.about))).take(30).collect();
-    if l.is_empty() { String::new() } else { format!("===APPS===\nApps installed in ~/apps:\n{}", l.concat()) }
-}
-
-/// `agent list`: one line per app.
+/// `!list`: a table, one row per app (plain lines without a terminal).
 pub fn list(args: &[String]) -> i32 {
-    if !args.is_empty() { eprintln!("usage: agent list"); return 2; }
+    if !args.is_empty() { eprintln!("usage: !list"); return 2; }
     let home = match home() { Ok(h) => h, Err(m) => return fail(&m) };
     let all = apps(&home);
+    if all.is_empty() { println!("no apps yet; try: !build \"a calculator\""); return 0; }
+    let tty = unsafe { libc::isatty(1) } == 1;
+    let net = |m: &Manifest| m.net.iter().filter_map(|o| Url::parse(o).ok()).map(|u| u.host_header()).collect::<Vec<_>>().join(", ");
+    if !tty {
+        for (n, m) in &all {
+            match m {
+                Ok(m) => println!("{:<9} v{:<2} {:<40} net: {}", n, m.version, m.about.chars().take(39).collect::<String>(), if m.net.is_empty() { "none".to_string() } else { net(m) }),
+                Err(e) => println!("{n:<9} (broken: {})", printable(e)),
+            }
+        }
+        return 0;
+    }
+    use progress::{fit, BAD, CYAN, DIM, GOOD, R, WARN};
+    let (w, nw) = (progress::tw(), all.iter().map(|a| a.0.len()).max().unwrap_or(4).clamp(4, 20));
+    let aw = w.saturating_sub(nw + 2 + 3 + 2 + 2 + 14).clamp(10, 40);
+    let uses = all.iter().filter(|a| a.1.as_ref().is_ok_and(|m| !m.net.is_empty())).count();
+    println!("\n{}\n  {} app{}\n\n{}\n{}", progress::hdr("APPS"), all.len(), if all.len() == 1 { "" } else { "s" }, progress::hdr(&format!("{:<nw$}  {:<3}  {:<aw$}  NET", "NAME", "V", "ABOUT")), progress::rule(w));
     for (n, m) in &all {
         match m {
             Ok(m) => {
-                let net = if m.net.is_empty() { "none".to_string() } else { m.net.iter().map(|o| Url::parse(o).map_or(String::new(), |u| u.host_header())).collect::<Vec<_>>().join(", ") };
-                println!("{:<9} v{:<2} {:<40} net: {net}", n, m.version, m.about.chars().take(39).collect::<String>());
+                let c = if m.net.is_empty() { format!("{DIM}none{R}") } else { format!("{}{}{R}", if m.net.iter().any(|o| o.starts_with("http:")) { WARN } else { CYAN }, fit(&printable(&net(m)), 24)) };
+                println!("  {GOOD}{n:<nw$}{R}  {:<3}  {:<aw$}  {c}", format!("v{}", m.version), fit(&printable(&m.about), aw));
             }
-            Err(e) => println!("{n:<9} (broken: {})", printable(e)),
+            Err(e) => println!("  {BAD}{n:<nw$}{R}  {BAD}broken: {}{R}", fit(&printable(e), w.saturating_sub(nw + 12))),
         }
     }
-    if all.is_empty() { println!("no apps yet; try: agent build \"a calculator\""); }
+    println!("{}\n{}", progress::rule(w), progress::dots(&[format!("{} app{}", all.len(), if all.len() == 1 { "" } else { "s" }), format!("{CYAN}{uses} use{} the network{R}", if uses == 1 { "s" } else { "" })]));
     0
 }
 
 fn undo(args: &[String]) -> i32 {
-    let [name] = args else { eprintln!("usage: agent undo APP"); return 2 };
+    let [name] = args else { eprintln!("usage: !undo APP"); return 2 };
     let (_, dir) = match app_dir(name) { Ok(r) => r, Err(m) => return fail(&m) };
     match undo_app(&dir, name, clock::now()) { Ok(v) => { println!("{}", note_line(&format!("{name} is back to version {v}"))); 0 } Err(m) => fail(&m) }
 }
 
 fn rm(args: &[String]) -> i32 {
-    let [name] = args else { eprintln!("usage: agent rm APP"); return 2 };
+    let [name] = args else { eprintln!("usage: !rm APP"); return 2 };
     let (home, dir) = match app_dir(name) { Ok(r) => r, Err(m) => return fail(&m) };
-    if !confirm(&format!("remove {name}"), "deletes the app, its saved data and every earlier version", "this cannot be undone", "delete", &format!("  Delete {name} and its data? (y/N) ")) { println!("{}", note_line(&format!("kept {name}"))); return 1; }
+    if !confirm(&format!("remove {name}"), "deletes the app, its saved data and every earlier version", "this cannot be undone", true, "delete", &format!("  Delete {name} and its data? (y/N) ")) { println!("{}", note_line(&format!("kept {name}"))); return 1; }
     if let Err(e) = fs::remove_dir_all(&dir) { return fail(&format!("agent: cannot remove {name}: {e}")); }
     match load_approvals(&home) { Ok(t) if !approved_for(&t, name).is_empty() => { if let Err(m) = save_approvals(&home, &drop_approvals(&t, name)) { return fail(&m); } } Ok(_) => {} Err(m) => return fail(&m) }
     println!("{}", note_line(&format!("removed {name}")));
@@ -645,7 +690,7 @@ mod tests {
             assert_eq!(parse_manifest(t).unwrap().name, n);
         }
     }
-    #[test] fn usage_lines_fit_80_cols() { for l in crate::agent::USAGE.lines() { assert!(l.chars().count() <= 80, "{l}"); } }
+    #[test] fn usage_lines_fit_80_cols() { for l in crate::agent::usage().lines() { assert!(l.chars().count() <= 80, "{l}"); } }
 
     const GOOD: &str = "===APP===\nname: calc\ntitle: Calc\nabout: A calculator\nnet: none\n===CODE===\nfunction draw() end\n===END===\n";
     #[test] fn reply_parses_header_and_code() {

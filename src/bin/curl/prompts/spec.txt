@@ -5,7 +5,7 @@ Reply in exactly one of two forms.
 1. If the request is not for a program, or cannot work within these limits, reply with one line:
 NO: <a short, friendly reason in plain words, at most 100 characters>
 Examples:
-"how do I center a div" -> NO: that is a question, not an app. Ask it with: agent "how do I center a div"
+"how do I center a div" -> NO: that is a question, not an app. Ask it with: !chat "how do I center a div"
 "a music player" -> NO: thir apps cannot play sound.
 "edit my photos" -> NO: apps cannot open your files or show images.
 

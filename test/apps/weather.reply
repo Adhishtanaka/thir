@@ -24,21 +24,26 @@ end
 
 function draw(w, h)
   ui.title("Weather", "updated 10:17")
-  ui.text(2, 3, "Weather for " .. city .. ", Sri Lanka", "accent")
-  icon(2, 5, "sun")
-  ui.cols(18, 6, {12, 24}, {"temperature", "30°C, feels like 35°C"})
-  ui.cols(18, 7, {12, 24}, {"sky", "Clear sky"})
-  ui.cols(18, 8, {12, 24}, {"wind", "8 km/h"})
-  ui.cols(18, 9, {12, 24}, {"humidity", "59%"})
+  ui.text(2, 3, "WEATHER", "accent")
+  ui.text(2, 4, "Weather for ")
+  ui.text(14, 4, city .. ", Sri Lanka", "cyan")
+  icon(2, 6, "sun")
+  ui.cols(18, 7, {12}, {"temperature"}, "cyan"); ui.text(30, 7, "30°C, feels like 35°C", "warn")
+  ui.cols(18, 8, {12}, {"sky"}, "cyan"); ui.text(30, 8, "Clear sky")
+  ui.cols(18, 9, {12}, {"wind"}, "cyan"); ui.text(30, 9, "8 km/h")
+  ui.cols(18, 10, {12}, {"humidity"}, "cyan"); ui.text(30, 10, "59%", "info")
   local pw = math.max(10, math.min(15, math.floor((w - 2) / #days)))
   for i, d in ipairs(days) do
     local x = 2 + (i - 1) * pw
-    ui.box(x, 11, pw, 12, d[1])
-    icon(x + 1, 12, d[2])
-    ui.text(x + 1, 18, ui.pad(d[3], pw - 2), "dim")
-    ui.cols(x + 1, 19, {pw - 2}, {d[4] .. "° / " .. d[5] .. "°"})
-    ui.cols(x + 1, 20, {pw - 2}, {"rain " .. d[6] .. "%"}, "dim")
+    ui.box(x, 12, pw, 11, d[1])
+    icon(x + 1, 13, d[2])
+    ui.text(x + 1, 19, ui.pad(d[3], pw - 2))
+    ui.cols(x + 1, 20, {pw - 2}, {d[4] .. "° / " .. d[5] .. "°"}, d[5] >= 31 and "warn" or "text")
+    ui.cols(x + 1, 21, {pw - 2}, {"rain " .. d[6] .. "%"}, d[6] >= 50 and "info" or "text")
   end
+  local wet = 0
+  for _, d in ipairs(days) do if d[6] >= 50 then wet = wet + 1 end end
+  ui.text(2, 23, #days .. " days", "text"); ui.text(9, 23, "·", "dim"); ui.text(11, 23, wet .. " with rain", "info"); ui.text(23, 23, "·", "dim"); ui.text(25, 23, "ok", "good")
   ui.footer("c change city · r refresh · q quit")
 end
 

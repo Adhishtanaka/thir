@@ -1,5 +1,5 @@
-//! agent memory: facts the user asked agent to keep, one per line in ~/.config/thir/memory (0600, in a 0700 folder).
-//! The whole list goes to the user's AI provider inside chat and build prompts. Nothing is saved unless the user types `agent remember`.
+//! !memory: facts the user asked agent to keep, one per line in ~/.config/thir/memory (0600, in a 0700 folder).
+//! The whole list goes to the user's AI provider inside chat and build prompts. Nothing is saved unless the user types `!remember`.
 //! Apps never see it, and these commands never read a key or the provider config.
 //! shortcut: the whole list is sent; split into an index + files when facts get longer than one line.
 use crate::{agent::{clean, private_dir, read_private, write_private}, make};
@@ -51,14 +51,14 @@ pub fn add(facts: &[String], new: &str) -> Result<(Vec<String>, String), String>
     let n = clean(new).trim().to_string();
     if n.is_empty() { return Err("agent: nothing to remember".into()); }
     if n.chars().count() > MAX_LEN { return Err(format!("agent: keep a fact under {MAX_LEN} characters")); }
-    if looks_secret(&n) { return Err("agent: that looks like a password or key; agent never remembers those (keys go in agent --login)".into()); }
+    if looks_secret(&n) { return Err("agent: that looks like a password or key; agent never remembers those (keys go in !login)".into()); }
     let mut v = facts.to_vec();
     if v.iter().any(|f| f.to_lowercase() == n.to_lowercase()) { return Ok((v, format!("already remembered: {n}"))); }
     if let Some(i) = key(&n).and_then(|k| v.iter().position(|f| key(f).as_deref() == Some(&k))) {
         let old = std::mem::replace(&mut v[i], n.clone());
         return Ok((v, format!("updated: {n} (was: {old})")));
     }
-    if v.len() >= MAX_FACTS { return Err(format!("agent: memory is full ({MAX_FACTS} facts). Remove one first: agent forget N")); }
+    if v.len() >= MAX_FACTS { return Err(format!("agent: memory is full ({MAX_FACTS} facts). Remove one first: !forget N")); }
     v.push(n.clone());
     Ok((v, format!("remembered: {n}")))
 }
@@ -72,9 +72,9 @@ pub fn remove(facts: &[String], sel: &str) -> Result<(Vec<String>, String), Stri
         Err(_) => facts.iter().enumerate().filter(|(_, f)| f.to_lowercase().contains(&sel.to_lowercase())).map(|(i, _)| i).collect(),
     };
     match hits.as_slice() {
-        [] => Err(format!("agent: no fact matches \"{}\" (agent memory lists them)", clean(sel))),
+        [] => Err(format!("agent: no fact matches \"{}\" (!memory lists them)", clean(sel))),
         [i] => { let mut v = facts.to_vec(); let f = v.remove(*i); Ok((v, f)) }
-        many => Err(format!("more than one fact has \"{}\":\n{}\nRemove one by number: agent forget N", clean(sel), many.iter().map(|&i| format!("  {:<2} {}", i + 1, facts[i])).collect::<Vec<_>>().join("\n"))),
+        many => Err(format!("more than one fact has \"{}\":\n{}\nRemove one by number: !forget N", clean(sel), many.iter().map(|&i| format!("  {:<2} {}", i + 1, facts[i])).collect::<Vec<_>>().join("\n"))),
     }
 }
 
@@ -97,7 +97,19 @@ pub fn used(facts: &[String], before: &str, after: &str) -> Vec<String> {
 
 fn numbered(facts: &[String]) -> String { facts.iter().enumerate().map(|(i, f)| format!("  {:<2} {f}\n", i + 1)).collect() }
 
-/// `agent remember | memory | forget`: no key and no provider config are read here.
+/// The memory as a table: the part before ":" of a fact is cyan.
+fn table(facts: &[String]) -> String {
+    use crate::progress::{self as p, CYAN, R};
+    let w = p::tw();
+    let rows: String = facts.iter().enumerate().map(|(i, f)| match f.split_once(':') {
+        Some((k, v)) => format!("  {:<2} {CYAN}{}:{R}{}\n", i + 1, p::fit(k, w), p::fit(v, w.saturating_sub(k.chars().count() + 5))),
+        None => format!("  {:<2} {}\n", i + 1, p::fit(f, w.saturating_sub(5))),
+    }).collect();
+    let n = format!("{} fact{}", facts.len(), if facts.len() == 1 { "" } else { "s" });
+    format!("\n{}\n  {n}\n\n{}\n{}\n{rows}{}\n{}\n  {}!forget N{R} removes one \u{b7} edit ~/.config/thir/memory to change them all\n", p::hdr("MEMORY"), p::hdr("#  FACT"), p::rule(w), p::rule(w), p::dots(&[n.clone(), format!("{}only you can read this{R}", p::DIM)]), CYAN)
+}
+
+/// `!remember | memory | forget`: no key and no provider config are read here.
 pub fn command(c: &str, args: &[String]) -> i32 {
     let fail = |m: &str| { eprintln!("{m}"); 1 };
     let home = match make::home() { Ok(h) => h, Err(m) => return fail(&m) };
@@ -105,22 +117,23 @@ pub fn command(c: &str, args: &[String]) -> i32 {
     let text = args.join(" ").trim().to_string();
     match c {
         "memory" => {
-            if !args.is_empty() { eprintln!("usage: agent memory"); return 2; }
-            if facts.is_empty() { println!("agent remembers nothing yet. Try: agent remember \"city: Colombo\""); return 0; }
-            print!("agent remembers (only you can read this):\n{}agent forget N removes one. To change them all: edit ~/.config/thir/memory\n", numbered(&facts));
+            if !args.is_empty() { eprintln!("usage: !memory"); return 2; }
+            if facts.is_empty() { println!("agent remembers nothing yet. Try: !remember \"city: Colombo\""); return 0; }
+            if unsafe { libc::isatty(1) } != 1 { print!("agent remembers (only you can read this):\n{}!forget N removes one. To change them all: edit ~/.config/thir/memory\n", numbered(&facts)); return 0; }
+            print!("{}", table(&facts));
             0
         }
         "remember" => {
-            let text = if !text.is_empty() { text } else if make::tty() { match make::ask_line("What should agent remember? ") { Some(l) if !l.is_empty() => l, _ => return 1 } } else { eprintln!("usage: agent remember \"FACT\""); return 2 };
+            let text = if !text.is_empty() { text } else if make::tty() { match make::ask_line("What should !remember? ") { Some(l) if !l.is_empty() => l, _ => return 1 } } else { eprintln!("usage: !remember \"FACT\""); return 2 };
             let (v, msg) = match add(&facts, &text) { Ok(r) => r, Err(m) => return fail(&m) };
             if v != facts { if let Err(m) = save(&home, &v) { return fail(&m); } }
             println!("{msg}{}", if facts.is_empty() && msg.starts_with("remembered") { "\n(kept in ~/.config/thir/memory; sent to your AI provider when it helps)" } else { "" });
             0
         }
         _ => {
-            if text.is_empty() { eprintln!("usage: agent forget N|WORD|all"); return 2; }
+            if text.is_empty() { eprintln!("usage: !forget N|WORD|all"); return 2; }
             if facts.is_empty() { println!("agent remembers nothing yet."); return 0; }
-            if text == "all" && !make::confirm("forget everything", &format!("erases all {} remembered facts", facts.len()), "agent stops using them in chats and builds", "forget all", &format!("  Forget all {} facts? (y/N) ", facts.len())) { println!("{}", make::note_line("kept everything")); return 1; }
+            if text == "all" && !make::confirm("forget everything", &format!("erases all {} remembered facts", facts.len()), "agent stops using them in chats and builds", false, "forget all", &format!("  Forget all {} facts? (y/N) ", facts.len())) { println!("{}", make::note_line("kept everything")); return 1; }
             match remove(&facts, &text) {
                 Ok((v, gone)) => { if let Err(m) = save(&home, &v) { return fail(&m); } println!("{}", make::note_line(&if text == "all" { "forgot everything".to_string() } else { format!("forgot: {gone}") })); 0 }
                 Err(m) => fail(&m),
@@ -156,7 +169,7 @@ mod tests {
         let f = s(&["city: Colombo", "units: metric", "city of birth: Galle"]);
         assert_eq!(remove(&f, "2").unwrap(), (s(&["city: Colombo", "city of birth: Galle"]), "units: metric".into()));
         assert_eq!(remove(&f, "metric").unwrap().1, "units: metric");
-        let e = remove(&f, "city").unwrap_err(); assert!(e.contains("more than one fact has \"city\"") && e.contains("  1  city: Colombo") && e.contains("agent forget N"), "{e}");
+        let e = remove(&f, "city").unwrap_err(); assert!(e.contains("more than one fact has \"city\"") && e.contains("  1  city: Colombo") && e.contains("!forget N"), "{e}");
         assert!(remove(&f, "zzz").unwrap_err().contains("no fact matches")); assert!(remove(&f, "4").unwrap_err().contains("no fact matches"));
         assert_eq!(remove(&f, "all").unwrap().0.len(), 0);
     }

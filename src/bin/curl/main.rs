@@ -3,9 +3,13 @@ mod act;
 mod agent;
 mod app;
 mod conn;
+mod context;
 mod make;
 mod memory;
 mod progress;
+mod route;
+mod schedule;
+mod setup;
 
 use conn::{body_err, exchange, NetErr};
 use std::{fs::{File, OpenOptions}, io::{self, Read, Write}, os::unix::fs::OpenOptionsExt, process::exit, time::{Duration, Instant}};
