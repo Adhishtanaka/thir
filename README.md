@@ -34,6 +34,7 @@ On the [releases page](https://github.com/Adhishtanaka/thir/releases), `v0.3.0` 
 - A few apps: `edit` (a simple editor, also called `nano`), `find`, `top` (CPU and memory use) and `neofetch`.
 - `curl`, for downloading web pages and files over HTTP and HTTPS.
 - An AI shell: type plain words and the AI answers. Lines that start with `!` are commands: `!build`, `!do`, `!remind`, `!memory`, `!setup`.
+- Plain words also work the apps: "add Kasun to my contacts, 0771234567", "what is on my calendar tomorrow", "set an alarm for 6:30", "add buy milk to my notes as a todo". thir shows what it will do and asks first. When a question needs your contacts, notes or calendar, only the matching records go to the AI, and thir says how many.
 - AI setup at the first login. You pick a provider and add your own key. It is required.
 - Reminders, shown in the top bar of the desktop.
 - Self-healing apps: if an app the AI built breaks, thir sends the error back and the AI fixes it.

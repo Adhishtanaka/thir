@@ -2,6 +2,7 @@
 mod act;
 mod agent;
 mod app;
+mod appact;
 mod conn;
 mod context;
 mod make;

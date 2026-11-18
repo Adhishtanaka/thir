@@ -21,11 +21,22 @@ def err(reason): return 400, json.dumps({"type": "error", "error": {"type": "inv
 
 SLOW = float(os.environ.get("THIR_MOCK_SLOW", "0"))   # seconds per chunk (3x before the first byte): slow streams for screenshots
 
+import re
+MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+def today(msg):   # "time: Thu 19 Nov 2026 13:27:41 +05:30" in the system summary
+    m = re.search(r"time: \w+ (\d+) (\w+) (\d+)", msg)
+    return "%s-%02d-%02d" % (m.group(3), MONTHS.index(m.group(2)) + 1, int(m.group(1))) if m else "2026-01-01"
+APP_ROUTES = {"add Kasun to my contacts, 0771234567": "CONTACT_ADD Kasun | 0771234567 | |", "add Nimal to my contacts, 0719876543": "CONTACT_ADD Nimal | 0719876543", "add evil to my contacts": "CONTACT_ADD Evil | $(rm -rf ~)",
+              "what is Kasun's number": "CONTACT_FIND kasun", "what is Zed's number": "CONTACT_FIND zed", "add buy milk to my notes as a todo": "NOTE_ADD Todo | [ ] buy milk", "what do my notes say about milk": "NOTE_FIND milk",
+              "set an alarm for 6:30": "ALARM_ADD 06:30 | once |", "timer for 10 minutes": "TIMER 10m", "what is 12 times 15": "CALC 12*15"}
 ROUTES = {"please open the calculator": "RUN calc", "make me a weather app": "BUILD", "I live in Colombo": "REMEMBER city: Colombo", "remind me in 5 seconds to drink water": "REMIND +5s drink water",
           "open ../../bin/sh": "RUN ../../bin/sh", "run a shell for me": "EXEC /bin/sh"}
 def route(msg):   # the shell's picks, by the user's line (the text after ===LINE===)
     line = msg.split("===LINE===\n")[-1].strip()
     if line == "what apps do I have": return "ANSWER\nmock: you have calc" if "===SYSTEM===" in msg and "- calc v1" in msg else "ANSWER\nmock: no system summary"
+    if line in APP_ROUTES: return APP_ROUTES[line]
+    if line == "add dentist to my calendar today at 14:30": return "EVENT_ADD %s | 14:30 | Dentist | 15m" % today(msg)
+    if line == "what is on my calendar today": return "CALENDAR " + today(msg)
     return ROUTES.get(line, "ANSWER\nmock: unknown line")
 
 class H(BaseHTTPRequestHandler):
@@ -90,6 +101,8 @@ class H(BaseHTTPRequestHandler):
         elif not j.get("messages") or j["messages"][-1].get("role") != "user": why = "last role"
         if why: return self.send(400, err(why)[1], "application/json")
         if j.get("system", "").startswith("You are the shell of thir"): return self.text_reply(route(j["messages"][-1]["content"]))   # the AI shell (!ask)
+        if j.get("system", "").startswith("You answer a question about the user's own data"):   # an app read: the reply shows exactly what the model was sent
+            m = j["messages"][-1]["content"]; return self.text_reply("mock saw: " + " ; ".join(l[2:] for l in m.split("\n") if l.startswith("- ")))
         d = lambda o: "event: %s\ndata: %s\n\n" % (o["type"], json.dumps(o, ensure_ascii=False))
         n = len(j["messages"])
         ev = [d({"type": "message_start", "message": {"id": "m1", "model": "claude-opus-5-5", "role": "assistant", "content": []}}),

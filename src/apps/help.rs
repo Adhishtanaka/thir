@@ -1,4 +1,4 @@
-//! help: one guide to thir: the desktop, the shell, the apps and their keys. Scroll with the arrow keys; 1 to 8 jump to a section.
+//! help: one guide to thir: the desktop, the shell, the apps and their keys. Scroll with the arrow keys; 1 to 9 jump to a section.
 use crate::{line::Key, tui::*};
 
 /// (section, rows of (keys or name, what it does)); a row with no keys is a plain line.
@@ -17,6 +17,9 @@ pub const GUIDE: &[(&str, &[(&str, &str)])] = &[
     ("CALC", &[("calc", "type an expression and press Enter: 2+3*4, (1+2)^3, sqrt(2), 10%3, pi, ans*2"), ("Up / Down", "bring back an earlier line; Ctrl-U clears; Ctrl-D leaves"), ("", "Functions: sqrt abs sin cos tan ln log exp floor ceil round.")]),
     ("CONTACTS AND NOTES", &[("contacts", "a add, e edit, d delete, / search, c clear the search; each has phones, emails and a note"), ("notes", "a new note, Enter opens it, d deletes, / searches title, tags and text"),
         ("In a note", "space ticks a todo; a adds a line; t adds a todo ([ ] or [x]); e edits; d deletes; r renames; g sets tags")]),
+    ("THE AI SHELL", &[("plain words", "type a sentence at the prompt: the AI picks one action, thir shows it, and you press y (Enter) or n"), ("apps by words", "add Kasun to my contacts, 0771234567 - what is on my calendar tomorrow - set an alarm for 6:30 - add buy milk to my notes as a todo"),
+        ("", "Reading contacts, notes or the calendar sends only the matching records to the AI; the confirm line says how many. Changes are always asked first."),
+        ("! commands", "!build an app, !do file jobs, !remind, !schedule, !memory, !forget, !setup (provider and key), !list, !rm, !undo; type ! alone for all")]),
     ("SOUND AND SETTINGS", &[("settings", "time zone, wallpaper (blue and four more), sound on/off, volume, test sound"), ("beep", "play the alarm chime; beep 440 300 plays one note (Hz, ms)"),
         ("", "Without a sound device the top bar notice flashes instead."), ("Your data", "~/.config/thir/<app>/ in plain text files only you can read")]),
 ];
@@ -58,7 +61,7 @@ pub fn run() -> i32 {
         for (t, h) in all.iter().skip(top).take(room) { l.push(if *h { format!("  {ACC}{t}{R}") } else { t.clone() }); }
         while l.len() < rows.saturating_sub(3) { l.push(String::new()); }
         l.push(rule(w)); l.push(dots(&[format!("{GOOD}{} sections{R}", GUIDE.len()), format!("{}%", if all.len() <= room { 100 } else { (top + room) * 100 / all.len() })]));
-        l.push(hints(&[("up/down", "scroll"), ("space", "page"), ("1-8", "section"), ("q", "quit")]));
+        l.push(hints(&[("up/down", "scroll"), ("space", "page"), ("1-9", "section"), ("q", "quit")]));
         draw(&l);
         let Some(keys) = s.keys(-1) else { return 0 };
         for k in keys {
@@ -66,7 +69,7 @@ pub fn run() -> i32 {
                 Key::Char('q') | Key::Ctrl(b'c') | Key::Ctrl(b'd') => return 0,
                 Key::Up => top = top.saturating_sub(1), Key::Down => top += 1, Key::PgUp => top = top.saturating_sub(room), Key::PgDn | Key::Char(' ') => top += room,
                 Key::Home => top = 0, Key::End => top = usize::MAX / 2,
-                Key::Char(c @ '1'..='8') => { let name = GUIDE[(c as usize - '1' as usize).min(GUIDE.len() - 1)].0; top = all.iter().position(|(t, h)| *h && t == name).unwrap_or(0); }
+                Key::Char(c @ '1'..='9') => { let name = GUIDE[(c as usize - '1' as usize).min(GUIDE.len() - 1)].0; top = all.iter().position(|(t, h)| *h && t == name).unwrap_or(0); }
                 _ => {}
             }
         }
@@ -80,7 +83,7 @@ mod tests {
     #[test] fn every_app_is_in_the_guide() {
         let text: String = GUIDE.iter().flat_map(|s| s.1.iter()).map(|r| format!("{} {}\n", r.0, r.1)).collect();
         for a in crate::apps::NAMES.iter().filter(|a| **a != "bell") { assert!(text.contains(a), "{a} is missing from help"); }
-        assert!(GUIDE.len() <= 8);
+        assert!(GUIDE.len() <= 9);
     }
     #[test] fn lines_fit_the_width() { for w in [30, 56, 72] { assert!(lines(w).iter().all(|(t, _)| vis(t) <= w + 4), "{w}"); } }
 }

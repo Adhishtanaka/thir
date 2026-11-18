@@ -150,7 +150,7 @@ run '!context' '^- calc v1: A calculator$'
 run '!context' '^network: 10\.0\.2\.15$'
 run '!context' '^recent commands: .*!'
 run '!context' '^files: .*docs/'
-send calc; wait_for 'q quit'; sendk '1+2='; wait_for '= 3'; sendk q; wait_for '\$ $'           # an app by name; net none needs no approval
+send '!run calc'; wait_for 'q quit'; sendk '1+2='; wait_for '= 3'; sendk q; wait_for '\$ $'           # an app by name; net none needs no approval
 send hello; wait_for 'connect to 10\.0\.2\.2:18080 \(not encrypted\)'; send n; wait_for 'did not run'; wait_for '\$ $'
 send hello; wait_for 'connect to 10\.0\.2\.2:18080 \(not encrypted\)'; send y; wait_for 'hello from mock'; wait_for 'tz 05:30'; sendk q; wait_for '\$ $'   # tz 05:30: os.date follows ~/.tz
 run 'cat .config/thir/approvals' '^hello http://10\.0\.2\.2:18080$'   # approvals live outside the app dir; hello.json ships a fake "approved" list that was ignored
@@ -204,7 +204,8 @@ run '!remind 25:00 x' 'TIME is HH:MM'
 run '!remind +5s my password is hunter2' 'looks like a password'
 # the AI shell: a typo gets a hint, plain words go to the AI, which picks one action and asks first (the mock answers by the words)
 send '!'; wait_for 'THE ! COMMANDS'; wait_for 'effort for anthropic'; wait_for '\$ $'
-run 'help' '^  ! cmds +!build'
+run 'help > h2.txt' '\$ $'
+run 'cat h2.txt' '^  ! cmds +!build'
 run 'mkdri docs' 'nsh: mkdri: command not found\. Did you mean mkdir\?'
 run 'foo bar' 'command not found \(3 or more words ask the AI'
 send 'what apps do I have'; wait_for '→ answer'; wait_for 'mock: you have calc'; wait_for '\$ $'
@@ -213,6 +214,20 @@ send 'make me a weather app'; wait_for '→ build: make me a weather app'; send 
 send 'I live in Colombo'; wait_for '→ remember: city: Colombo'; send y; wait_for 'remembered: city: Colombo'; wait_for '\$ $'
 run '!forget city' 'forgot: city: Colombo'
 send 'remind me in 5 seconds to drink water'; wait_for '→ remind: in 5 s · drink water'; send y; wait_for 'reminder [0-9]+: in 5 s'; wait_for '\$ $'
+# plain words work the apps: a change is shown and asked first, a read shows what it sends (only the matches), arithmetic is done by thir
+send 'add Nimal to my contacts, 0719876543'; wait_for '→ contacts: add Nimal · 0719876543 +ok\? \[Y/n\]'; send y; wait_for 'saved Nimal in contacts'; wait_for '\$ $'
+run 'cat .config/thir/contacts/contacts' '^2.Nimal.0719876543'
+run 'add evil to my contacts' 'is not a phone number'
+send "what is Kasun's number"; wait_for '→ private data: sends 1 contact matching "kasun".*only this goes to the AI'; send y; wait_for 'mock saw: Kasun Perera \| phones: 0771234567'; wait_for '\$ $'
+if tail -n +$((mark + 1)) "$log" | grep -a 'mock saw' | grep -q Nimal; then echo "FAIL: a contact that was not asked for went to the AI"; exit 1; fi
+run "what is Zed's number" 'no contact matches "zed"'
+send 'add buy milk to my notes as a todo'; wait_for '→ notes: add "\[ \] buy milk" to the note Todo +ok\? \[Y/n\]'; send y; wait_for 'added to the note Todo'; wait_for '\$ $'
+run 'cat .config/thir/notes/notes' '^2.[0-9]+.[0-9]+..Todo.\[ \] buy milk$'
+send 'add dentist to my calendar today at 14:30'; wait_for '→ calendar: Dentist · 20[0-9-]+ 14:30 · remind 15 min before'; send y; wait_for 'saved Dentist in the calendar'; wait_for '\$ $'
+send 'what is on my calendar today'; wait_for '→ private data: sends 2 events from 20[0-9-]+ \(date, time, title\)'; send y; wait_for 'mock saw: 20[0-9-]+ 14:30 Dentist ; 20[0-9-]+ 14:30 Dentist'; wait_for '\$ $'
+send 'set an alarm for 6:30'; wait_for '→ alarm: 06:30 once, (today|tomorrow) 06:30 +· it rings even with no app open +ok\? \[Y/n\]'; send y; wait_for 'alarm set'; wait_for '\$ $'
+run 'cat .config/thir/clock/alarms' '^2.@[0-9]+.1.$'
+run 'what is 12 times 15' '→ 12\*15 = 180'
 run '!ask open ../../bin/sh' 'could not tell what to do'
 run '!ask run a shell for me' 'could not tell what to do'
 # !do: file tasks in plain words; the plan is shown and nothing changes before y
