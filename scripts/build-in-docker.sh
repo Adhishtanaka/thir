@@ -17,7 +17,7 @@ KMAKE=(make -C "$SRC" O="$OBJ" ARCH="$KARCH" CROSS_COMPILE="$CROSS_COMPILE")
 mkdir -p "$OBJ" "$O"
 
 cd /work && cargo build --release --target "$RUST_TARGET"
-for b in init nsh dhcp den login passwd edit find top fetch curl; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
+for b in init nsh dhcp den login passwd edit find top fetch curl tools; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
 rm -f "$O/initramfs.cpio.gz"
 cat > "$LIST" <<EOL
 dir /dev 0755 0 0
@@ -42,6 +42,8 @@ file /bin/top $O/top 0755 0 0
 file /bin/fetch $O/fetch 0755 0 0
 file /bin/curl $O/curl 0755 0 0
 slink /bin/agent /bin/curl 0777 0 0
+file /bin/tools $O/tools 0755 0 0
+$(for a in clock calendar calc contacts notes settings help beep bell; do echo "slink /bin/$a /bin/tools 0777 0 0"; done)
 slink /bin/neofetch /bin/fetch 0777 0 0
 slink /bin/nano /bin/edit 0777 0 0
 file /share/font16.psf /work/assets/fonts/Uni3-Terminus16.psf 0644 0 0

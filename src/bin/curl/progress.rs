@@ -6,8 +6,7 @@
 use std::{io::Write, sync::{atomic::{AtomicBool, Ordering::SeqCst}, Arc, Mutex}, thread, time::{Duration, Instant}};
 use thir::{files::printable, term};
 
-pub const ACC: &str = "\x1b[1;97m"; pub const DIM: &str = "\x1b[90m"; pub const GOOD: &str = "\x1b[32m"; pub const CYAN: &str = "\x1b[36m"; pub const WARN: &str = "\x1b[33m"; pub const BAD: &str = "\x1b[31m"; pub const R: &str = "\x1b[0m";
-const LINE: &str = "\x1b[37m";
+pub use thir::tui::{dots, fit, hdr, head, rule, vis, ACC, BAD, CYAN, DIM, GOOD, R, WARN};   // the look is shared with the apps (src/tui.rs)
 const SPIN: [&str; 4] = ["\u{25d0}", "\u{25d3}", "\u{25d1}", "\u{25d2}"];   // ◐ ◓ ◑ ◒ (den's font gets them from font.rs)
 const TICK_MS: u64 = 100;
 const LABEL_W: usize = 9;
@@ -15,28 +14,10 @@ const LABEL_W: usize = 9;
 /// The turning glyph of an active row.
 pub fn spin(ms: u64) -> &'static str { SPIN[(ms / 150 % 4) as usize] }
 
-/// Characters of `s` that show: escape sequences do not count.
-pub fn vis(s: &str) -> usize { let mut esc = false; s.chars().filter(|&c| { if c == '\x1b' { esc = true; false } else if esc { esc = !c.is_ascii_alphabetic(); false } else { true } }).count() }
 /// Width of a table (its rule): the terminal, at most 56.
 pub fn tw() -> usize { term::size().0.saturating_sub(4).clamp(30, 56) }
-/// The title line: bold `title` on the left, `right` (cyan, for example the model) at the right end of a rule `w` wide.
-pub fn head(title: &str, right: &str, w: usize) -> String { format!("  {ACC}{title}{R}{}{CYAN}{right}{R}", " ".repeat(w.saturating_sub(vis(title) + vis(right)).max(2))) }
-/// A solid rule `w` wide.
-pub fn rule(w: usize) -> String { format!("  {LINE}{}{R}", "\u{2500}".repeat(w)) }
-/// The header row of a table: bold `s`.
-pub fn hdr(s: &str) -> String { format!("  {ACC}{s}{R}") }
 /// The answer keys of a dialog; the default (`[n]`) is stated.
 pub fn keys(yes: &str, no: &str) -> String { format!("  {GOOD}[y]{R} {yes}   {DIM}[n] {no} (default){R}") }
-/// `  a  b` as a count line of a footer: the parts joined by a dim dot.
-pub fn dots(parts: &[String]) -> String { format!("  {}", parts.join(&format!(" {DIM}\u{b7}{R} "))) }
-
-/// `s` cut to `max` characters, the last one `\u{2026}` when something was cut.
-pub fn fit(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { return s.to_string(); }
-    if max == 0 { return String::new(); }
-    s.chars().take(max - 1).chain(std::iter::once('\u{2026}')).collect()
-}
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mark { Pending, Active, Done, Warn, Bad }
 

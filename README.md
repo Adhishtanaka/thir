@@ -37,6 +37,7 @@ On the [releases page](https://github.com/Adhishtanaka/thir/releases), `v0.3.0` 
 - AI setup at the first login. You pick a provider and add your own key. It is required.
 - Reminders, shown in the top bar of the desktop.
 - Self-healing apps: if an app the AI built breaks, thir sends the error back and the AI fixes it.
+- Built-in apps with sound: `clock` (alarms that ring even when it is closed, stopwatch, timer), `calendar` (events and reminders), `calc`, `contacts`, `notes` (with todo boxes), `settings` (time zone, wallpaper, sound) and `help`, a guide to everything.
 
 ## How it works
 
@@ -54,10 +55,10 @@ block-beta
   l5["Kernel"] kernel["Linux 6.12: screen, keyboard, disk and network drivers"]:4 disk[("disk: your files")]
   l6["Hardware"] hw["UEFI firmware on VirtualBox, QEMU or a real PC"]:5
 
-  classDef label fill:transparent,stroke:transparent,color:#8f8b89
-  classDef user fill:#2c2b2d,stroke:#cfc4be,color:#e3dfdc
-  classDef sys fill:#222123,stroke:#8f8b89,color:#e3dfdc
-  classDef core fill:#161617,stroke:#6a6668,color:#e3dfdc
+  classDef label fill:transparent,stroke:transparent,color:#8fa3c2
+  classDef user fill:#1d3557,stroke:#8b9bb4,color:#e8eefa
+  classDef sys fill:#142744,stroke:#6f86ad,color:#e8eefa
+  classDef core fill:#0a1424,stroke:#4a5f85,color:#e8eefa
   class l1,l2,l3,l4,l5,l6 label
   class edit,find,top,net,shell user
   class login,den,dhcp,init sys
@@ -77,10 +78,10 @@ block-beta
   l5["Kernel"] kernel["Linux 6.12: screen, keyboard, disk and network drivers"]:4 disk[("disk: your files")]
   l6["Hardware"] hw["UEFI firmware on VirtualBox, QEMU or a real PC"]:5
 
-  classDef label fill:transparent,stroke:transparent,color:#8f8b89
-  classDef user fill:#2c2b2d,stroke:#cfc4be,color:#e3dfdc
-  classDef sys fill:#222123,stroke:#8f8b89,color:#e3dfdc
-  classDef core fill:#161617,stroke:#6a6668,color:#e3dfdc
+  classDef label fill:transparent,stroke:transparent,color:#8fa3c2
+  classDef user fill:#1d3557,stroke:#8b9bb4,color:#e8eefa
+  classDef sys fill:#142744,stroke:#6f86ad,color:#e8eefa
+  classDef core fill:#0a1424,stroke:#4a5f85,color:#e8eefa
   class l0,l1,l2,l3,l4,l5,l6 label
   class edit,find,top,net,shell,helper,built user
   class login,den,dhcp,init sys

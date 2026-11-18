@@ -1,6 +1,6 @@
 //! den: tiling terminal GUI drawn straight to /dev/fb0. Alt is the window-manager key.
 use std::{fs::{self, File, OpenOptions}, io, os::{fd::IntoRawFd, unix::{fs::OpenOptionsExt, process::CommandExt}}, process::{exit, Command, Stdio}, thread::sleep, time::Duration};
-use thir::{clock, decide, files::printable, notify, user, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, theme::*, wall::{self, blend}, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
+use thir::{apps::prefs, clock, decide, files::{printable, read_small}, notify, store, user, gui::{fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, theme::*, wall::{self, blend}, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
 
 const LOGIN_COLS: i32 = 60;
 const LOGIN_ROWS: i32 = 12;
@@ -12,7 +12,8 @@ struct Den {
     panes: Vec<Pane>, layout: Layout, next_id: usize, area: Rect, full_redraw: bool, dirty_y: (usize, usize),
     keys: Keys, inputs: Vec<(String, i32)>, zombies: Vec<i32>,
     uid: Option<u32>,   // None = nobody is logged in: one centered login pane
-    home: Option<String>,   // the logged-in user's home: ~/.tz for the bar clock, ~/.notify for notices
+    home: Option<String>,   // the logged-in user's home: ~/.tz for the bar clock, ~/.notify for notices, ~/.config/thir/settings for the wallpaper
+    wall_idx: usize, sc: i32,   // the wallpaper preset on screen (index into WALLS) and the pixel scale
 }
 
 fn fill(back: &mut [u32], w: usize, r: Rect, c: u32) {
@@ -144,9 +145,15 @@ impl Den {
         // as many help items as fit left of the centre label (narrow screens, e.g. 800x600 firmware modes)
         let inset = m.gap + m.border + m.pad;   // the bar text lines up with the text inside the panes
         let room = (((w as i32 - mw) / 2 - inset - 2 * fw) / fw).max(0) as usize;
-        let notice = self.home.as_deref().zip(self.uid).and_then(|(h, u)| notify::latest(&format!("{h}/.notify"), u, clock::now()));
-        match notice {   // a notice from the helper replaces the help items while it is fresh
-            Some(n) => { let t: String = format!("\u{2192} {}", printable(&n)).chars().take(room).collect(); self.text(inset, &t, NOTE); }
+        let now = clock::now();
+        let notice = self.home.as_deref().zip(self.uid).and_then(|(h, u)| notify::latest_at(&format!("{h}/.notify"), u, now));
+        match notice {   // a notice from the helper replaces the help items while it is fresh; in its first 20 seconds it flashes (the alert when there is no sound)
+            Some((ts, n)) => {
+                let t: String = format!("\u{2192} {}", printable(&n)).chars().take(room).collect();
+                let flash = now - ts < 20 && now % 2 == 0;
+                if flash { fill(&mut self.back, w, Rect { x: inset - fw / 2, y: 3 * m.border, w: (t.chars().count() as i32 + 1) * fw, h: m.bar - 6 * m.border }, NOTE); }
+                self.text(inset, &t, if flash { PANEL } else { NOTE });
+            }
             None => { let help = fit_items(HELP, " \u{b7} ", room); self.text(inset, &help, DIM); }
         }
         self.text((w as i32 - mw) / 2, "pane", DIM); self.text((w as i32 - mw) / 2 + 5 * fw, &mid[5..], FG);   // "pane " is ASCII
@@ -180,6 +187,15 @@ impl Den {
             Action::Focus(d) => self.layout.move_focus(self.area, self.m.gap, d),
         }
         self.relayout();
+    }
+
+    /// The wallpaper the logged-in user chose in settings (blue before login and when unset); redrawn only when it changes.
+    fn sync_wall(&mut self) {
+        let idx = self.home.as_deref().zip(self.uid).and_then(|(h, u)| read_small(&store::settings_path(h), u, 4096)).map_or(0, |t| prefs::wall_index(&t));
+        if idx == self.wall_idx { return }
+        self.wall_idx = idx;
+        let (wall, panel) = scene(self.w, self.h, self.m, &self.font, self.sc, &WALLS[idx].1);
+        self.wall = wall; self.panel = panel; self.full_redraw = true;
     }
 
     fn scan_inputs(&mut self) {
@@ -235,6 +251,20 @@ fn spawn_shell(uid: Option<u32>, cols: usize, rows: usize) -> io::Result<(i32, i
     }
 }
 
+/// The wallpaper (gradient, the bear and "thir" in the footer strip) and the pane layer blended over it, for one preset.
+fn scene(w: usize, h: usize, m: Metrics, font: &Font, sc: i32, stops: &[(f32, u32)]) -> (Vec<u32>, Vec<u32>) {
+    let mut wall = wall::gradient(w, h, stops);
+    let (fy, r) = (h as i32 - m.foot, 9.0 * sc as f32);
+    let cy = fy + 18 * sc;   // footer strip centre line: bear mark and "thir", never covered by panes
+    let cx = w as f32 / 2.0 - 2.5 * font.w as f32;
+    wall::bear(&mut wall, w, cx, cy as f32, r, MARK, PANEL, 1.6 * sc as f32);
+    let (mut x, y) = ((cx + r + 1.5 * font.w as f32) as i32, cy - font.h as i32 / 2);
+    for ch in "thir".chars() { glyph(&mut wall, w, font, x, y, ch, MARK); x += (font.w + font.w / 2) as i32; }
+    let mut panel: Vec<u32> = wall.iter().map(|&p| blend(PANEL, p, PANEL_ALPHA)).collect();
+    for (d, s) in panel[..m.bar as usize * w].iter_mut().zip(&wall) { *d = blend(BAR, *s, BAR_ALPHA); }
+    (wall, panel)
+}
+
 fn main() {
     let fb = Fb::open().unwrap_or_else(|e| { eprintln!("den: framebuffer: {e}"); exit(1) });
     println!("den: {}x{} {}bpp", fb.w, fb.h, fb.bpp);
@@ -242,17 +272,9 @@ fn main() {
     let m = Metrics::at(sc);
     let font = Font::parse(&read_all(if sc == 2 { "/share/font32.psf" } else { "/share/font16.psf" })).unwrap_or_else(|e| { eprintln!("den: font: {e}"); exit(1) });
     let (w, h) = (fb.w, fb.h);
-    let mut wall = wall::gradient(w, h, &WALL);
-    let (fy, r) = (h as i32 - m.foot, 9.0 * sc as f32);
-    let cy = fy + 18 * sc;   // footer strip centre line: bear mark and "thir", never covered by panes
-    let cx = w as f32 / 2.0 - 2.5 * font.w as f32;
-    wall::bear(&mut wall, w, cx, cy as f32, r, MARK, PANEL, 1.6 * sc as f32);
-    let (mut x, y) = ((cx + r + 1.5 * font.w as f32) as i32, cy - font.h as i32 / 2);
-    for ch in "thir".chars() { glyph(&mut wall, w, &font, x, y, ch, MARK); x += (font.w + font.w / 2) as i32; }
-    let mut panel: Vec<u32> = wall.iter().map(|&p| blend(PANEL, p, PANEL_ALPHA)).collect();
-    for (d, s) in panel[..m.bar as usize * w].iter_mut().zip(&wall) { *d = blend(BAR, *s, BAR_ALPHA); }
+    let (wall, panel) = scene(w, h, m, &font, sc, &WALLS[0].1);
     let area = Rect { x: m.gap, y: m.bar + m.gap, w: w as i32 - 2 * m.gap, h: h as i32 - m.bar - m.foot - 2 * m.gap };
-    let mut den = Den { fb, font, m, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None, home: None };
+    let mut den = Den { fb, font, m, w, h, back: wall.clone(), wall, panel, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], uid: None, home: None, wall_idx: 0, sc };
     let first = den.new_pane(); den.layout = Layout::new(first);
     den.relayout(); den.scan_inputs(); den.render(true);
 
@@ -305,6 +327,7 @@ fn main() {
             last_tick = std::time::Instant::now();
             den.scan_inputs();
             if den.uid.is_none() { den.check_login(); }
+            den.sync_wall();
             den.zombies.retain(|&p| p > 0 && unsafe { libc::waitpid(p, std::ptr::null_mut(), libc::WNOHANG) } == 0);
         }
         let bar = tick | den.panes.iter_mut().fold(false, |a, p| std::mem::take(&mut p.term.title_changed) | a);

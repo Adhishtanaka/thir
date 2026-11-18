@@ -13,11 +13,13 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("fetch", "system summary with a bear (also: neofetch)"),
         ("curl [opts] URL", "download a page or file (curl -h for options)"),
         ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
+    ("apps", &[("clock", "big time, stopwatch, timer, alarms"), ("calendar", "month view, events, reminders"), ("calc", "calculator with history"), ("contacts", "names, phones, emails"),
+        ("notes", "notes with tags and todos"), ("settings", "time zone, wallpaper, sound"), ("beep [hz ms]", "play the alarm chime or a note")]),
 ];
 
-/// Names of the builtins: every section except "programs", first word of the usage.
+/// Names of the builtins: every section except "programs" and "apps", first word of the usage.
 fn builtins() -> impl Iterator<Item = &'static str> {
-    HELP.iter().filter(|s| s.0 != "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap_or(""))
+    HELP.iter().filter(|s| s.0 != "programs" && s.0 != "apps").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap_or(""))
 }
 
 /// The ! commands (agent, hidden): what help shows. `!` alone lists them all.
@@ -193,6 +195,7 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
         "cd" => { let d = args.first().cloned().or_else(|| std::env::var("HOME").ok()).unwrap_or("/".into()); if let Err(e) = std::env::set_current_dir(&d) { eprintln!("nsh: cd: {d}: {e}"); } }
         "exit" => exit(args.first().and_then(|s| s.parse().ok()).unwrap_or(0)),
         "help" => match args.first() {
+            None if color && Path::new("/bin/help").exists() => { let _ = Command::new("/bin/help").status(); }   // the full-screen guide
             None => { let _ = out.write_all(help_text().as_bytes()); }
             Some(c) => match help_cmd(c) {
                 Some(t) => { let _ = out.write_all(t.as_bytes()); }
@@ -332,6 +335,7 @@ mod tests {
         let n = all.len(); all.sort(); all.dedup(); assert_eq!(all.len(), n);
         let progs: Vec<&str> = HELP.iter().filter(|s| s.0 == "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
         assert_eq!(progs, ["edit", "find", "top", "fetch", "curl", "passwd", "dhcp"]);
+        assert!(HELP.iter().filter(|s| s.0 == "apps").flat_map(|s| s.1.iter()).all(|u| thir::apps::NAMES.contains(&u.0.split(' ').next().unwrap())));
         assert!(builtins().all(|b| !progs.contains(&b)) && builtins().any(|b| b == "date") && help_cmd("find").unwrap().starts_with("find [dir]"));
     }
     fn cls(l: &str) -> Line {

@@ -82,10 +82,12 @@ pub fn read_keys(dec: &mut Decoder, timeout_ms: i32) -> Option<Vec<Key>> {
 }
 
 /// One-line input on screen row `row` (1-based). Enter returns the text; Ctrl-C, or Ctrl-D on an empty line, cancels (None).
-pub fn prompt(dec: &mut Decoder, row: usize, label: &str) -> Option<String> {
-    let mut s = String::new();
+pub fn prompt(dec: &mut Decoder, row: usize, label: &str) -> Option<String> { prompt_with(dec, row, label, "") }
+/// `prompt` that starts with `initial` already typed (to edit a value).
+pub fn prompt_with(dec: &mut Decoder, row: usize, label: &str, initial: &str) -> Option<String> {
+    let mut s = initial.to_string();
     loop {
-        let room = size().0.saturating_sub(label.chars().count() + 2).max(1);
+        let room = size().0.saturating_sub(crate::tui::vis(label) + 2).max(1);
         let shown: String = { let v: Vec<char> = s.chars().collect(); v[v.len().saturating_sub(room)..].iter().collect() };
         put(format!("\x1b[{row};1H{label}{}\x1b[K\x1b[?25h", crate::files::printable(&shown)).as_bytes());
         for k in read_keys(dec, 500)? {

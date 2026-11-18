@@ -1,5 +1,6 @@
 # Shared helpers for test/smoke.sh and test/uefi.sh (sourced after env.sh). Callers set SECRETS=(...) and may set STEP.
 STEP=${STEP:-60}
+export LC_ALL=C   # bytes, not characters: a log read while QEMU writes it can end in half a UTF-8 character
 d=$(mktemp -d -t thir-test); fifo=$d/fifo; mkfifo "$fifo"; qpid=
 trap 'kill "$qpid" ${mpid:-} 2>/dev/null || true; rm -rf "$d"' EXIT
 log=; mark=0

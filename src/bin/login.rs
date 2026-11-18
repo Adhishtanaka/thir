@@ -12,6 +12,15 @@ fn agent(home: &str, user: &str, args: &[&str]) -> Command {
 
 fn die_slow(msg: &str) -> ! { eprintln!("login: {msg}"); sleep(Duration::from_secs(5)); exit(1) }   // slow: init restarts us
 
+/// bell, the background helper (alarms, timers, reminders), as the user: a double fork, so init adopts and reaps it.
+/// login is single-threaded here, so fork in pre_exec is safe. A second copy for the same user exits at once (lock file).
+fn bell(home: &str, user: &str) {
+    let mut d = Command::new("/bin/bell");
+    d.env_clear().env("PATH", "/bin").env("HOME", home).env("USER", user).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    unsafe { d.pre_exec(|| { if libc::fork() != 0 { libc::_exit(0); } libc::setsid(); Ok(()) }); }
+    if let Ok(mut c) = d.spawn() { let _ = c.wait(); }
+}
+
 /// Never returns: becomes the user's shell.
 fn start(u: &User, tz: Option<i32>) -> ! {
     let home = u.home();
@@ -28,6 +37,7 @@ fn start(u: &User, tz: Option<i32>) -> ! {
     d.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     unsafe { d.pre_exec(|| { if libc::fork() != 0 { libc::_exit(0); } libc::setsid(); Ok(()) }); }
     if let Ok(mut c) = d.spawn() { let _ = c.wait(); }
+    bell(&home, &u.name);
     let e = Command::new("/bin/nsh").env_clear().env("PATH", "/bin").env("HOME", &home).env("USER", &u.name).exec();
     die(&format!("/bin/nsh: {e}"))
 }

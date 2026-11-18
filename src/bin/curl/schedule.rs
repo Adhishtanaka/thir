@@ -1,10 +1,10 @@
-//! Reminders: `!remind`, `!schedule`, and the background helper (`agent daemon`) that fires them.
+//! Reminders: `!remind`, `!schedule`, and the background helper (`agent daemon`) that fires them. Alarms, timers and calendar reminders are `bell`'s (src/apps/bell.rs); both leave notices through notify::push.
 //! The helper is started by login with a double fork, as the user. Its power is small on purpose: it reads the schedule file and the apps' last_error
 //! times, and writes ~/.notify and its lock. It never reads a key or the provider config, never touches the network or the AI, and never starts a
 //! program (this file and route.rs spawn nothing). PR_SET_NO_NEW_PRIVS and a 64 KiB file size limit are set before the first tick.
 use crate::{agent::{private_dir, read_private, write_private}, make::{self, note_line}, memory, progress::{self, fit, CYAN, DIM, GOOD, R, WARN}};
 use std::{collections::BTreeMap, fs::{self, OpenOptions}, os::{fd::AsRawFd, unix::fs::{MetadataExt, OpenOptionsExt}}, path::{Path, PathBuf}, thread::sleep, time::Duration};
-use thir::{clock, files::{app_name_ok, printable, read_small}, notify, procinfo::parse_status};
+use thir::{clock, files::{app_name_ok, printable}, notify, procinfo::parse_status};
 
 const MAX_ENTRIES: usize = 50;
 const MAX_TEXT: usize = 80;
@@ -210,11 +210,7 @@ fn alive(me: u32) -> bool {
     })
 }
 
-fn notice(home: &Path, ts: i64, msg: &str) {
-    let p = home.join(".notify");
-    let old = p.to_str().and_then(|p| read_small(p, unsafe { libc::getuid() }, 1024)).unwrap_or_default();
-    let _ = write_private(&p, &notify::add(&old, ts, msg));
-}
+fn notice(home: &Path, ts: i64, msg: &str) { if let Some(h) = home.to_str() { let _ = notify::push(h, ts, msg); } }   // under the lock `bell` shares
 
 /// One helper per user: the lock is `~/.config/thir/agentd.lock`.
 fn daemon() -> i32 {

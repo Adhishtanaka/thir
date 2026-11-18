@@ -5,7 +5,7 @@ if [ "${1:-}" = gui ]; then
   export GUI_FULL=${GUI_FULL:-1}
   # 1 guest px = 1 Retina px: QEMU sizes its window to guest/backingScale points, and full screen fits the safe area (notch)
   GUI_RES=${GUI_RES:-$(scripts/screen-res.sh "$GUI_FULL")}
-  export GUI_RES
+  export GUI_RES AUDIODEV=${AUDIODEV:-coreaudio}
 fi
 source ./env.sh
 [ -f "$DATA_IMG" ] || ./build.sh data

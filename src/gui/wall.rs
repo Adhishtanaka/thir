@@ -1,4 +1,4 @@
-//! The wallpaper, drawn in code: assets/wallpaper.html variant D (warm charcoal radial gradient, small bear head).
+//! The wallpaper, drawn in code: assets/wallpaper.html variant D (radial gradient, small bear head; blue by default).
 
 pub fn blend(fg: u32, bg: u32, a: u32) -> u32 {
     let ch = |s: u32| ((fg >> s & 255) * a + (bg >> s & 255) * (255 - a)) / 255 << s;

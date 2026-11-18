@@ -1,7 +1,8 @@
 //! ~/.notify: the notices the background helper leaves for den's bar and nsh. Up to 5 lines `UNIX-TIME TEXT`, strictly increasing times,
 //! text at most 80 printable characters. The helper writes it as the user; den (root) and nsh read it with files::read_small (1 KiB, no links, no FIFOs).
 //! The text is cleaned when it is written and again when it is read, so a hand-made file cannot drive a terminal or the bar.
-use crate::files::{printable, read_small};
+use crate::files::{printable, read_small, save};
+use std::{fs::OpenOptions, io, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::Path};
 
 pub const MAX_LINES: usize = 5;
 pub const MAX_TEXT: usize = 80;
@@ -34,8 +35,18 @@ pub fn add(old: &str, ts: i64, msg: &str) -> String {
 pub fn read(path: &str, owner: u32) -> Vec<(i64, String)> { read_small(path, owner, MAX_FILE).map(|t| parse(&t)).unwrap_or_default() }
 
 /// The newest notice that is at most 10 minutes old (not from the future).
-pub fn latest(path: &str, owner: u32, now: i64) -> Option<String> {
-    read(path, owner).into_iter().rev().find(|(t, _)| (0..=SHOW_SECS).contains(&(now - t))).map(|(_, m)| m)
+pub fn latest(path: &str, owner: u32, now: i64) -> Option<String> { latest_at(path, owner, now).map(|l| l.1) }
+/// The same, with the time it was left (den flashes a new one).
+pub fn latest_at(path: &str, owner: u32, now: i64) -> Option<(i64, String)> {
+    read(path, owner).into_iter().rev().find(|(t, _)| (0..=SHOW_SECS).contains(&(now - t)))
+}
+
+/// Adds a notice to `home`/.notify as this user. A lock file keeps two helpers (bell and the AI helper) from losing each other's line.
+pub fn push(home: &str, ts: i64, msg: &str) -> io::Result<()> {
+    let lock = OpenOptions::new().write(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(Path::new(home).join(".config/thir/notify.lock"))?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error()) }   // released when `lock` closes
+    let old = read_small(&format!("{home}/.notify"), unsafe { libc::getuid() }, MAX_FILE).unwrap_or_default();
+    save(&Path::new(home).join(".notify"), add(&old, ts, msg).as_bytes())
 }
 
 #[cfg(test)]
@@ -58,6 +69,14 @@ mod tests {
         assert_eq!(parse("5 x\x1b[2Jy\n")[0].1, "x?[2Jy");
         assert_eq!(parse(&add("", 5, &"x".repeat(200)))[0].1.len(), MAX_TEXT);
         assert!(parse(&add("", 5, "a\nb")).len() == 1);   // a newline cannot start a second notice
+    }
+    #[test] fn push_keeps_every_line_under_the_lock() {
+        let d = std::env::temp_dir().join(format!("thir-push-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(d.join(".config/thir")).unwrap();
+        let h = d.to_str().unwrap();
+        push(h, 100, "one").unwrap(); push(h, 100, "two").unwrap();
+        assert_eq!(read(&format!("{h}/.notify"), unsafe { libc::getuid() }), [(100, "one".to_string()), (101, "two".to_string())]);
+        assert_eq!(latest_at(&format!("{h}/.notify"), unsafe { libc::getuid() }, 105), Some((101, "two".to_string())));
+        let _ = std::fs::remove_dir_all(d);
     }
     #[test] fn latest_is_recent_only() {
         let d = std::env::temp_dir().join(format!("thir-notify-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap();

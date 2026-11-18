@@ -61,6 +61,18 @@ fn mount_data() {
         Err(e) => eprintln!("thir: /data unavailable: {e}"),
     }
 }
+/// The sound device shows up when the HDA driver has probed, often after init is running. Then every user may play on it (volume is software, in `sound`).
+fn open_sound() {
+    std::thread::spawn(|| {
+        for _ in 0..300 {
+            if let Ok(rd) = fs::read_dir("/dev/snd") {
+                for e in rd.flatten().filter(|e| { let n = e.file_name().to_string_lossy().into_owned(); n.starts_with("pcm") || n.starts_with("control") }) { let _ = fs::set_permissions(e.path(), std::os::unix::fs::PermissionsExt::from_mode(0o666)); }
+                if Path::new("/dev/snd/pcmC0D0p").exists() { return }
+            }
+            sleep(Duration::from_millis(100));
+        }
+    });
+}
 fn shutdown(cmd: libc::c_int) -> ! {
     unsafe { libc::sync(); libc::umount2(c"/data".as_ptr(), 0); libc::sync(); libc::reboot(cmd); }
     eprintln!("thir: reboot(2) failed: {}", io::Error::last_os_error());
@@ -74,6 +86,7 @@ fn main() {
     mount_warn(c"devtmpfs", c"/dev", c"devtmpfs", 0, c"mode=0755");   // first, so /dev/console etc. exist for everything after
     unsafe { libc::mkdir(c"/dev/pts".as_ptr(), 0o755); }
     mount_warn(c"devpts", c"/dev/pts", c"devpts", 0, c"mode=0620");   // den's pane ptys
+    open_sound();
     mount_warn(c"proc", c"/proc", c"proc", 0, c"");
     mount_warn(c"sysfs", c"/sys", c"sysfs", 0, c"");
     mount_warn(c"tmpfs", c"/tmp", c"tmpfs", nosuid, c"mode=1777");

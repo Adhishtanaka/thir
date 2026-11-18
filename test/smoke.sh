@@ -4,6 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DATA_IMG=out/${THIR_ARCH:-aarch64}/smoke-data.img
+export AUDIODEV="wav,path=$PWD/out/${THIR_ARCH:-aarch64}/smoke.wav"   # what the guest plays is captured here (checked after boot 1)
 source ./env.sh
 TIMEOUT=${SMOKE_TIMEOUT:-30}   # argon2 is slow under x86_64 emulation (STEP)
 PW1='correct-horse-1'; PW2='tr0ub4dor-two-2'; PWX='wrongpass-xx'; FAKEKEY=sk-ant-thir-smoke-not-a-key
@@ -48,7 +49,9 @@ run tz '^\+05:30$'
 run 'tz 5' 'use \+HH:MM'
 run "find . -name '*.txt'" '^\./docs/a\.txt$'
 run 'find docs -type d' '^docs$'
-run help '^  programs +edit'
+run 'help > help.txt' '\$ $'
+run 'cat help.txt' '^  programs +edit'
+run 'cat help.txt' '^  apps +clock'
 run 'help find' 'find \[dir\]'
 send 'edit docs/b.txt'; wait_for 'edit  docs/b.txt'; sendk 'line one'; sendk $'\x13'; wait_for 'Saved 1 line'
 sendk $'\x11'; wait_for '\$ $'
@@ -90,9 +93,41 @@ send '!chat -p mocka'; wait_for 'chat> '; send one; wait_for 'mock reply 1 '; se
 send /clear; wait_for 'chat> '; send three; wait_for 'mock reply 1 '; send /exit; wait_for '\$ $'
 if [ "${ONLINE:-}" = 1 ]; then run 'curl -sI https://example.com/' '^HTTP/1\.1 [23]0[0-9]'; run '!chat hi' 'rejected the API key'; fi
 run '!logout anthropic' 'removed'
+
+# the apps: open each one and do one thing (keys go straight to the full-screen program)
+send help; wait_for 'THE DESKTOP'; wait_for 'the thir guide'; sendk q; wait_for '\$ $'
+send calc; wait_for 'CALC'; sendk '2+3*4'; sendk $'\r'; wait_for 'ans 14'; sendk $'\x04'; wait_for '\$ $'
+run 'cat .config/thir/calc/history' '^2\+3\*4.14$'
+send contacts; wait_for 'No contacts yet'; sendk a; wait_for 'name:'; sendk $'Kasun Perera\r'; wait_for 'phones'; sendk $'0771234567\r'; wait_for 'emails'; sendk $'kasun@example.lk\r'
+wait_for 'note:'; sendk $'school friend\r'; wait_for 'contact saved'; sendk '/'; wait_for 'search:'; sendk $'0771\r'; wait_for 'search: 0771'; sendk q; wait_for '\$ $'
+run 'cat .config/thir/contacts/contacts' '^1.Kasun Perera.0771234567.kasun@example.lk.school friend$'
+send notes; wait_for 'No notes yet'; sendk a; wait_for 'title:'; sendk $'Shopping\r'; wait_for 'Empty. Press a'; sendk t; wait_for 'todo:'; sendk $'buy milk\r'; wait_for '☐ buy milk'
+sendk ' '; wait_for '☑ buy milk'; sendk q; wait_for '1/1'; sendk q; wait_for '\$ $'
+run 'cat .config/thir/notes/notes' 'Shopping.\[x\] buy milk$'
+send calendar; wait_for 'CALENDAR'; sendk a; wait_for 'title:'; sendk $'Dentist\r'; wait_for 'date YYYY'; sendk $'\r'; wait_for 'time HH'; sendk $'14:30\r'; wait_for 'remind before'; sendk $'\r'
+wait_for 'event saved'; sendk q; wait_for '\$ $'
+run 'cat .config/thir/calendar/events' '^1.20[0-9-]+.14:30.15.Dentist$'
+send settings; wait_for 'SETTINGS'; sendk $'\x1b[B'; sendk $'\r'; wait_for 'graphite'; sendk $'\x1b[B'; sendk $'\r'; wait_for 'sound off'; sendk q; wait_for '\$ $'
+send 'cat .config/thir/settings'; wait_for '^wall=graphite$'; wait_for '^sound=off$'; wait_for '\$ $'
+run beep 'beep: sound is off'
+run 'echo sound=on > .config/thir/settings' '\$ $'
+run 'ls /dev/snd' '^pcmC0D0p$'
+run beep '\$ $'
+# an alarm one to two minutes ahead (the guest is on +05:30); it rings with no app open, and the notice shows before a later prompt
+AL=$(date -u -v+5H -v+30M -v+90S +%H:%M)
+send clock; wait_for 'CLOCK'; sendk 4; wait_for 'No alarms yet'; sendk a; wait_for 'time HH'; sendk "$AL"$'\r'; wait_for 'repeat'; sendk $'\r'; wait_for 'label:'; sendk $'smoke test\r'; wait_for 'alarm saved'
+sendk q; wait_for '\$ $'
+t0=$SECONDS; until tail -n +$((mark + 1)) "$log" | tr -d '\r' | grep -q 'Alarm [0-9:]* smoke test'; do
+  (( SECONDS - t0 < 170 )) || { echo "FAIL: the alarm did not show a notice within 170 s"; leak_check; cat "$log"; exit 1; }
+  send ''; sleep 4   # the notice shows before the prompt this send brings; check after it has had time to arrive
+done
+echo "alarm notice after $((SECONDS - t0)) s"
+run 'cat .config/thir/clock/alarms' '^1.@[0-9]+.1.smoke test$'
 run 'rm /' "refusing to remove '/'"
 run 'cat /proc/sys/kernel/hostname' '^thir$'
-send $'ca\t/etc/res\t'   # Tab completion; the send's newline runs it. The echo is on the old partial line, so only the output proves it
+send $'cu\t -s http://10.0.2.2:18080/hello'   # Tab completes a command name (curl is the only cu...)
+wait_for '^hello from mock$'; wait_for '\$ $'
+send $'cat /etc/res\t'   # and a file name; the send's newline runs it. The echo is on the old partial line, so only the output proves it
 wait_for '^nameserver 10\.0\.2\.3$'
 wait_for '\$ $'
 run history '^ *[0-9]+ +whoami$'
@@ -208,6 +243,14 @@ send "$PW2"; wait_for 'repeat new password: '
 send "$PW2"; wait_for 'passwd: password changed'
 wait_for '\$ $'
 off
+cp "out/$THIR_ARCH/smoke.wav" "$d/boot1.wav"   # QEMU's wav backend is complete once the guest is off; boot 2 would overwrite it
+python3 - "$d/boot1.wav" <<'PY'
+import sys, array   # QEMU leaves the sizes in the wav header at 0 when it is stopped, so read the samples (stereo, 16 bit, 44.1 kHz) after the 44-byte header
+raw = open(sys.argv[1], 'rb').read()[44:]; a = array.array('h', raw[:len(raw) // 2 * 2])
+secs = len(a) / 2 / 44100; peak = max(abs(x) for x in a) if a else 0
+assert secs > 3 and peak > 3000, f"guest audio: {secs:.1f} s, peak {peak}"
+print(f"sound: {secs:.1f} s of audio from the guest, peak {peak}")
+PY
 echo "boot 1 ok"
 
 boot boot2 "${QEMU[@]}"
