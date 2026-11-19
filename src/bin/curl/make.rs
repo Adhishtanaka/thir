@@ -144,7 +144,7 @@ fn me() -> u32 { unsafe { libc::getuid() } }
 
 /// (home, ~/apps/NAME) of an app that exists. Err = message.
 fn app_dir(name: &str) -> Result<(PathBuf, PathBuf), String> {
-    if !app_name_ok(name) { return Err(format!("agent: no app called {} (names use a-z, 0-9 and -; !list shows your apps)", printable(name))); }
+    if !app_name_ok(name) { return Err(format!("agent: no app called {} (names use a-z, 0-9 and -; ask ! what apps do I have)", printable(name))); }
     let home = home()?;
     let dir = home.join("apps").join(name);
     if fs::symlink_metadata(&dir).is_err() { return Err(format!("agent: no app called {name} (!list shows your apps)")); }
@@ -366,9 +366,9 @@ impl Job<'_> {
 
     fn done(&mut self, name: &str, v: i64) {
         let k = ((self.chars / 4) + 500) / 1000;   // shortcut: chars/4 estimate; parse usage from message_delta later
-        let mut next = vec![("run", name.to_string()), ("edit", format!("!edit {name} \"…\""))];
-        if v > 1 { next.push(("undo", format!("!undo {name}"))); }
-        next.push(("remove", format!("!rm {name}")));
+        let mut next = vec![("run", name.to_string()), ("edit", format!("type ! change {name}"))];
+        if v > 1 { next.push(("undo", format!("type ! undo {name}"))); }
+        next.push(("remove", format!("type ! remove app {name}")));
         let line = self.p.done(&format!("saved {name} v{v}"), self.t0.elapsed().as_secs(), self.calls, k.max(1), &self.hint, &next);
         *SUMMARY.lock().unwrap() = line;   // the app clears the screen when it quits; the line is shown again after it
     }
@@ -398,8 +398,8 @@ fn build(ch: &Chosen, home: &Path, facts: &[String], idea: &str) -> Result<Strin
     let name = pick_name(&base, &|n| fs::symlink_metadata(apps.join(n)).is_ok() || Path::new("/bin").join(n).exists()).ok_or("agent: could not find a free name for the app")?;
     if name != base {
         if fs::symlink_metadata(apps.join(&base)).is_ok() {
-            j.p.note("name", &format!("{name} · you already have {base}"), &format!("you already have {base}; this one is {name}. To change {base}: !edit {base} \"…\""));
-            j.hint = format!("to change {base} instead: !edit {base} \"…\"");
+            j.p.note("name", &format!("{name} · you already have {base}"), &format!("you already have {base}; this one is {name}. To change {base}, type ! change {base}"));
+            j.hint = format!("to change {base} instead: type ! change {base}");
         } else { j.p.note("name", &format!("{name} · {base} is a command"), &format!("{base} is the name of a command; this app is called {name}")); }
     }
     let (h, code) = match j.generate("writing code", format!("===REQUEST===\n{idea}\n===SPEC===\n{spec}\nWrite this app."), &spec, true)? { Gen::No(r) => return Err(not_buildable(&r)), Gen::App(h, c) => (h, c) };
@@ -483,7 +483,7 @@ fn make(cmd: &str, args: &[String]) -> i32 {
         let r = app_dir(n).and_then(|(_, d)| load_manifest(&d, n));
         if let Err(m) = r { return fail(&m); }
         if cmd == "fix" && text.is_empty() && !fs::symlink_metadata(app_dir(n).map(|d| d.1.join("last_error")).unwrap_or_default()).is_ok() {
-            return fail(&format!("{n} has no saved crash. Describe the problem: !fix {n} \"the total is wrong\""));
+            return fail(&format!("{n} has no saved crash. Describe the problem: type ! fix {n}, the total is wrong"));
         }
     }
     if text.is_empty() && cmd != "fix" {
@@ -538,7 +538,7 @@ pub fn run(args: &[String]) -> i32 {
         let after = crash_stamp(name);
         if rc != 1 || !tty() || after.is_none() || after == before { return rc; }
         use progress::{DIM, R};
-        if !ask_yes(&format!("  fix {name} now with AI? {DIM}uses API credit{R} [Y/n] ")) { println!("  later: !fix {name}"); return rc; }
+        if !ask_yes(&format!("  fix {name} now with AI? {DIM}uses API credit{R} [Y/n] ")) { println!("  later: type ! fix {name}"); return rc; }
         if let Err(m) = fix_now(name) { return fail(&m); }
     }
 }
@@ -587,7 +587,7 @@ pub fn list(args: &[String]) -> i32 {
     if !args.is_empty() { eprintln!("usage: !list"); return 2; }
     let home = match home() { Ok(h) => h, Err(m) => return fail(&m) };
     let all = apps(&home);
-    if all.is_empty() { println!("no apps yet; try: !build \"a calculator\""); return 0; }
+    if all.is_empty() { println!("no apps yet; try: ! make me a calculator app"); return 0; }
     let tty = unsafe { libc::isatty(1) } == 1;
     let net = |m: &Manifest| m.net.iter().filter_map(|o| Url::parse(o).ok()).map(|u| u.host_header()).collect::<Vec<_>>().join(", ");
     if !tty {

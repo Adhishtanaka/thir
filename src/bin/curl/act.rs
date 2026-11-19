@@ -81,7 +81,7 @@ pub fn resolve(home: &Path, cwd: &Path, p: &str) -> Result<PathBuf, String> {
     if parts.iter().any(|c| c.starts_with('.')) { return Err(format!("{shown}: hidden files and folders are off limits")); }
     // a folder named "~" would show as "~/…" in the undo line, which a shell reads as the home folder
     if parts.iter().any(|c| c.starts_with('~')) { return Err(format!("{shown}: names starting with ~ are not supported")); }
-    if parts[0] == "apps" { return Err(format!("{shown}: ~/apps changes only with !build, !edit and !fix")); }
+    if parts[0] == "apps" { return Err(format!("{shown}: ~/apps changes only when the AI builds, edits or fixes an app")); }
     Ok(norm)
 }
 
@@ -174,7 +174,7 @@ pub fn check(home: &Path, cwd: &Path, request: &str, acts: &[Act]) -> Result<Vec
                 let sname = s.show(&src);
                 let size = match s.state(&src)? {
                     St::Missing => return Err(format!("{sname} does not exist")),
-                    St::Dir if copy => return Err(format!("{sname} is a folder; !do copies only files")),
+                    St::Dir if copy => return Err(format!("{sname} is a folder; a file task copies only files")),
                     St::File(n) if copy && n > MAX_FETCH as u64 => return Err(format!("{sname} is bigger than 4 MiB")),
                     St::File(n) => n, St::Dir => 0,
                 };
@@ -182,7 +182,7 @@ pub fn check(home: &Path, cwd: &Path, request: &str, acts: &[Act]) -> Result<Vec
                 let t = s.target(&src, b, r(b)?)?;
                 if !copy && t.starts_with(&src) { return Err(format!("cannot move {sname} into itself")); }
                 s.parents(&t)?;
-                if !matches!(s.state(&t)?, St::Missing) { return Err(format!("{} already exists; !do never overwrites by {}", s.show(&t), if copy { "copying" } else { "moving" })); }
+                if !matches!(s.state(&t)?, St::Missing) { return Err(format!("{} already exists; a file task never overwrites by {}", s.show(&t), if copy { "copying" } else { "moving" })); }
                 if copy { s.steps.push(Step::Copy(src, t.clone(), size)); } else {
                     s.made.retain(|m| !m.0.starts_with(&src)); s.gone.push(src.clone()); s.steps.push(Step::Move(src, t.clone()));
                 }
@@ -192,7 +192,7 @@ pub fn check(home: &Path, cwd: &Path, request: &str, acts: &[Act]) -> Result<Vec
                 if !typed(request, url) { return Err(format!("{} is not in your request; agent downloads only URLs you typed", clean(url))); }
                 Url::parse(url).map_err(|e| format!("{}: {e}", clean(url)))?;
                 let t = r(p)?; s.parents(&t)?;
-                if !matches!(s.state(&t)?, St::Missing) { return Err(format!("{} already exists; !do never overwrites a download", s.show(&t))); }
+                if !matches!(s.state(&t)?, St::Missing) { return Err(format!("{} already exists; a file task never overwrites a download", s.show(&t))); }
                 s.steps.push(Step::Fetch(url.clone(), t.clone())); s.make(&t, false, 0);
             }
         }
@@ -384,7 +384,7 @@ fn read_src(home: &Path, cwd: &Path, src: &str) -> Result<(String, bool), String
         let mut b = vec![]; f.take(MAX_SEE as u64 + 1).read_to_end(&mut b).map_err(|e| e.to_string())?;
         let cut = b.len() > MAX_SEE; b.truncate(MAX_SEE); (b, cut)
     };
-    if bytes.contains(&0) { return Err(format!("{} is not text. To save it, ask: !do \"download URL to FILE\"", clean(src))); }
+    if bytes.contains(&0) { return Err(format!("{} is not text. To save it, ask: ! download URL to FILE", clean(src))); }
     Ok((sanitize(&String::from_utf8_lossy(&bytes)), cut))
 }
 
@@ -502,7 +502,7 @@ pub fn command(args: &[String]) -> i32 {
     let task = cli.words.join(" ").trim().to_string();
     if task.is_empty() { eprintln!("usage: !do \"TASK\""); return 2; }
     if task.chars().count() > MAX_TASK { return fail("agent: that text is too long"); }
-    if !tty() { return fail("agent: !do shows its plan and asks first, so it needs a terminal"); }   // before any key is read or money is spent
+    if !tty() { return fail("agent: a file task shows its plan and asks first, so it needs a terminal"); }   // before any key is read or money is spent
     let home = match home().and_then(|h| fs::canonicalize(h).map_err(|e| format!("agent: cannot find your home folder: {e}"))) { Ok(h) => h, Err(m) => return fail(&m) };
     let cwd = match std::env::current_dir() { Ok(c) => c, Err(e) => return fail(&format!("agent: cannot tell which folder you are in: {e}")) };
     let facts = match memory::load(&home) { Ok(f) => f, Err(m) => return fail(&m) };

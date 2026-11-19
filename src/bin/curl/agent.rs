@@ -120,12 +120,12 @@ pub fn providers(cfg: &Config) -> Vec<Provider> {
 /// (provider, model) for the command line. Err = message for exit 2.
 pub fn resolve(cfg: &Config, p: Option<&str>, m: Option<&str>) -> Result<(Provider, String), String> {
     let name = p.or(cfg.default.as_ref().map(|d| d.0.as_str())).unwrap_or("anthropic");
-    let prov = providers(cfg).into_iter().find(|x| x.name == name).ok_or_else(|| format!("agent: no provider called {name} (see !providers)"))?;
+    let prov = providers(cfg).into_iter().find(|x| x.name == name).ok_or_else(|| format!("agent: no provider called {name}"))?;
     let saved = cfg.default.as_ref().filter(|d| d.0 == name).and_then(|d| d.1.clone());
     let model = m.map(String::from).or(saved).or_else(|| prov.model.clone()).or_else(|| (prov.proto == Proto::Anthropic).then(|| "claude-opus-5-5".to_string()));   // the anthropic protocol has a default model
     match model {
         Some(model) => Ok((prov, model)),
-        None => Err(format!("agent: {name} needs a model: !use {name} -m MODEL, or add -p {name} -m MODEL to the command (see the provider's model list)")),
+        None => Err(format!("agent: {name} needs a model: type ! change my AI provider")),
     }
 }
 
@@ -138,11 +138,11 @@ pub fn key_for(p: &Provider, env: &dyn Fn(&str) -> Option<String>, saved: Option
         }
     }
     if let Some(s) = saved {
-        let (base, key) = s.trim_end().split_once(' ').ok_or_else(|| format!("agent: the saved key for {} is damaged: run !login {}", p.name, p.name))?;
-        if base != p.base { return Err(format!("agent: the saved key for {} was made for another URL: run !login {}", p.name, p.name)); }
-        return if valid_key(key) { Ok(Some(key.to_string())) } else { Err(format!("agent: the saved key for {} is damaged: run !login {}", p.name, p.name)) };
+        let (base, key) = s.trim_end().split_once(' ').ok_or_else(|| format!("agent: the saved key for {} is damaged: type ! change my AI provider", p.name))?;
+        if base != p.base { return Err(format!("agent: the saved key for {} was made for another URL: type ! change my AI provider", p.name)); }
+        return if valid_key(key) { Ok(Some(key.to_string())) } else { Err(format!("agent: the saved key for {} is damaged: type ! change my AI provider", p.name)) };
     }
-    Err(format!("agent: no API key for {}: run !login {}", p.name, p.name))
+    Err(format!("agent: no API key for {}: type ! change my AI provider", p.name))
 }
 
 pub type Msg = (&'static str, String);
@@ -278,7 +278,7 @@ pub fn status_msg(p: &Provider, status: u16, retry_after: Option<&str>, msg: &st
     let n = &p.name;
     match status {
         300..=399 => "agent: unexpected redirect; not followed".into(),
-        401 | 403 if p.needs_key() => format!("agent: {n} rejected the API key (run !login {n}){}", if msg.is_empty() { String::new() } else { format!(": {msg}") }),
+        401 | 403 if p.needs_key() => format!("agent: {n} rejected the API key (type ! change my AI provider){}", if msg.is_empty() { String::new() } else { format!(": {msg}") }),
         429 => format!("agent: rate limited; try again in {} s", retry_after.filter(|r| !r.is_empty() && r.len() < 6 && r.bytes().all(|b| b.is_ascii_digit())).unwrap_or("a few")),
         529 => format!("agent: {n} is overloaded; try again shortly"),
         500..=599 => format!("agent: {n} had a server error ({status}); try again"),
@@ -346,7 +346,7 @@ fn chat(c: &Ctx, home: &Path, msgs: &[Msg]) -> Result<String, String> {
 
 fn home() -> PathBuf { PathBuf::from(std::env::var("HOME").ok().filter(|h| h.starts_with('/')).unwrap_or_else(|| { eprintln!("agent: no home directory (HOME is not set)"); std::process::exit(1) })) }
 fn me() -> u32 { unsafe { libc::getuid() } }
-fn refuse(path: &Path, why: &str) -> String { format!("agent: refusing to read {}: it {why}. Delete it (rm) and run !login again.", path.display()) }
+fn refuse(path: &Path, why: &str) -> String { format!("agent: refusing to read {}: it {why}. Delete it (rm) and type ! change my AI provider again.", path.display()) }
 
 /// (config, its text). Missing file = empty config.
 pub fn load_config(home: &Path) -> Result<(Config, String), String> {
@@ -461,7 +461,7 @@ pub fn main(args: Vec<String>) -> i32 {
         return 0;
     }
     if let Some(n) = login {
-        let Some(p) = providers(&cfg).into_iter().find(|p| p.name == n) else { eprintln!("agent: no provider called {} (see !providers)", clean(&n)); return 2 };
+        let Some(p) = providers(&cfg).into_iter().find(|p| p.name == n) else { eprintln!("agent: no provider called {} (type ! change my AI provider)", clean(&n)); return 2 };
         if !p.needs_key() { eprintln!("agent: {n} uses plain http, so agent never sends it a key and never needs one"); return 1; }
         let k = match user::read_secret(&format!("API key for {n} (typing is hidden): ")) { Ok(k) => k, Err(_) => return fail("agent: could not read the key (a terminal is needed)") };
         if !valid_key(&k) { return fail("agent: that does not look like an API key (printable characters, no spaces, 8 to 512 long)"); }
@@ -576,7 +576,7 @@ mod tests {
     }
     #[test] fn status_texts() {
         let c = Config::default(); let a = prov(&c, "anthropic"); let o = prov(&c, "ollama");
-        assert!(status_msg(&a, 401, None, "bad").contains("run !login anthropic")); assert!(status_msg(&o, 401, None, "bad").contains("ollama said: bad"));
+        assert!(status_msg(&a, 401, None, "bad").contains("change my AI provider")); assert!(status_msg(&o, 401, None, "bad").contains("ollama said: bad"));
         assert!(status_msg(&a, 429, Some("7"), "").contains("try again in 7 s")); assert!(status_msg(&a, 529, None, "").contains("overloaded"));
         assert!(status_msg(&a, 502, None, "").contains("server error (502)")); assert!(status_msg(&a, 302, None, "").contains("not followed"));
         assert!(status_msg(&a, 429, Some("a\x1b[2J"), "").contains("a few"));

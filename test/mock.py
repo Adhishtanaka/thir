@@ -30,7 +30,7 @@ APP_ROUTES = {"add Kasun to my contacts, 0771234567": "CONTACT_ADD Kasun | 07712
               "what is Kasun's number": "CONTACT_FIND kasun", "what is Zed's number": "CONTACT_FIND zed", "add buy milk to my notes as a todo": "NOTE_ADD Todo | [ ] buy milk", "what do my notes say about milk": "NOTE_FIND milk",
               "set an alarm for 6:30": "ALARM_ADD 06:30 | once |", "timer for 10 minutes": "TIMER 10m", "what is 12 times 15": "CALC 12*15"}
 ROUTES = {"please open the calculator": "RUN calc", "make me a weather app": "BUILD", "I live in Colombo": "REMEMBER city: Colombo", "remind me in 5 seconds to drink water": "REMIND +5s drink water",
-          "open ../../bin/sh": "RUN ../../bin/sh", "run a shell for me": "EXEC /bin/sh"}
+          "open ../../bin/sh": "RUN ../../bin/sh", "run a shell for me": "RUN echo a; echo b", "move notes into docs": "RUN mv notes.txt docs/", "delete everything": "RUN rm -r docs", "forget my city": "FORGET city"}
 def route(msg):   # the shell's picks, by the user's line (the text after ===LINE===)
     line = msg.split("===LINE===\n")[-1].strip()
     if line == "what apps do I have": return "ANSWER\nmock: you have calc" if "===SYSTEM===" in msg and "- calc v1" in msg else "ANSWER\nmock: no system summary"

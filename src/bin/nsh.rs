@@ -22,14 +22,11 @@ fn builtins() -> impl Iterator<Item = &'static str> {
     HELP.iter().filter(|s| s.0 != "programs" && s.0 != "apps").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap_or(""))
 }
 
-/// The ! commands (agent, hidden): what help shows. `!` alone lists them all.
-const BANG: &[(&str, &str)] = &[("!build \"idea\"", "make an app with AI"), ("!fix APP", "fix a crashed app"), ("!remind TIME TEXT", "set a reminder"),
-    ("!schedule", "your reminders"), ("!memory", "what the AI remembers"), ("!setup", "change the AI provider"), ("!", "all the ! commands")];
-/// What follows `!`: the verbs of agent. The first group takes an app name next.
-const BANG_VERBS: &[&str] = &["ask", "build", "chat", "context", "do", "edit", "fix", "forget", "help", "list", "login", "logout", "memory", "providers", "remember", "remind", "rm", "run", "schedule", "setup", "undo", "use"];
-const BANG_APP: &[&str] = &["run", "edit", "fix", "rm", "undo"];
 /// Programs in /bin that are not for typing: never offered as "did you mean".
 const HIDDEN: &[&str] = &["agent", "login", "den", "init", "nsh"];
+
+/// What `!` alone prints: the only way to the AI is `!` and your words.
+const ASK_HELP: &str = "Type ! and your words to ask the AI. It shows one thing and asks first.\n  ! move notes into docs          ! what apps do I have\n  ! make me a timer app           ! remind me at 5pm to call mum\n  ! add Kasun to my contacts, 0771234567\n  ! change my AI provider         ! delete the app weather\nPlain lines without ! are a normal shell.\n";
 
 fn help_text() -> String {
     let mut o = String::from("nsh, the thir shell\n");
@@ -38,8 +35,8 @@ fn help_text() -> String {
         for (i, (u, d)) in rows.iter().enumerate() { o += &format!("  {:<8} {:<20} {}\n", if i == 0 { sec } else { "" }, u, d); }
     }
     o.push('\n');
-    for (i, (u, d)) in BANG.iter().enumerate() { o += &format!("  {:<8} {:<20} {}\n", if i == 0 { "! cmds" } else { "" }, u, d); }
-    o + "\nApps you make with !build run by their name.\nPlain words (3 or more, with no command of that name) go to the AI; start a\nline with !ask to send any line there.\nRedirect output with > file or >> file.\nKeys: Tab completes, Up/Down history, Ctrl-A/E start/end, Ctrl-U/K cut to\nstart/end, Ctrl-W cut word, Ctrl-L clear screen, Ctrl-C cancel, Ctrl-D exit.\n"
+    o += "  !        your words          ask the AI (type ! alone for examples)\n";
+    o + "\nApps the AI builds run by their name. Plain lines are a normal shell.\nRedirect output with > file or >> file.\nKeys: Tab completes, Up/Down history, Ctrl-A/E start/end, Ctrl-U/K cut to\nstart/end, Ctrl-W cut word, Ctrl-L clear screen, Ctrl-C cancel, Ctrl-D exit.\n"
 }
 
 fn help_cmd(name: &str) -> Option<String> {
@@ -74,15 +71,11 @@ fn escape(s: &str) -> String {
 }
 
 /// Completion candidates for `word`, given the text `before` it; the first word of a line without '/' is a command.
-/// After `!`: the ! verbs, then app names after !run, !edit, !fix, !rm and !undo. Names with control characters are never offered (see `printable`).
+/// Names with control characters are never offered (see `printable`).
 fn candidates(before: &str, word: &str) -> Vec<String> {
     let first = before.trim().is_empty();
     let mut v: Vec<String> = vec![];
-    if first && word.starts_with('!') { v.extend(BANG_VERBS.iter().map(|b| format!("!{b}")).filter(|b| b.starts_with(word))); }
-    else if before.split_whitespace().count() == 1 && before.trim_start().strip_prefix('!').is_some_and(|b| BANG_APP.contains(&b.trim())) {
-        if let Ok(rd) = fs::read_dir(app_dir()) { v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(word) && app_name_ok(n))); }
-    }
-    else if first && !word.contains('/') {
+    if first && !word.contains('/') {
         v.extend(builtins().filter(|b| b.starts_with(word)).map(|b| b.to_string()));
         if let Ok(rd) = fs::read_dir(app_dir()) { v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(word) && is_app(n))); }
         for dir in std::env::var("PATH").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
@@ -103,14 +96,14 @@ fn candidates(before: &str, word: &str) -> Vec<String> {
 
 fn app_dir() -> String { format!("{}/apps/", std::env::var("HOME").unwrap_or_default()) }
 
-/// `name` is an app in ~/apps (it has a main.lua) and no program of that name is on PATH. Apps run through `!run`: no launcher files, because /data is noexec.
+/// `name` is an app in ~/apps (it has a main.lua) and no program of that name is on PATH. Apps run through /bin/agent run: no launcher files, because /data is noexec.
 fn is_app(name: &str) -> bool {
     app_name_ok(name) && !std::env::var("PATH").unwrap_or_default().split(':').any(|d| Path::new(d).join(name).exists()) && Path::new(&format!("{}{name}/main.lua", app_dir())).is_file()
 }
 
 /// What a typed line is.
 #[derive(Debug, PartialEq)]
-enum Line { Shell, Bang(String), Agent(String), Typo(String, String) }
+enum Line { Shell, Ask(String), Typo(String, String) }
 
 /// One edit away: a letter added, dropped or changed, or two neighbours swapped. Equal words are not near.
 fn near(a: &str, b: &str) -> bool {
@@ -128,18 +121,17 @@ fn near(a: &str, b: &str) -> bool {
 /// A word that looks like a file: a '/' or a '.' inside it (a full stop at the end of a sentence does not count).
 fn pathlike(w: &str) -> bool { w.contains('/') || w.trim_end_matches(['.', ',', '!', '?']).contains('.') }
 
-/// Decides on the raw line, before parse_cmd (so apostrophes in plain words work). `!X ...` is an agent command. A first word that is a
-/// builtin, program or app (or has a '/') is a normal command. A near miss of a command name is a typo (no AI call). 3 or more plain words go to the AI.
+/// Decides on the raw line, before parse_cmd (so apostrophes in plain words work). `!` and the words after it (space or not) go to the AI; `!` alone shows help.
+/// A first word that is a builtin, program or app (or has a '/') is a normal command. A near miss of a command name is a typo (no AI call). Everything else is a normal shell line.
 fn classify(line: &str, is_cmd: &dyn Fn(&str) -> bool, names: &dyn Fn() -> Vec<String>) -> Line {
     let t = line.trim();
-    if let Some(r) = t.strip_prefix('!') { return Line::Bang(r.trim().to_string()); }
+    if let Some(r) = t.strip_prefix('!') { return Line::Ask(r.trim().to_string()); }
     let words: Vec<&str> = t.split_whitespace().collect();
     let Some(&first) = words.first() else { return Line::Shell };
     if first.contains('/') || is_cmd(first) { return Line::Shell }
     if first.chars().count() >= 2 && (words.len() <= 2 || words[1..].iter().any(|w| pathlike(w))) {
         if let Some(c) = names().into_iter().find(|n| near(first, n)) { return Line::Typo(first.to_string(), c); }
     }
-    if words.len() >= 3 && !words.iter().any(|w| w.len() > 1 && w.starts_with('-')) && !t.contains(['>', '|']) { return Line::Agent(t.to_string()); }
     Line::Shell
 }
 
@@ -199,7 +191,7 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
             None => { let _ = out.write_all(help_text().as_bytes()); }
             Some(c) => match help_cmd(c) {
                 Some(t) => { let _ = out.write_all(t.as_bytes()); }
-                None => eprintln!("nsh: help: no such command: {}{}", printable(c), if args.len() >= 2 { " (to ask the AI, type your words without \"help\")" } else { "" }),
+                None => eprintln!("nsh: help: no such command: {}{}", printable(c), if args.len() >= 2 { " (to ask the AI, type ! and your words)" } else { "" }),
             },
         },
         "date" => { let _ = writeln!(out, "{}", clock::date_line(clock::now(), clock::home_tz().unwrap_or(0))); }
@@ -264,6 +256,56 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
     Some(())
 }
 
+/// One command line from the AI, or why not. The line is untrusted: one line, printable, no shell tricks (nsh has no sh, pipes or `;`), and it must start with a
+/// command nsh knows. It is parsed by nsh's own parse_cmd, so quoting works and redirects do not.
+fn check_line(line: &str, is_cmd: &dyn Fn(&str) -> bool) -> Result<Cmd, String> {
+    let bad = || "could not turn that into one command".to_string();
+    if line.chars().count() > 300 || printable(line) != line || line.contains([';', '|', '&', '`', '$', '>', '<', '\n', '\r']) { return Err(bad()); }
+    let c = parse_cmd(line).map_err(|_| bad())?;
+    match c.argv.first() { Some(f) if c.redirect.is_none() && !f.contains('/') && is_cmd(f) => Ok(c), _ => Err(bad()) }
+}
+
+/// Why a command needs a second look: it destroys, powers off, or replaces a file that exists.
+fn dangerous(argv: &[String]) -> Option<&'static str> {
+    let rest = &argv[1..];
+    match argv[0].as_str() {
+        "rm" | "rmdir" => Some("this deletes files or folders"),
+        "poweroff" | "reboot" => Some("this shuts down or restarts thir"),
+        "passwd" => Some("this changes your password"),
+        "mv" | "cp" => { let o: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect(); if let [s, d] = o[..] { if Path::new(&target(s, d)).exists() { return Some("this replaces a file that exists"); } } None }
+        "curl" => rest.windows(2).any(|w| w[0] == "-o" && Path::new(&w[1]).exists()).then_some("this replaces a file that exists"),
+        _ => None,
+    }
+}
+
+/// `! words`: asks /bin/agent, which sends the line back on fd 3 (a pipe), or prints an answer or its own action. Some(line) when it proposed a command.
+fn ask_ai(words: &str, names: &[String]) -> Option<String> {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 { eprintln!("nsh: cannot make a pipe"); return None; }
+    let w = fds[1];
+    let mut c = Command::new("/bin/agent");
+    c.args(["ask", "--", words]).env("THIR_CMDS", names.join(" ")).env("THIR_PICK_FD", "3");
+    let r = unsafe { c.pre_exec(move || {
+        for s in [libc::SIGINT, libc::SIGQUIT] { libc::signal(s, libc::SIG_DFL); }
+        if w == 3 { libc::fcntl(3, libc::F_SETFD, 0); } else if libc::dup2(w, 3) < 0 { return Err(io::Error::last_os_error()); }
+        Ok(())
+    }) }.status();
+    unsafe { libc::close(w); }
+    let mut got = String::new();
+    { use std::os::fd::FromRawFd; let mut f = unsafe { File::from_raw_fd(fds[0]) }; let _ = io::Read::read_to_string(&mut io::Read::take(&mut f, 2000), &mut got); }
+    if let Err(e) = r { eprintln!("nsh: /bin/agent: {e}"); return None; }
+    (!got.trim().is_empty()).then(|| got.trim().to_string())
+}
+
+/// Shows the proposed command exactly and asks. Enter is yes, or no when it is dangerous.
+fn confirm_cmd(line: &str, warn: Option<&str>) -> bool {
+    if let Some(w) = warn { println!("  \x1b[33m! {w}\x1b[0m"); }
+    let q = format!("  \x1b[36m\u{2192}\x1b[0m {}   run? \x1b[2m{}\x1b[0m ", line, if warn.is_some() { "[y/N]" } else { "[Y/n]" });
+    let Some(a) = thir::term::read_line(&mut Editor::new(vec![]), &q, &|_, _| vec![]) else { return false };
+    let a = a.trim().to_lowercase();
+    if warn.is_some() { matches!(a.as_str(), "y" | "yes") } else { matches!(a.as_str(), "" | "y" | "yes") }
+}
+
 fn main() {
     // Ctrl-C / Ctrl-\ / Ctrl-Z hit the whole foreground group: the shell ignores them.
     // Children get Ctrl-C and Ctrl-\ back; Ctrl-Z stays ignored because nsh has no job control to resume a stopped child.
@@ -281,11 +323,13 @@ fn main() {
         }
         let names = || candidates("", "").into_iter().filter(|n| !HIDDEN.contains(&n.as_str())).collect::<Vec<_>>();
         let cmd = match classify(&line, &is_cmd, &names) {
-            Line::Bang(r) => match parse_cmd(&r) {   // `!fix weather` is /bin/agent fix weather; `!` alone lists the ! commands
-                Ok(mut c) => { c.argv.insert(0, "/bin/agent".into()); if c.argv.len() == 1 { c.argv.push("help".into()); } c }
-                Err(e) => { eprintln!("nsh: {e}"); continue; }
-            },
-            Line::Agent(t) => Cmd { argv: ["/bin/agent", "ask", "--", t.as_str()].map(String::from).to_vec(), redirect: None },
+            Line::Ask(w) if w.is_empty() => { print!("{ASK_HELP}"); continue; }
+            Line::Ask(w) => {
+                let Some(l) = ask_ai(&w, &names()) else { continue };
+                let c = match check_line(&l, &is_cmd) { Ok(c) => c, Err(e) => { eprintln!("nsh: {e}"); continue; } };
+                if !confirm_cmd(&l, dangerous(&c.argv)) { println!("  nothing done."); continue; }
+                c
+            }
             Line::Typo(w, c) => { eprintln!("nsh: {}: command not found. Did you mean {c}?", printable(&w)); continue; }
             Line::Shell => match parse_cmd(&line) { Ok(c) => c, Err(e) => { eprintln!("nsh: {e}"); continue; } },
         };
@@ -305,7 +349,7 @@ fn main() {
         c.args(&cmd.argv[1..]);
         if let Some(f) = file { c.stdout(Stdio::from(f)); }
         match unsafe { c.pre_exec(|| { for s in [libc::SIGINT, libc::SIGQUIT] { libc::signal(s, libc::SIG_DFL); } Ok(()) }) }.status() {
-            Err(e) if e.kind() == io::ErrorKind::NotFound && !name.contains('/') => eprintln!("nsh: {}: command not found (3 or more words ask the AI; ! shows the commands)", printable(name)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && !name.contains('/') => eprintln!("nsh: {}: command not found (type ! and your words to ask the AI)", printable(name)),
             Err(e) => eprintln!("nsh: {name}: {e}"),
             Ok(s) if !s.success() => match s.signal() { Some(n) => println!("[signal {n}]"), None => println!("[exit {}]", s.code().unwrap_or(-1)) },
             Ok(_) => {}
@@ -343,8 +387,25 @@ mod tests {
         classify(l, &|w| cmds.contains(&w), &|| cmds.iter().map(|c| c.to_string()).collect())
     }
     fn typo(a: &str, b: &str) -> Line { Line::Typo(a.into(), b.into()) }
-    #[test] fn sentences_go_to_the_ai() {
-        for l in ["make me a weather app", "what's the time now", "can you make a timer", "can you open it.", "I live in Colombo"] { assert_eq!(cls(l), Line::Agent(l.into()), "{l}"); }
+    #[test] fn bang_lines_go_to_the_ai_and_plain_lines_never_do() {
+        assert_eq!(cls("! move notes into docs"), Line::Ask("move notes into docs".into())); assert_eq!(cls("!make me a timer"), Line::Ask("make me a timer".into()));
+        assert_eq!(cls("  !  "), Line::Ask("".into())); assert_eq!(cls("!"), Line::Ask("".into())); assert_eq!(cls("!fix weather"), Line::Ask("fix weather".into()));
+        for l in ["make me a weather app", "what's the time now", "I live in Colombo", "can you make a timer"] { assert_eq!(cls(l), Line::Shell, "{l}"); }
+    }
+    fn ok(l: &str) -> Result<Vec<String>, String> { check_line(l, &|w| ["ls", "mv", "cp", "rm", "mkdir", "curl", "echo", "clock"].contains(&w)).map(|c| c.argv) }
+    #[test] fn model_lines_are_checked() {
+        assert_eq!(ok("mv notes.txt docs/").unwrap(), ["mv", "notes.txt", "docs/"]); assert_eq!(ok("mkdir \"my docs\"").unwrap(), ["mkdir", "my docs"]); assert_eq!(ok("clock").unwrap(), ["clock"]);
+        for l in ["ls; rm -rf ~", "ls | cat", "ls && rm x", "echo `id`", "echo $(id)", "echo $HOME", "ls > x", "ls < x", "ls\nrm x", "ls\rrm x", "", "sh -c ls", "!build x", "/bin/sh", "./x", "../../bin/sh", "ls \x1b[2J", &format!("echo {}", "a".repeat(300)), "echo 'unclosed"] {
+            assert_eq!(ok(l), Err("could not turn that into one command".into()), "{l:?}");
+        }
+    }
+    #[test] fn destroying_commands_get_a_warning() {
+        let v = |l: &str| dangerous(&l.split(' ').map(String::from).collect::<Vec<_>>());
+        for l in ["rm x", "rm -r docs", "rmdir d", "poweroff", "reboot", "passwd"] { assert!(v(l).is_some(), "{l}"); }
+        let f = std::env::temp_dir().join(format!("thir-nsh-{}", std::process::id())); fs::write(&f, "x").unwrap(); let f = f.to_string_lossy().into_owned();
+        assert!(v(&format!("mv a {f}")).is_some() && v(&format!("cp a {f}")).is_some() && v(&format!("curl -o {f} http://x")).is_some());
+        fs::remove_file(&f).unwrap();
+        for l in [format!("mv a {f}"), "mv a b".into(), "ls".into(), "mkdir d".into(), "clock".into(), "curl -o nosuchfile http://x".into()] { assert!(v(&l).is_none(), "{l}"); }
     }
     #[test] fn typos_get_a_hint_not_an_api_call() {
         assert_eq!(cls("mkdri docs"), typo("mkdri", "mkdir")); assert_eq!(cls("cta notes.txt"), typo("cta", "cat")); assert_eq!(cls("lss -la"), typo("lss", "ls"));
@@ -353,17 +414,12 @@ mod tests {
     #[test] fn commands_and_odd_lines_stay_in_the_shell() {
         for l in ["foo bar", "frobnicate -x a b", "tell me a > b", "tell me a | b", "./x a b c", "weather", "ls -la", "weather a b c d", "echo hello there you", "", "  ", "foo"] { assert_eq!(cls(l), Line::Shell, "{l:?}"); }
     }
-    #[test] fn bang_lines_are_agent_commands() {
-        assert_eq!(cls("!fix weather"), Line::Bang("fix weather".into())); assert_eq!(cls("  !  "), Line::Bang("".into())); assert_eq!(cls("!ask echo hi there"), Line::Bang("ask echo hi there".into()));
-    }
     #[test] fn near_means_one_edit() {
         for (a, b) in [("cat", "cta"), ("ls", "lss"), ("lss", "ls"), ("mkdir", "mkdr"), ("cat", "cut"), ("echo", "ecoh")] { assert!(near(a, b), "{a} {b}"); }
         for (a, b) in [("cat", "cat"), ("cat", "dog"), ("ls", "lsss"), ("abc", "bca"), ("ab", "cd")] { assert!(!near(a, b), "{a} {b}"); }
     }
-    #[test] fn bang_verbs_cover_the_help_and_complete() {
-        for v in ["build", "fix", "remind", "schedule", "memory", "setup"] { assert!(BANG_VERBS.contains(&v), "{v}"); }
-        assert!(BANG.iter().all(|(u, _)| u.len() < 20) && BANG_APP.iter().all(|a| BANG_VERBS.contains(a)));
-        assert_eq!(candidates("", "!bu"), ["!build"]); assert!(candidates("", "!").len() == BANG_VERBS.len());
-        assert!(help_text().contains("! cmds") && !help_text().contains("agent"));
+    #[test] fn help_has_no_bang_verbs() {
+        let t = help_text(); assert!(t.contains("ask the AI") && !t.contains("agent") && !t.contains("!build") && !ASK_HELP.contains("!build") && ASK_HELP.lines().all(|l| l.chars().count() <= 80));
+        assert!(candidates("", "!").is_empty());
     }
 }

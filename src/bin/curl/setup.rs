@@ -98,7 +98,7 @@ fn run(home: &std::path::Path, text: &str) -> i32 {
         }
         let saved = agent::setup_text(text, custom, &name, Some(&model)).and_then(|t| agent::set_default(home, &t));
         if let Err(m) = saved { eprintln!("{m}"); return 1; }
-        println!("{}\n{}", progress::mark(true, &format!("agent will use {name} ({model}). Change it any time: !setup")), progress::rule(w));
+        println!("{}\n{}", progress::mark(true, &format!("agent will use {name} ({model}). Change it any time: type ! change my AI provider")), progress::rule(w));
         return 0;
     }
 }

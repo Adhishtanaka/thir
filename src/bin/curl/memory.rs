@@ -51,14 +51,14 @@ pub fn add(facts: &[String], new: &str) -> Result<(Vec<String>, String), String>
     let n = clean(new).trim().to_string();
     if n.is_empty() { return Err("agent: nothing to remember".into()); }
     if n.chars().count() > MAX_LEN { return Err(format!("agent: keep a fact under {MAX_LEN} characters")); }
-    if looks_secret(&n) { return Err("agent: that looks like a password or key; agent never remembers those (keys go in !login)".into()); }
+    if looks_secret(&n) { return Err("agent: that looks like a password or key; agent never remembers those (the AI key is set with ! change my AI provider)".into()); }
     let mut v = facts.to_vec();
     if v.iter().any(|f| f.to_lowercase() == n.to_lowercase()) { return Ok((v, format!("already remembered: {n}"))); }
     if let Some(i) = key(&n).and_then(|k| v.iter().position(|f| key(f).as_deref() == Some(&k))) {
         let old = std::mem::replace(&mut v[i], n.clone());
         return Ok((v, format!("updated: {n} (was: {old})")));
     }
-    if v.len() >= MAX_FACTS { return Err(format!("agent: memory is full ({MAX_FACTS} facts). Remove one first: !forget N")); }
+    if v.len() >= MAX_FACTS { return Err(format!("agent: memory is full ({MAX_FACTS} facts). Remove one first: type ! forget fact N")); }
     v.push(n.clone());
     Ok((v, format!("remembered: {n}")))
 }
@@ -74,7 +74,7 @@ pub fn remove(facts: &[String], sel: &str) -> Result<(Vec<String>, String), Stri
     match hits.as_slice() {
         [] => Err(format!("agent: no fact matches \"{}\" (!memory lists them)", clean(sel))),
         [i] => { let mut v = facts.to_vec(); let f = v.remove(*i); Ok((v, f)) }
-        many => Err(format!("more than one fact has \"{}\":\n{}\nRemove one by number: !forget N", clean(sel), many.iter().map(|&i| format!("  {:<2} {}", i + 1, facts[i])).collect::<Vec<_>>().join("\n"))),
+        many => Err(format!("more than one fact has \"{}\":\n{}\nRemove one by number: type ! forget fact N", clean(sel), many.iter().map(|&i| format!("  {:<2} {}", i + 1, facts[i])).collect::<Vec<_>>().join("\n"))),
     }
 }
 
@@ -106,7 +106,7 @@ fn table(facts: &[String]) -> String {
         None => format!("  {:<2} {}\n", i + 1, p::fit(f, w.saturating_sub(5))),
     }).collect();
     let n = format!("{} fact{}", facts.len(), if facts.len() == 1 { "" } else { "s" });
-    format!("\n{}\n  {n}\n\n{}\n{}\n{rows}{}\n{}\n  {}!forget N{R} removes one \u{b7} edit ~/.config/thir/memory to change them all\n", p::hdr("MEMORY"), p::hdr("#  FACT"), p::rule(w), p::rule(w), p::dots(&[n.clone(), format!("{}only you can read this{R}", p::DIM)]), CYAN)
+    format!("\n{}\n  {n}\n\n{}\n{}\n{rows}{}\n{}\n  {}! forget fact N{R} removes one \u{b7} edit ~/.config/thir/memory to change them all\n", p::hdr("MEMORY"), p::hdr("#  FACT"), p::rule(w), p::rule(w), p::dots(&[n.clone(), format!("{}only you can read this{R}", p::DIM)]), CYAN)
 }
 
 /// `!remember | memory | forget`: no key and no provider config are read here.
@@ -118,8 +118,8 @@ pub fn command(c: &str, args: &[String]) -> i32 {
     match c {
         "memory" => {
             if !args.is_empty() { eprintln!("usage: !memory"); return 2; }
-            if facts.is_empty() { println!("agent remembers nothing yet. Try: !remember \"city: Colombo\""); return 0; }
-            if unsafe { libc::isatty(1) } != 1 { print!("agent remembers (only you can read this):\n{}!forget N removes one. To change them all: edit ~/.config/thir/memory\n", numbered(&facts)); return 0; }
+            if facts.is_empty() { println!("agent remembers nothing yet. Try: ! remember I live in Colombo"); return 0; }
+            if unsafe { libc::isatty(1) } != 1 { print!("agent remembers (only you can read this):\n{}! forget fact N removes one. To change them all: edit ~/.config/thir/memory\n", numbered(&facts)); return 0; }
             print!("{}", table(&facts));
             0
         }
@@ -169,7 +169,7 @@ mod tests {
         let f = s(&["city: Colombo", "units: metric", "city of birth: Galle"]);
         assert_eq!(remove(&f, "2").unwrap(), (s(&["city: Colombo", "city of birth: Galle"]), "units: metric".into()));
         assert_eq!(remove(&f, "metric").unwrap().1, "units: metric");
-        let e = remove(&f, "city").unwrap_err(); assert!(e.contains("more than one fact has \"city\"") && e.contains("  1  city: Colombo") && e.contains("!forget N"), "{e}");
+        let e = remove(&f, "city").unwrap_err(); assert!(e.contains("more than one fact has \"city\"") && e.contains("  1  city: Colombo") && e.contains("forget fact N"), "{e}");
         assert!(remove(&f, "zzz").unwrap_err().contains("no fact matches")); assert!(remove(&f, "4").unwrap_err().contains("no fact matches"));
         assert_eq!(remove(&f, "all").unwrap().0.len(), 0);
     }

@@ -122,7 +122,7 @@ pub fn add(home: &Path, when: When, text: &str, now: i64) -> Result<u32, String>
     let text = clean_text(text)?;
     let mut v = load(home)?;
     v.retain(|e| !matches!(e.when, When::At(t) if t < now - KEEP_PAST));
-    if v.len() >= MAX_ENTRIES { return Err(format!("agent: you have {MAX_ENTRIES} reminders. Remove one first: !schedule rm N")); }
+    if v.len() >= MAX_ENTRIES { return Err(format!("agent: you have {MAX_ENTRIES} reminders. Remove one first: type ! remove reminder N")); }
     let id = v.iter().map(|e| e.id).max().unwrap_or(0) + 1;
     v.push(Entry { id, when, text });
     save(home, &v).map(|_| id)
@@ -141,7 +141,7 @@ pub fn summary(v: &[Entry], now: i64, off: i32) -> String {
 
 fn list(home: &Path) -> i32 {
     let v = match load(home) { Ok(v) => v, Err(m) => { eprintln!("{m}"); return 1 } };
-    if v.is_empty() { println!("no reminders. Try: !remind 17:00 \"call mum\""); return 0; }
+    if v.is_empty() { println!("no reminders. Try: ! remind me at 17:00 to call mum"); return 0; }
     let (now, off) = (clock::now(), clock::home_tz().unwrap_or(0));
     let tty = unsafe { libc::isatty(1) } == 1;
     if !tty { for e in &v { println!("  {:<2} {:<20} {}", e.id, describe(e.when, now, off), e.text); } return 0; }
@@ -152,7 +152,7 @@ fn list(home: &Path) -> i32 {
         let (d, c) = (describe(e.when, now, off), match e.when { When::Daily(..) => CYAN, When::At(t) if t < now => WARN, _ => GOOD });
         println!("  {CYAN}{:<2}{R}  {c}{d:<20}{R}  {}", e.id, fit(&e.text, w.saturating_sub(28)));
     }
-    println!("{}\n{}\n  {CYAN}!schedule rm N{R} {DIM}removes one{R}", progress::rule(w), progress::dots(&[n]));
+    println!("{}\n{}\n  {CYAN}! remove reminder N{R} {DIM}removes one{R}", progress::rule(w), progress::dots(&[n]));
     0
 }
 
@@ -239,7 +239,7 @@ fn daemon() -> i32 {
         ticks += 1;
         if ticks % SLOW_EVERY == 0 {
             let cur = crash_stamps(&home);
-            for (n, s) in &cur { if seen.get(n) != Some(s) { notice(&home, now, &format!("{n} crashed \u{b7} !fix {n}")); } }
+            for (n, s) in &cur { if seen.get(n) != Some(s) { notice(&home, now, &format!("{n} crashed \u{b7} type ! fix {n}")); } }
             seen = cur;
             misses = if alive(me) { 0 } else { misses + 1 };
             if misses >= 2 { return 0; }

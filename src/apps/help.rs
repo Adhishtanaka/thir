@@ -17,9 +17,9 @@ pub const GUIDE: &[(&str, &[(&str, &str)])] = &[
     ("CALC", &[("calc", "type an expression and press Enter: 2+3*4, (1+2)^3, sqrt(2), 10%3, pi, ans*2"), ("Up / Down", "bring back an earlier line; Ctrl-U clears; Ctrl-D leaves"), ("", "Functions: sqrt abs sin cos tan ln log exp floor ceil round.")]),
     ("CONTACTS AND NOTES", &[("contacts", "a add, e edit, d delete, / search, c clear the search; each has phones, emails and a note"), ("notes", "a new note, Enter opens it, d deletes, / searches title, tags and text"),
         ("In a note", "space ticks a todo; a adds a line; t adds a todo ([ ] or [x]); e edits; d deletes; r renames; g sets tags")]),
-    ("THE AI SHELL", &[("plain words", "type a sentence at the prompt: the AI picks one action, thir shows it, and you press y (Enter) or n"), ("apps by words", "add Kasun to my contacts, 0771234567 - what is on my calendar tomorrow - set an alarm for 6:30 - add buy milk to my notes as a todo"),
+    ("THE AI SHELL", &[("! your words", "type ! and your words at the prompt: the AI picks one command or action, thir shows it, and you press Enter (yes) or n. Plain lines are a normal shell"), ("apps by words", "add Kasun to my contacts, 0771234567 - what is on my calendar tomorrow - set an alarm for 6:30 - add buy milk to my notes as a todo"),
         ("", "Reading contacts, notes or the calendar sends only the matching records to the AI; the confirm line says how many. Changes are always asked first."),
-        ("! commands", "!build an app, !do file jobs, !remind, !schedule, !memory, !forget, !setup (provider and key), !list, !rm, !undo; type ! alone for all")]),
+        ("examples", "! move notes into docs - ! make me a timer app - ! remind me at 5pm to call mum - ! change my AI provider - type ! alone for more")]),
     ("SOUND AND SETTINGS", &[("settings", "time zone, wallpaper (blue and four more), sound on/off, volume, test sound"), ("beep", "play the alarm chime; beep 440 300 plays one note (Hz, ms)"),
         ("", "Without a sound device the top bar notice flashes instead."), ("Your data", "~/.config/thir/<app>/ in plain text files only you can read")]),
 ];
