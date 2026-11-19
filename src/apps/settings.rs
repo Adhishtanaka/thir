@@ -13,7 +13,7 @@ fn put(key: &str, val: &str) { let _ = store::write_settings(&prefs::set(&store:
 pub fn test_sound() -> String {
     let (on, vol) = sound::config(&store::read_settings());
     if !on { return format!("{WARN}sound is off{R}") }
-    match sound::play(&sound::chime(vol)) { Ok(()) => format!("{GOOD}\u{2713}{R} played the chime"), Err(e) => format!("{WARN}no sound device ({e}); alarms will flash the top bar{R}") }
+    match sound::play(&sound::chime(vol)) { Ok(()) => format!("{GOOD}\u{2713}{R} played the chime"), Err(e) if e.kind() == std::io::ErrorKind::NotFound => format!("{DIM}no sound device found. Alarms flash and show in the top bar.{R}"), Err(e) => format!("{DIM}the sound device would not play ({e}). Alarms flash and show in the top bar.{R}") }
 }
 
 pub fn run() -> i32 {

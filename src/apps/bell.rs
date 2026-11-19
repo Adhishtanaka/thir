@@ -55,7 +55,7 @@ pub fn run() -> i32 {
         let f = fired(&alarm::load(), &cal::load(), last, now, off);
         last = now;
         for t in &f { let _ = notify::push(&home, now, t); }
-        if !f.is_empty() && !ring() { let _ = notify::push(&home, now + 1, "(no sound: check settings)"); }
+        if !f.is_empty() { ring(); }   // no sound device: the top bar notice above is the alarm
         sleep(TICK);
         ticks += 1;
         if ticks % 30 == 0 { misses = if alive(me) { 0 } else { misses + 1 }; if misses >= 2 { return 0; } }
