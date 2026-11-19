@@ -23,7 +23,7 @@ cd thir
 git switch llm-as-os     # the AI version; master is the simple one
 ```
 
-On the [releases page](https://github.com/Adhishtanaka/thir/releases), `v0.3.0` is the simple version and `v0.3.0-ai` is the AI version.
+On the [releases page](https://github.com/Adhishtanaka/thir/releases), `v0.4.0` is the simple version and `v0.4.0-ai` is the AI version.
 
 ## What you get
 
