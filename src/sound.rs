@@ -13,14 +13,14 @@ const PREPARE: libc::c_ulong = 0x4140; const DROP: libc::c_ulong = 0x4143; const
 
 fn bit(m: &mut [u32; 8], n: usize) { *m = [0; 8]; m[n / 32] = 1 << (n % 32); }
 /// `ivs` slots: 2 = channels, 3 = rate.
-fn params() -> HwParams {
+fn params(rate: u32) -> HwParams {
     let mut p: HwParams = unsafe { std::mem::zeroed() };
     for m in &mut p.masks { *m = [u32::MAX; 8]; }
     for i in &mut p.ivs { *i = Iv { min: 0, max: u32::MAX, flags: 0 }; }
     bit(&mut p.masks[0], 3);   // access: RW interleaved
     bit(&mut p.masks[1], 2);   // format: S16_LE
     bit(&mut p.masks[2], 0);   // subformat: standard
-    p.ivs[2] = Iv { min: 2, max: 2, flags: 0 }; p.ivs[3] = Iv { min: RATE, max: RATE, flags: 0 };
+    p.ivs[2] = Iv { min: 2, max: 2, flags: 0 }; p.ivs[3] = Iv { min: rate, max: rate, flags: 0 };
     p.rmask = u32::MAX; p
 }
 
@@ -65,15 +65,31 @@ pub fn grant(user: Option<u32>) {
     }
 }
 
-/// Plays stereo S16 samples (interleaved, 48 kHz) and waits until they are out. Err = no sound device or it refused the format.
+/// Sample rates to try, best first. The VirtualBox HDA codec stops at 44.1 kHz and refuses 48 kHz (hw_params: EINVAL); QEMU takes 48 kHz.
+const RATES: [u32; 4] = [RATE, 44100, 32000, 16000];
+
+/// Stereo S16 samples made at RATE, played at `to` (linear interpolation).
+fn resample(pcm: &[i16], to: u32) -> Vec<i16> {
+    if to == RATE { return pcm.to_vec(); }
+    let frames = pcm.len() / 2;
+    (0..frames * to as usize / RATE as usize).flat_map(|i| {
+        let pos = i as f64 * RATE as f64 / to as f64;
+        let (a, t) = (pos as usize, pos.fract());
+        let b = (a + 1).min(frames.saturating_sub(1));
+        (0..2).map(move |c| (pcm[a * 2 + c] as f64 * (1.0 - t) + pcm[b * 2 + c] as f64 * t) as i16)
+    }).collect()
+}
+
+/// Plays stereo S16 samples (interleaved, 48 kHz) and waits until they are out. Err = no sound device or it refused every rate.
 pub fn play(pcm: &[i16]) -> io::Result<()> {
     let mut f = OpenOptions::new().write(true).open(DEV)?;
     let fd = f.as_raw_fd();
-    let mut p = params();
     let bad = |what: &str| io::Error::new(io::ErrorKind::Other, format!("{what}: {}", io::Error::last_os_error()));
-    if unsafe { libc::ioctl(fd, HW_PARAMS as _, &mut p) } < 0 { return Err(bad("hw_params")); }
+    let mut rate = 0;
+    for r in RATES { let mut p = params(r); if unsafe { libc::ioctl(fd, HW_PARAMS as _, &mut p) } == 0 { rate = r; break; } }
+    if rate == 0 { return Err(bad("hw_params")); }
     if unsafe { libc::ioctl(fd, PREPARE as _) } < 0 { return Err(bad("prepare")); }
-    let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let bytes: Vec<u8> = resample(pcm, rate).iter().flat_map(|s| s.to_le_bytes()).collect();
     let r = f.write_all(&bytes);
     if r.is_ok() { unsafe { libc::ioctl(fd, DRAIN as _); } } else { unsafe { libc::ioctl(fd, DROP as _); } }
     r
@@ -114,6 +130,13 @@ mod tests {
         assert_eq!(t.len(), (RATE / 10 * 2) as usize);
         assert!(t.iter().any(|&s| s.abs() > 10000)); assert!(t.chunks(2).all(|c| c[0] == c[1]));
         assert!(t[t.len() - 20..].iter().all(|&s| s.abs() < 600));   // decayed
+    }
+    #[test] fn resample_keeps_the_length_ratio_and_the_shape() {
+        let t = tone(440.0, 100, 1.0);
+        assert_eq!(resample(&t, RATE), t);
+        let r = resample(&t, 44100); assert_eq!(r.len(), t.len() / 2 * 44100 / 48000 * 2);
+        assert!(r.iter().any(|&s| s.abs() > 10000)); assert!(r.chunks(2).all(|c| c[0] == c[1]));
+        assert!(resample(&[], 44100).is_empty());
     }
     #[test] fn volume_scales_and_zero_is_silent() {
         let loud = chime(100).iter().map(|s| s.unsigned_abs() as u32).max().unwrap();
