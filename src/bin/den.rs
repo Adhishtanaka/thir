@@ -257,7 +257,7 @@ fn scene(w: usize, h: usize, m: Metrics, font: &Font, sc: i32, stops: &[(f32, u3
     let (fy, r) = (h as i32 - m.foot, 9.0 * sc as f32);
     let cy = fy + 18 * sc;   // footer strip centre line: bear mark and "thir", never covered by panes
     let cx = w as f32 / 2.0 - 2.5 * font.w as f32;
-    wall::bear(&mut wall, w, cx, cy as f32, r, MARK, PANEL, 1.6 * sc as f32);
+    wall::bear(&mut wall, w, cx, cy as f32, r, MARK, PANEL);
     let (mut x, y) = ((cx + r + 1.5 * font.w as f32) as i32, cy - font.h as i32 / 2);
     for ch in "thir".chars() { glyph(&mut wall, w, font, x, y, ch, MARK); x += (font.w + font.w / 2) as i32; }
     let mut panel: Vec<u32> = wall.iter().map(|&p| blend(PANEL, p, PANEL_ALPHA)).collect();

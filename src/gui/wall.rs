@@ -1,4 +1,4 @@
-//! The wallpaper, drawn in code: assets/wallpaper.html variant D (radial gradient, small bear head; blue by default).
+//! The wallpaper, drawn in code: assets/wallpaper.html variant D (radial gradient, small bear; blue by default).
 
 pub fn blend(fg: u32, bg: u32, a: u32) -> u32 {
     let ch = |s: u32| ((fg >> s & 255) * a + (bg >> s & 255) * (255 - a)) / 255 << s;
@@ -26,13 +26,12 @@ pub fn gradient(w: usize, h: usize, stops: &[(f32, u32)]) -> Vec<u32> {
     out
 }
 
-/// Bear head from wallpaper.html `bearHead`, anti-aliased with signed-distance coverage. Only touches pixels inside cx±1.5r, cy±1.5r.
-pub fn bear(px: &mut [u32], w: usize, cx: f32, cy: f32, r: f32, stroke: u32, fill: u32, lw: f32) {
+/// Soft bear (assets/logo.svg): filled head and ears, darker ear insides and muzzle, eyes and nose in `dark`. Anti-aliased with signed-distance coverage. Only touches pixels inside cx±1.5r, cy±1.5r.
+pub fn bear(px: &mut [u32], w: usize, cx: f32, cy: f32, r: f32, head: u32, dark: u32) {
     let cov = |d: f32| (0.5 - d).clamp(0.0, 1.0);
-    let line = |d: f32| (0.5 - (d.abs() - lw / 2.0)).clamp(0.0, 1.0);
     let circle = |x: f32, y: f32, ox: f32, oy: f32, rr: f32| (x - ox).hypot(y - oy) - rr;
-    let ell = |x: f32, y: f32, oy: f32, rx: f32, ry: f32| ((x - cx) / rx).hypot((y - oy) / ry).abs() - 1.0;
-    let ell = |x: f32, y: f32, oy: f32, rx: f32, ry: f32| ell(x, y, oy, rx, ry) * rx.min(ry);
+    let ell = |x: f32, y: f32, oy: f32, rx: f32, ry: f32| ((x - cx) / rx).hypot((y - oy) / ry).abs() * rx.min(ry) - rx.min(ry);
+    let soft = blend(head, dark, 150);   // ear insides and muzzle
     let (x0, x1) = ((cx - 1.5 * r).floor().max(0.0) as usize, ((cx + 1.5 * r).ceil() as usize).min(w));
     let (y0, y1) = ((cy - 1.5 * r).floor().max(0.0) as usize, (cy + 1.5 * r).ceil() as usize);
     for y in y0..y1 { for x in x0..x1 {
@@ -40,13 +39,14 @@ pub fn bear(px: &mut [u32], w: usize, cx: f32, cy: f32, r: f32, stroke: u32, fil
         let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
         let mut c = *p;
         let mut paint = |col: u32, a: f32| c = blend(col, c, (a * 255.0 + 0.5) as u32);
-        for s in [-1.0, 1.0] {   // ears, then head: fill and outline
-            let d = circle(fx, fy, cx + s * 0.7 * r, cy - 0.72 * r, 0.36 * r); paint(fill, cov(d)); paint(stroke, line(d));
+        for s in [-1.0, 1.0] {   // ears and their insides first, the head then covers the overlap
+            paint(head, cov(circle(fx, fy, cx + s * 0.7 * r, cy - 0.72 * r, 0.36 * r)));
+            paint(soft, cov(circle(fx, fy, cx + s * 0.73 * r, cy - 0.76 * r, 0.21 * r)));
         }
-        let d = circle(fx, fy, cx, cy, r); paint(fill, cov(d)); paint(stroke, line(d));
-        paint(stroke, line(ell(fx, fy, cy + 0.34 * r, 0.42 * r, 0.3 * r)));
-        paint(stroke, cov(ell(fx, fy, cy + 0.24 * r, 0.13 * r, 0.09 * r)));
-        for s in [-1.0, 1.0] { paint(stroke, cov(circle(fx, fy, cx + s * 0.36 * r, cy - 0.12 * r, 0.06 * r))); }
+        paint(head, cov(circle(fx, fy, cx, cy, r)));
+        paint(soft, cov(ell(fx, fy, cy + 0.34 * r, 0.42 * r, 0.3 * r)));
+        paint(dark, cov(ell(fx, fy, cy + 0.24 * r, 0.13 * r, 0.09 * r)));
+        for s in [-1.0, 1.0] { paint(dark, cov(circle(fx, fy, cx + s * 0.36 * r, cy - 0.12 * r, 0.09 * r))); }
         *p = c;
     } }
 }
@@ -65,8 +65,8 @@ mod tests {
     }
     #[test] fn bear_paints_inside_box_only() {
         let mut px = vec![0u32; 64 * 64];
-        bear(&mut px, 64, 32.0, 32.0, 10.0, 0x9c8c86, 0x141113, 1.6);
-        assert_eq!(px[27 * 64 + 32], 0x141113);   // forehead
+        bear(&mut px, 64, 32.0, 32.0, 10.0, 0x8b9bb4, 0x141113);
+        assert_eq!(px[27 * 64 + 32], 0x8b9bb4);   // forehead
         assert!(px.iter().filter(|&&p| p != 0).count() >= 50);
         for y in 0..64 { for x in 0..64 { if (x as f32 - 32.0).abs() > 16.0 || (y as f32 - 32.0).abs() > 16.0 { assert_eq!(px[y * 64 + x], 0); } } }
     }
