@@ -51,14 +51,20 @@ impl Font {
     pub fn row_bytes(&self) -> usize { self.row }
 }
 
-/// Check mark and half circles (the agent screens) that Terminus lacks: 8x16 bitmaps, doubled for the 16x32 font; only added when the font has no such glyph.
-const EXTRA: [(char, [u8; 16]); 6] = [
+/// Check mark, half circles, half blocks and the reload arrow (the agent screens, selection bars, the bear, the browser strip) that Terminus lacks: 8x16 bitmaps, doubled for the 16x32 font; only added when the font has no such glyph.
+const EXTRA: [(char, [u8; 16]); 12] = [
+    ('\u{25CF}', [0, 0, 0, 0, 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0, 0, 0, 0]),   // ● the recording light
     ('\u{2713}', [0, 0, 0, 0, 0, 0x01, 0x03, 0x06, 0xCC, 0x78, 0x30, 0x10, 0, 0, 0, 0]),   // ✓
     ('\u{25CB}', [0, 0, 0, 0, 0x3C, 0x42, 0x81, 0x81, 0x81, 0x81, 0x81, 0x42, 0x3C, 0, 0, 0]),   // ○
     ('\u{25D0}', [0, 0, 0, 0, 0x3C, 0x72, 0xF1, 0xF1, 0xF1, 0xF1, 0xF1, 0x72, 0x3C, 0, 0, 0]),   // ◐ left half filled
     ('\u{25D3}', [0, 0, 0, 0, 0x3C, 0x42, 0x81, 0x81, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0, 0, 0]),   // ◓ bottom
     ('\u{25D1}', [0, 0, 0, 0, 0x3C, 0x4E, 0x8F, 0x8F, 0x8F, 0x8F, 0x8F, 0x4E, 0x3C, 0, 0, 0]),   // ◑ right
     ('\u{25D2}', [0, 0, 0, 0, 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0x81, 0x81, 0x42, 0x3C, 0, 0, 0]),   // ◒ top
+    ('\u{258C}', [0xF0; 16]),   // ▌ left half block: the selection bar and the bear
+    ('\u{2590}', [0x0F; 16]),   // ▐ right half block
+    ('\u{2580}', [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0]),   // ▀ upper half block
+    ('\u{2584}', [0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),   // ▄ lower half block
+    ('\u{21BB}', [0, 0, 0, 0, 0x1E, 0x23, 0x41, 0x41, 0x41, 0x71, 0x41, 0x42, 0x24, 0x18, 0, 0]),   // ↻ reload
 ];
 fn add_missing(w: usize, h: usize, glyphs: &mut Vec<u8>, map: &mut HashMap<char, usize>) {
     if w % 8 != 0 || w / 8 == 0 || h != 2 * w { return; }   // the bundled 8x16 and 16x32 only
@@ -98,6 +104,12 @@ mod tests {
         v.extend([0x11, 0x22]); v.extend("é".bytes()); v.push(0xFF); v.extend(b"x"); v.push(0xFF);
         let f = Font::parse(&v).unwrap();
         assert_eq!(f.glyph('é'), &[0x11]); assert_eq!(f.glyph('x'), &[0x22]);
+    }
+    #[test] fn every_glyph_the_ui_draws_exists() {   // missing ones would show as '?'
+        for bytes in [&include_bytes!("../../assets/fonts/Uni3-Terminus16.psf")[..], &include_bytes!("../../assets/fonts/Uni3-Terminus32x16.psf")[..]] {
+            let f = Font::parse(bytes).unwrap(); let q = f.glyph('?').to_vec();
+            for c in "\u{2713}\u{25d0}\u{25d3}\u{25d1}\u{25d2}\u{25cb}\u{25cf}\u{25ae}\u{258c}\u{2590}\u{2580}\u{2584}\u{2588}\u{2500}\u{2502}\u{250c}\u{2510}\u{2514}\u{2518}\u{b7}\u{d7}\u{2190}\u{2192}\u{21bb}\u{203a}\u{2570}\u{2026}".chars() { assert_ne!(f.glyph(c), &q[..], "{c:?} is drawn as ?"); }
+        }
     }
     #[test] fn rejects() { assert!(Font::parse(b"junk").is_err()); assert!(Font::parse(&[0x36, 0x04, 0, 16]).is_err()); }
     #[test] fn bundled_font_parses() {

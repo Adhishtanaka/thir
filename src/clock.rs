@@ -50,6 +50,14 @@ pub fn bar_line(utc: i64, off: Option<i32>) -> String {
     if off.is_none() { s + " UTC" } else { s }
 }
 
+pub const WDAY_FULL: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+/// The den bar centre: `Friday 19:35` (24 hour, no seconds), with ` UTC` appended when no offset is known.
+pub fn day_time(utc: i64, off: Option<i32>) -> String {
+    let l = local(utc, off.unwrap_or(0));
+    let s = format!("{} {:02}:{:02}", WDAY_FULL[l.wday as usize], l.hour, l.min);
+    if off.is_none() { s + " UTC" } else { s }
+}
+
 /// The offset in a user's `.tz`. den (root) calls this every second on a user-owned path, so: never follow a symlink, never block on a FIFO,
 /// accept regular files only, read at most 64 bytes, and show nothing but the parsed number (see files::read_small).
 pub fn read_tz(path: &str, owner: u32) -> Option<i32> { read_small(path, owner, 64).and_then(|s| parse_offset(s.trim())) }
@@ -66,6 +74,7 @@ pub fn now() -> i64 { unsafe { libc::time(std::ptr::null_mut()) as i64 } }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn bar_day_time() { assert_eq!(day_time(1794906125, Some(330)), "Tuesday 14:32"); assert_eq!(day_time(1794906125, None), "Tuesday 09:02 UTC"); }
     #[test] fn dates() {
         assert_eq!(date_line(0, 0), "Thu 01 Jan 1970 00:00:00 +00:00");
         assert!(date_line(951782400, 0).starts_with("Tue 29 Feb 2000"));

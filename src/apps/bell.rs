@@ -33,7 +33,8 @@ fn ring() -> bool {
     let (on, vol) = sound::config(&store::read_settings());
     if !on { return false }
     let c = sound::chime(vol);
-    (0..3).all(|_| sound::play(&c).is_ok())
+    // one PCM substream: while a song plays the chime waits up to 2 s for it, then the bar notice is the alarm
+    (0..3).all(|_| sound::retry_busy(|| sound::play(&c), Duration::from_secs(2), Duration::from_millis(100)).is_ok())
 }
 
 pub fn run() -> i32 {

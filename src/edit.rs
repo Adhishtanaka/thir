@@ -129,16 +129,18 @@ pub fn render(b: &Buf, cols: usize, rows: usize, name: &str, msg: &str) -> Vec<u
     let w = cols - 1;
     let mut o = String::from("\x1b[?25l");
     let pos = format!("Ln {}, Col {}", b.cy + 1, col_of(&b.lines[b.cy], b.cx) + 1);
-    let left = format!("  edit  {}{}", crate::files::printable(name), if b.modified { "  [Modified]" } else { "" });
-    let pad = w.saturating_sub(left.chars().count() + pos.len() + 1);
-    o += &format!("\x1b[1;1H\x1b[7m{}\x1b[0m\x1b[K", fit(&format!("{left}{}{pos} ", " ".repeat(pad)), w));
+    let name = format!("  {}{}", crate::files::printable(name), if b.modified { "  [Modified]" } else { "" });
+    let name = fit(&name, w.saturating_sub(5 + pos.len() + 2));
+    let pad = w.saturating_sub(4 + name.chars().count() + pos.len() + 1);
+    o += &format!("\x1b[1;1H {}edit{}{name}{}{pos} {}\x1b[K", crate::tui::ACC, crate::tui::DIM, " ".repeat(pad), crate::tui::R);
     for r in 0..rows - 3 {
         let t: String = b.lines.get(b.top + r).map_or(String::new(), |l| expand(l).into_iter().skip(b.left).take(w).collect());
         o += &format!("\x1b[{};1H{t}\x1b[K", r + 2);
     }
     o += &format!("\x1b[{};1H{}\x1b[K", rows - 1, fit(&crate::files::printable(msg), w));
-    let help = "^S save  ^Q quit  ^F find  ^K cut line  ^U paste  ^X quit";
-    o += &format!("\x1b[{rows};1H\x1b[7m{:<w$}\x1b[0m", fit(help, w));
+    let mut keys = vec![("ctrl+s", "save"), ("ctrl+f", "find"), ("ctrl+k", "cut line"), ("ctrl+u", "paste"), ("ctrl+q", "quit")];
+    while keys.len() > 1 && crate::tui::vis(&crate::tui::hints(&keys)) > w { keys.remove(keys.len() - 2); }   // narrow terminal: drop the middle ones, never `quit`
+    o += &format!("\x1b[{rows};1H{}\x1b[K", crate::tui::hints(&keys));
     o += &format!("\x1b[{};{}H\x1b[?25h", 2 + b.cy - b.top, 1 + col_of(&b.lines[b.cy], b.cx) - b.left);
     o.into_bytes()
 }
@@ -194,7 +196,7 @@ mod tests {
     #[test] fn renders() {
         let mut b = buf("hello\nworld\n"); b.right(); b.scroll(10, 40);
         let s = String::from_utf8(render(&b, 40, 10, "f.txt", "hi")).unwrap();
-        assert!(s.contains("edit  f.txt") && !s.contains("[Modified]") && s.contains("Ln 1, Col 2") && s.ends_with("\x1b[2;2H\x1b[?25h"), "{s:?}");
+        assert!(s.contains("edit\x1b[90m  f.txt") && !s.contains("[Modified]") && s.contains("Ln 1, Col 2") && s.ends_with("\x1b[2;2H\x1b[?25h"), "{s:?}");
         b.insert('x'); assert!(String::from_utf8(render(&b, 40, 10, "f.txt", "")).unwrap().contains("[Modified]"));
         let long = buf(&"z".repeat(500)); let s = String::from_utf8(render(&long, 30, 8, &"n".repeat(200), &"m".repeat(200))).unwrap();
         for row in s.split("\x1b[").skip(1) { let body = row.split_once('H').map_or("", |x| x.1); let vis: String = body.chars().take_while(|&c| c != '\x1b').collect(); assert!(vis.chars().count() < 30, "{vis:?}"); }

@@ -23,7 +23,7 @@ pub fn app_name_ok(s: &str) -> bool {
 
 /// Names an app may not take: every nsh builtin, every program in /bin, and the names agent itself uses. nsh's tests check it covers the builtins.
 pub const RESERVED: &[&str] = &["cd", "exit", "help", "date", "tz", "clear", "history", "pwd", "echo", "whoami", "mkdir", "rmdir", "touch", "rm", "mv", "cp", "write", "ls", "cat", "ip", "poweroff", "reboot",
-    "edit", "nano", "find", "top", "fetch", "neofetch", "curl", "agent", "passwd", "dhcp", "login", "den", "init", "nsh", "app", "apps", "tools", "clock", "calendar", "calc", "contacts", "notes", "settings", "beep", "bell"];
+    "edit", "nano", "find", "top", "fetch", "neofetch", "curl", "agent", "passwd", "dhcp", "login", "den", "init", "nsh", "app", "apps", "tools", "clock", "calendar", "calc", "contacts", "notes", "settings", "beep", "bell", "view", "play", "rec", "web"];
 
 /// A small text file in a user's home that root (den) or the user reads on a timer. Never follow a symlink, never block on a FIFO, regular files only,
 /// `owner` must own it with one link (a hard link to someone else's file is refused), at most `max` bytes. None = refused or unreadable.

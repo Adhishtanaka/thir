@@ -52,16 +52,17 @@ pub fn run() -> i32 {
         let tw = w.saturating_sub(33).max(10);
         let list_rows: Vec<String> = shown.iter().map(|n| {
             let (d, t) = progress(n);
-            let (g, c) = if t == 0 { ("\u{25cb}", DIM) } else if d == t { ("\u{2713}", GOOD) } else { ("\u{25d0}", WARN) };
-            format!("{DIM}{:<3}{R} {c}{g}{R}  {}{ACC}{}{R}  {DIM}{}{R}", n.id, if t > 0 { format!("{c}{:<4}{R}", format!("{d}/{t}")) } else { "    ".into() }, pad(&fit(&n.title, tw.saturating_sub(4)), tw.saturating_sub(4)), stamp(n.modified, off))
+            let (g, c) = if t == 0 { ("\u{25cb}", DIM) } else if d == t { ("\u{2713}", GOOD) } else { ("\u{25d0}", ACC) };
+            format!("{DIM}{:<3}{R} {c}{g}{R}  {}{FG}{}{R}  {DIM}{}{R}", n.id, if t > 0 { format!("{c}{:<4}{R}", format!("{d}/{t}")) } else { "    ".into() }, pad(&fit(&n.title, tw.saturating_sub(4)), tw.saturating_sub(4)), stamp(n.modified, off))
         }).collect();
         let (n_open, done): (usize, usize) = all.iter().map(progress).fold((0, 0), |a, (d, t)| (a.0 + t - d, a.1 + d));
-        let p = Page { title: "NOTES", right: &if q.is_empty() { String::new() } else { format!("search: {q}") }, count: if q.is_empty() { count(all.len(), "note", "notes") } else { format!("{} of {}", shown.len(), count(all.len(), "note", "notes")) },
-            header: format!("#    S  TODO  {}MODIFIED", pad("TITLE", tw.saturating_sub(4) + 2)), rows: list_rows, foot: vec![format!("{} total", all.len()), format!("{WARN}{n_open} todo open{R}"), format!("{GOOD}{done} done{R}")], note: note.clone(),
+        let p = Page { title: "notes", right: &if q.is_empty() { String::new() } else { format!("search: {q}") }, count: if q.is_empty() { count(all.len(), "note", "notes") } else { format!("{} of {}", shown.len(), count(all.len(), "note", "notes")) },
+            header: format!("id   s  todo  {}modified", pad("title", tw.saturating_sub(4) + 2)), rows: list_rows, foot: vec![format!("{DIM}{} total{R}", all.len()), format!("{WARN}{n_open} todo open{R}"), format!("{GOOD}{done} done{R}")], note: note.clone(),
             hints: vec![("enter", "open"), ("a", "new"), ("d", "delete"), ("/", "search"), ("c", "clear"), ("q", "quit")], empty: if q.is_empty() { "No notes yet. Press a to write one." } else { "No note matches." } };
-        let mut l = p.lines(&mut sel, cols, rows.saturating_sub(1));
-        if let Some(n) = shown.get(sel.pos) {
-            l.insert(l.len() - 4, format!("  {DIM}tags{R} {}  {DIM}created {}{R}", if n.tags.is_empty() { format!("{DIM}-{R}") } else { n.tags.iter().map(|t| format!("{CYAN}#{t}{R}")).collect::<Vec<_>>().join(" ") }, stamp(n.created, off)));
+        let mut l = p.lines(&mut sel, cols, rows);
+        let n = l.len();
+        if let (Some(c), true) = (shown.get(sel.pos), n >= 10 && l[n - 3].is_empty() && l[n - 4].is_empty()) {   // tags and dates of the selected note, in a free row above the hints
+            l[n - 3] = format!(" {DIM}tags{R} {}  {DIM}created {}{R}", if c.tags.is_empty() { format!("{DIM}-{R}") } else { c.tags.iter().map(|t| format!("{DIM}#{t}{R}")).collect::<Vec<_>>().join(" ") }, stamp(c.created, off));
         }
         draw(&l);
         let Some(keys) = s.keys(-1) else { return 0 };
@@ -94,14 +95,15 @@ fn open(s: &mut Screen, id: u32, off: i32) {
         let Some(i) = v.iter().position(|n| n.id == id) else { return };
         let (cols, rows) = crate::term::size(); let w = width(cols);
         let n = &v[i]; let (d, t) = progress(n);
-        let body: Vec<String> = n.body.iter().map(|b| match todo(b) { Some(true) => format!("{GOOD}\u{2611}{R} {DIM}{}{R}", &b[4..]), Some(false) => format!("{WARN}\u{2610}{R} {}", &b[4..]), None => format!("  {}", b) }).collect();
-        let mut l = vec![String::new(), head(&n.title.to_uppercase(), &stamp(n.modified, off), w),
-            format!("  {DIM}created {}  \u{b7}  {}  \u{b7}  {} lines{R}", stamp(n.created, off), if n.tags.is_empty() { "no tags".to_string() } else { n.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ") }, n.body.len()), String::new(), hdr("TEXT"), rule(w)];
-        let win = sel.window(body.len(), rows.saturating_sub(l.len() + 4));
-        for k in win { l.push(format!("{}{}", if k == sel.pos { format!(" {ACC}\u{25b8}{R}") } else { "  ".into() }, body[k].clone())); }
-        if body.is_empty() { l.push(format!("  {DIM}Empty. Press a to add a line, or t to add a todo.{R}")); }
-        l.push(rule(w)); l.push(dots(&[format!("{} lines", n.body.len()), format!("{WARN}{} open{R}", t - d), format!("{GOOD}{d} done{R}")]));
-        l.push(if msg.is_empty() { String::new() } else { format!("  {msg}") });
+        let body: Vec<String> = n.body.iter().map(|b| match todo(b) { Some(true) => format!("{GOOD}\u{2713}{R} {DIM}{}{R}", &b[4..]), Some(false) => format!("{DIM}\u{25cb}{R} {}", &b[4..]), None => format!("  {}", b) }).collect();
+        let mut l = vec![head(&n.title, &stamp(n.modified, off), w), String::new(),
+            format!(" {DIM}created {}  \u{b7}  {}  \u{b7}  {} lines{R}", stamp(n.created, off), if n.tags.is_empty() { "no tags".to_string() } else { n.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ") }, n.body.len()), String::new(), hdr("text"), rule(w)];
+        let win = sel.window(body.len(), rows.saturating_sub(l.len() + 5));
+        for k in win { l.push(if k == sel.pos { sel_row(&body[k], w) } else { format!(" {}", body[k]) }); }
+        if body.is_empty() { l.push(format!(" {DIM}Empty. Press a to add a line, or t to add a todo.{R}")); }
+        l.push(rule(w)); l.push(dots(&[format!("{DIM}{} lines{R}", n.body.len()), format!("{WARN}{} open{R}", t - d), format!("{GOOD}{d} done{R}")]));
+        while l.len() + 2 < rows { l.push(String::new()); }
+        l.push(if msg.is_empty() { String::new() } else { format!(" {msg}") });
         l.push(hints(&[("space", "tick"), ("a", "line"), ("t", "todo"), ("e", "edit"), ("d", "delete"), ("r", "title"), ("g", "tags"), ("q", "back")]));
         draw(&l);
         let Some(keys) = s.keys(-1) else { return };

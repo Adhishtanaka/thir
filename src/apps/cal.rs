@@ -68,6 +68,8 @@ pub fn grid(y: i64, m: u32) -> Vec<[Option<u32>; 7]> {
 fn add_months(y: i64, m: u32, d: i32) -> (i64, u32) { let i = y * 12 + m as i64 - 1 + d as i64; (i.div_euclid(12), i.rem_euclid(12) as u32 + 1) }
 fn add_days(d: (i64, u32, u32), n: i64) -> (i64, u32, u32) { crate::clock::civil_from_days(days_from_civil(d.0, d.1, d.2) + n) }
 
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
 pub fn run() -> i32 {
     let Some(mut s) = Screen::start("calendar") else { return 1 };
     let today = { let l = clock::local(clock::now(), clock::home_tz().unwrap_or(0)); (l.year, l.month, l.day) };
@@ -78,23 +80,26 @@ pub fn run() -> i32 {
         let w = width(cols);
         let mut ev = load(); ev.sort_by_key(|e| (e.date, e.time, e.id));
         let day: Vec<Event> = on(&ev, cur).into_iter().cloned().collect();
-        let mut l = vec![String::new(), head("CALENDAR", &format!("{} {}", clock::MONTH[cur.1 as usize - 1], cur.0), w), format!("  {DIM}{} this month{R}", count(ev.iter().filter(|e| e.date.0 == cur.0 && e.date.1 == cur.1).count(), "event", "events")), String::new(),
-            format!("  {ACC}{}{R}", clock::WDAY.iter().map(|d| format!("{:<4}", &d[..2])).collect::<String>().trim_end()), rule(28)];
+        let month = count(ev.iter().filter(|e| e.date.0 == cur.0 && e.date.1 == cur.1).count(), "event", "events");
+        let mut l = vec![head("calendar", &format!("{} {}", MONTHS[cur.1 as usize - 1], cur.0), w), String::new(),
+            format!(" {DIM}{}{R}", clock::WDAY.iter().map(|d| format!("{:<4}", &d[..2])).collect::<String>().trim_end()), rule(28)];
         for wk in grid(cur.0, cur.1) {
             if wk.iter().all(|d| d.is_none()) { continue }
-            l.push(format!("  {}", wk.iter().map(|d| match d {
+            l.push(format!(" {}", wk.iter().map(|d| match d {
                 None => "    ".to_string(),
                 Some(n) => { let dd = (cur.0, cur.1, *n); let busy = ev.iter().any(|e| e.date == dd);
-                    let c = if dd == cur { "\x1b[7;1m" } else if dd == today { CYAN } else if wday(cur.0, cur.1, *n) % 6 == 0 { DIM } else { "" };
-                    format!("{c}{:>2}{R}{}  ", n, if busy { format!("{GOOD}\u{25cf}{R}") } else { " ".into() }) } }).collect::<String>().trim_end().to_string()));
+                    // the cursor day is a peach cell with wall-coloured text; today is peach text; days with events are FG, empty ones dim
+                    let c = if dd == cur { format!("{ACCBG}{WALLFG}") } else if dd == today { ACC.to_string() } else if busy { FG.to_string() } else { DIM.to_string() };
+                    format!("{c}{:>2}{R}  ", n) } }).collect::<String>().trim_end().to_string()));
         }
         l.push(rule(28)); l.push(String::new());
-        let list_rows: Vec<String> = day.iter().map(|e| format!("{DIM}{:<2}{R}  {ACC}{}{R}  {}  {DIM}{}{R}", e.id, e.time.map_or("all day".to_string(), |t| format!("{:02}:{:02}  ", t.0, t.1)), fit(&e.title, w.saturating_sub(34)), if e.remind >= 0 { format!("remind {}", remind_text(e.remind)) } else { String::new() })).collect();
-        let header = format!("{} {} {}", clock::WDAY[wday(cur.0, cur.1, cur.2) as usize], cur.2, clock::MONTH[cur.1 as usize - 1]).to_uppercase();
-        let p = Page { title: "", right: "", count: String::new(), header: format!("#   TIME     EVENT   ({header})"), rows: list_rows, foot: vec![count(day.len(), "event", "events"), format!("{GOOD}{} reminders{R}", day.iter().filter(|e| e.remind >= 0).count()), format!("{DIM}{} total{R}", ev.len())],
+        let day_name = format!("{} {} {}", clock::WDAY[wday(cur.0, cur.1, cur.2) as usize], cur.2, clock::MONTH[cur.1 as usize - 1]);
+        l.push(format!(" {FG}{day_name}{R}{}{DIM}{month} this month{R}", " ".repeat(w.saturating_sub(day_name.len() + month.len() + 11).max(2))));
+        let list_rows: Vec<String> = day.iter().map(|e| format!("{DIM}{:<2}{R}  {FG}{}{R}  {}  {DIM}{}{R}", e.id, e.time.map_or("all day".to_string(), |t| format!("{:02}:{:02}  ", t.0, t.1)), fit(&e.title, w.saturating_sub(34)), if e.remind >= 0 { format!("remind {}", remind_text(e.remind)) } else { String::new() })).collect();
+        let p = Page { title: "", right: "", count: String::new(), header: "id  time     event".into(), rows: list_rows, foot: vec![count(day.len(), "event", "events"), format!("{} reminders", day.iter().filter(|e| e.remind >= 0).count()), format!("{} total", ev.len())],
             note: note.clone(), hints: vec![("arrows", "day"), ("[ ]", "month"), ("t", "today"), ("a", "add"), ("e", "edit"), ("d", "delete"), ("tab", "list"), ("q", "quit")], empty: "Nothing on this day. Press a to add an event." };
-        let mut pl = p.lines(&mut sel, cols, rows.saturating_sub(l.len()) + 4);
-        pl.drain(..4); l.extend(pl);
+        let mut pl = p.lines(&mut sel, cols, rows.saturating_sub(l.len()) + 2);
+        pl.drain(..2); l.extend(pl);
         draw(&l);
         let Some(keys) = s.keys(2000) else { return 0 };
         for k in keys {

@@ -47,7 +47,8 @@ fn frame(s: &Sample, sort: Sort, msg: &str, cols: usize, rows: usize) -> Vec<u8>
     let head = format!(" top  {} {:02} {} {:02}:{:02}:{:02}  up {}  load {}  {} tasks", clock::WDAY[l.wday as usize], l.day, clock::MONTH[l.month as usize - 1], l.hour, l.min, l.sec, uptime_str(s.up), s.load, s.procs.len());
     let quit = "q quit";
     let mut o = String::from("\x1b[?25l");
-    o += &format!("\x1b[1;1H{}{}{}\x1b[K", fit(&head, w.saturating_sub(quit.len() + 1)), " ".repeat(w.saturating_sub(head.chars().count().min(w.saturating_sub(quit.len() + 1)) + quit.len())), quit);
+    let hl = fit(&head, w.saturating_sub(quit.len() + 1));
+    o += &format!("\x1b[1;1H\x1b[38;2;240;178;127m{}\x1b[90m{}{}\x1b[39mq \x1b[90mquit\x1b[0m\x1b[K", &hl[..hl.len().min(4)], &hl[hl.len().min(4)..], " ".repeat(w.saturating_sub(hl.chars().count() + quit.len())));
     let bw = cols.saturating_sub(14).clamp(4, 40);
     let used = s.mem.total.saturating_sub(s.mem.avail);
     let mf = if s.mem.total == 0 { 0.0 } else { used as f32 / s.mem.total as f32 };
@@ -56,7 +57,7 @@ fn frame(s: &Sample, sort: Sort, msg: &str, cols: usize, rows: usize) -> Vec<u8>
     o += &format!("\x1b[3;1H Mem  {}{}{RST}  {:>3.0}%{}\x1b[K", color(mf * 100.0), bar(mf, bw), mf * 100.0, fit(&tail, w.saturating_sub(bw + 12)));
     let name = match sort { Sort::Cpu => "cpu", Sort::Mem => "mem", Sort::Pid => "pid" };
     o += &format!("\x1b[4;1H{}\x1b[K\x1b[5;1H{}\x1b[K", fit(&format!(" sort: {name}   (s cpu  m mem  p pid  k kill)"), w), fit(&printable(msg), w));
-    o += &format!("\x1b[6;1H{}{}\x1b[0m\x1b[K", term::REV, fit(&format!("{:>6} {:<9} {}  {:>4} {:>6}  {}", "PID", "USER", "S", "%CPU", "RSS", "COMMAND"), w));
+    o += &format!("\x1b[6;1H\x1b[90m{}\x1b[0m\x1b[K", fit(&format!("{:>6} {:<9} {}  {:>4} {:>6}  {}", "pid", "user", "s", "%cpu", "rss", "command"), w));
     let mut v: Vec<&Proc> = s.procs.iter().collect();
     match sort {
         Sort::Cpu => v.sort_by(|a, b| b.cpu.total_cmp(&a.cpu).then(a.pid.cmp(&b.pid))),

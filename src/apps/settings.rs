@@ -1,8 +1,8 @@
-//! settings: time zone, wallpaper, sound on or off and the volume. The time zone is ~/.tz (den's clock reads it); the rest is ~/.config/thir/settings.
+//! settings: time zone, wallpaper (a preset of theme::WALLS: navy is the default and the design system itself), sound on or off and the volume. The time zone is ~/.tz (den's clock reads it); the rest is ~/.config/thir/settings.
 use super::prefs;
 use crate::{clock, files, gui::theme::WALLS, line::Key, sound, store, tui::*};
 
-const SWATCH: [&str; 5] = ["\x1b[34m", "\x1b[90m", "\x1b[32m", "\x1b[35m", "\x1b[31m"];   // blue graphite forest plum ember, in the 16 terminal colours
+const SWATCH: [&str; 5] = ["\x1b[34m", "\x1b[90m", "\x1b[32m", "\x1b[35m", "\x1b[31m"];   // navy graphite forest plum ember, in the 16 terminal colours
 
 fn set_tz(home: &str, text: &str) -> Result<(), String> {
     let off = clock::parse_offset(text.trim()).ok_or("use +HH:MM or -HH:MM, like +05:30")?;
@@ -37,17 +37,17 @@ pub fn run() -> i32 {
         let (on, vol) = sound::config(&st);
         let wi = prefs::wall_index(&st);
         let tz = clock::format_offset(clock::home_tz().unwrap_or(0));
-        let bar = format!("{}{}", "\u{2588}".repeat(vol as usize / 10), "\u{2591}".repeat(10 - vol as usize / 10));
+        let bar = format!("{ACC}{}{R}{}{}{R}", "\u{25ae}".repeat(vol as usize / 10), BDIM, "\u{2500}".repeat(10 - vol as usize / 10));
         let ai_on = std::fs::read_to_string(format!("{}/.config/thir/ai", store::home())).map_or(true, |t| t.trim() != "off");   // ~/.config/thir/ai = off: the user chose no AI
         let mut items: Vec<(&str, String, &str)> = vec![
-            ("Time zone", format!("{CYAN}UTC{tz}{R}"), "enter to change"), ("Wallpaper", format!("{}\u{2588}\u{2588}{R} {ACC}{}{R}", SWATCH[wi], WALLS[wi].0), "enter or left/right"),
-            ("Sound", if on { format!("{GOOD}\u{25cf} on{R}") } else { format!("{DIM}\u{25cb} off{R}") }, "enter to switch"), ("Volume", format!("{CYAN}{bar}{R} {vol}%"), "left/right"), ("Test sound", format!("{DIM}play the alarm chime{R}"), "enter"),
+            ("time zone", format!("UTC{tz}"), "enter to change"), ("wallpaper", format!("{}\u{25ae}\u{25ae}{R} {}", SWATCH[wi], WALLS[wi].0), "left/right"),
+            ("sound", if on { format!("{GOOD}on{R}") } else { format!("{DIM}off{R}") }, "enter to switch"), ("volume", format!("{bar} {vol}"), "left/right"), ("test sound", format!("{DIM}play the alarm chime{R}"), "enter"),
         ];
-        items.push(("AI", if ai_on { format!("{GOOD}\u{25cf} on{R}") } else { format!("{DIM}\u{25cb} off{R}") }, if ai_on { "enter to turn off (keys stay)" } else { "enter to turn on" }));
-        items.push(("Provider", format!("{CYAN}AI provider and key{R}"), "enter to change"));
-        let rows_t: Vec<String> = items.iter().map(|(n, v, h)| format!("{ACC}{}{R} {} {DIM}{h}{R}", pad(n, 12), pad(v, 24))).collect();
-        let p = Page { title: "SETTINGS", right: "", count: count(items.len(), "setting", "settings"), header: "SETTING      VALUE".into(), rows: rows_t,
-            foot: vec![format!("{CYAN}UTC{tz}{R}"), format!("{} wallpaper", WALLS[wi].0), if on { format!("{GOOD}sound on {vol}%{R}") } else { format!("{DIM}sound off{R}") }], note: note.clone(),
+        items.push(("ai", if ai_on { format!("{GOOD}on{R}") } else { format!("{DIM}off{R}") }, if ai_on { "enter to turn off (keys stay)" } else { "enter to turn on" }));
+        items.push(("provider", "AI provider and key".to_string(), "enter to change"));
+        let rows_t: Vec<String> = items.iter().map(|(n, v, h)| format!("{} {} {DIM}{h}{R}", pad(n, 12), pad(v, 24))).collect();
+        let p = Page { title: "settings", right: "", count: count(items.len(), "setting", "settings"), header: "setting      value".into(), rows: rows_t,
+            foot: vec![], note: note.clone(),
             hints: vec![("up/down", "choose"), ("enter", "change"), ("left/right", "adjust"), ("q", "quit")], empty: "" };
         draw(&p.lines(&mut sel, cols, rows));
         let Some(keys) = s.keys(-1) else { return 0 };

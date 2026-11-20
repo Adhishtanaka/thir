@@ -40,17 +40,18 @@ pub fn run() -> i32 {
         let w = width(cols);
         let all = load();
         let shown = search(&all, &q);
-        let nw = (w / 3).max(10);
-        let list_rows: Vec<String> = shown.iter().map(|c| format!("{DIM}{:<3}{R} {ACC}{}{R} {CYAN}{}{R} {}", c.id, pad(&fit(&c.name, nw), nw), pad(&fit(c.phones.first().map_or("", |p| p), 16), 16), fit(c.emails.first().map_or("", |e| e), w.saturating_sub(nw + 24)))).collect();
+        let nw = (w / 3).clamp(10, 26);
+        let list_rows: Vec<String> = shown.iter().map(|c| format!("{DIM}{:<3}{R} {FG}{}{R} {DIM}{}{R} {DIM}{}{R}", c.id, pad(&fit(&c.name, nw), nw), pad(&fit(c.phones.first().map_or("", |p| p), 16), 16), fit(c.emails.first().map_or("", |e| e), w.saturating_sub(nw + 24)))).collect();
         let (np, ne) = (all.iter().map(|c| c.phones.len()).sum::<usize>(), all.iter().map(|c| c.emails.len()).sum::<usize>());
-        let p = Page { title: "CONTACTS", right: &if q.is_empty() { String::new() } else { format!("search: {q}") }, count: if q.is_empty() { count(all.len(), "contact", "contacts") } else { format!("{} of {}", shown.len(), count(all.len(), "contact", "contacts")) },
-            header: format!("#   {}{}EMAIL", pad("NAME", nw + 1), pad("PHONE", 17)), rows: list_rows, foot: vec![format!("{} total", all.len()), format!("{CYAN}{np} phones{R}"), format!("{GOOD}{ne} emails{R}")], note: note.clone(),
+        let p = Page { title: "contacts", right: &if q.is_empty() { String::new() } else { format!("search: {q}") }, count: if q.is_empty() { count(all.len(), "contact", "contacts") } else { format!("{} of {}", shown.len(), count(all.len(), "contact", "contacts")) },
+            header: format!("id  {}{}email", pad("name", nw + 1), pad("phone", 17)), rows: list_rows, foot: vec![format!("{DIM}{} total{R}", all.len()), format!("{DIM}{np} phones{R}"), format!("{DIM}{ne} emails{R}")], note: note.clone(),
             hints: vec![("a", "add"), ("e", "edit"), ("d", "delete"), ("/", "search"), ("c", "clear search"), ("q", "quit")], empty: if q.is_empty() { "No contacts yet. Press a to add one." } else { "No contact matches." } };
-        let mut l = p.lines(&mut sel, cols, rows.saturating_sub(5));
-        if let Some(c) = shown.get(sel.pos) {   // the selected contact in full, under the table
-            l.insert(l.len() - 4, format!("  {DIM}{}{R}", "\u{2500}".repeat(w)));
-            l.insert(l.len() - 4, format!("  {ACC}{}{R}  {CYAN}{}{R}  {GOOD}{}{R}", c.name, c.phones.join(", "), c.emails.join(", ")));
-            if !c.note.is_empty() { l.insert(l.len() - 4, format!("  {DIM}{}{R}", fit(&c.note, w))); }
+        let mut l = p.lines(&mut sel, cols, rows);
+        let n = l.len();
+        if let (Some(c), true) = (shown.get(sel.pos), n >= 12 && l[n - 3..n - 1].iter().all(|x| x.is_empty()) && l[n - 5].is_empty()) {   // the selected contact in full, in the free rows above the hints
+            l[n - 5] = rule(w);
+            l[n - 4] = format!(" {FG}{}{R}  {DIM}{}  {}{R}", c.name, c.phones.join(", "), c.emails.join(", "));
+            if !c.note.is_empty() { l[n - 3] = format!(" {DIM}{}{R}", fit(&c.note, w)); }
         }
         draw(&l);
         let Some(keys) = s.keys(-1) else { return 0 };

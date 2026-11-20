@@ -3,25 +3,25 @@ use crate::{line::Key, tui::*};
 
 /// (section, rows of (keys or name, what it does)); a row with no keys is a plain line.
 pub const GUIDE: &[(&str, &[(&str, &str)])] = &[
-    ("THE DESKTOP", &[("", "thir shows terminal panes side by side on a coloured wallpaper. The top bar has the time and your notices."),
+    ("the desktop", &[("", "thir shows terminal panes side by side on a flat navy wallpaper. The top bar has the time and your notices."),
         ("Option + Enter", "split the screen: a new pane (Cmd + Enter works too)"), ("Option + arrows", "move between panes"), ("Option + q", "close a pane; the last one logs you out"), ("Option + f", "make a pane full screen")]),
-    ("THE SHELL", &[("Tab", "complete a name; press it twice to list the choices"), ("Up / Down", "history; Right accepts the grey suggestion"), ("Ctrl-A / Ctrl-E", "start / end of the line"),
+    ("the shell", &[("Tab", "complete a name; press it twice to list the choices"), ("Up / Down", "history; Right accepts the grey suggestion"), ("Ctrl-A / Ctrl-E", "start / end of the line"),
         ("Ctrl-U / Ctrl-K", "cut to the start / end"), ("Ctrl-W", "cut one word"), ("Ctrl-L", "clear the screen"), ("Ctrl-C", "cancel; Ctrl-D leaves"), ("cmd > file", "send the output to a file (>> adds to it)")]),
-    ("FILES AND SYSTEM", &[("ls cat cd pwd", "look around: list, show a file, change directory, where am I"), ("mkdir rmdir touch", "make and remove directories, make an empty file"), ("rm mv cp", "remove (-r for directories), move or rename, copy"),
+    ("files and system", &[("ls cat cd pwd", "look around: list, show a file, change directory, where am I"), ("mkdir rmdir touch", "make and remove directories, make an empty file"), ("rm mv cp", "remove (-r for directories), move or rename, copy"),
         ("echo write", "print text; write file stores lines until a line with only ."), ("edit  find", "the text editor (also nano); find files by name"), ("top  fetch", "CPU and memory; system summary with a bear (neofetch)"),
-        ("curl URL", "download a page or file over HTTP or HTTPS"), ("date  tz", "show the time; tz +05:30 sets the time zone"), ("passwd  whoami", "change your password; who am I"), ("poweroff  reboot", "shut down or restart")]),
-    ("CLOCK", &[("clock", "big time, stopwatch, timer and alarms. Keys 1-4 or Tab switch the views"), ("Stopwatch", "space start/stop, l lap, r reset"), ("Timer", "t starts one (5m, 1h30m, 90s), c cancels it"),
+        ("curl URL", "download a page or file over HTTP or HTTPS"), ("web URL", "the browser (needs the web add-on): Ctrl-L address, Ctrl-T new tab, Ctrl-W close, Ctrl-Tab next tab, Ctrl-[ back, Ctrl-F find, Ctrl-Q quit"), ("view FILE", "show pictures in a pane (needs the web add-on): n/p next, + - zoom, arrows pan, r rotate, s slideshow, q quit"), ("play FILE|DIR", "music (text screen) or video (a pane): space pause, left/right 10 s, n/p track, + - volume, q quit; -s shuffles a folder"), ("rec", "record the microphone to ~/Recordings (needs the web add-on's desktop: den asks y/n on its top bar first; Alt+R stops; q saves)"), ("date  tz", "show the time; tz +05:30 sets the time zone"), ("passwd  whoami", "change your password; who am I"), ("poweroff  reboot", "shut down or restart")]),
+    ("clock", &[("clock", "big time, stopwatch, timer and alarms. Keys 1-4 or Tab switch the views"), ("Stopwatch", "space start/stop, l lap, r reset"), ("Timer", "t starts one (5m, 1h30m, 90s), c cancels it"),
         ("Alarms", "a add, e edit, space on/off, d delete. Repeat: once, daily, weekdays or days like mon,wed"), ("", "Alarms and timers ring even when the clock is closed: a helper runs in the background after login.")]),
-    ("CALENDAR", &[("calendar", "a month with a dot on days that have events"), ("arrows", "move by day or week; [ and ] change month; t is today"), ("a e d", "add, edit, delete an event on the chosen day"),
+    ("calendar", &[("calendar", "a month; days with events are bright, today is peach"), ("arrows", "move by day or week; [ and ] change month; t is today"), ("a e d", "add, edit, delete an event on the chosen day"),
         ("", "Each event can have a reminder (15m, 2h, 1d before). It shows in the top bar and rings.")]),
-    ("CALC", &[("calc", "type an expression and press Enter: 2+3*4, (1+2)^3, sqrt(2), 10%3, pi, ans*2"), ("Up / Down", "bring back an earlier line; Ctrl-U clears; Ctrl-D leaves"), ("", "Functions: sqrt abs sin cos tan ln log exp floor ceil round.")]),
-    ("CONTACTS AND NOTES", &[("contacts", "a add, e edit, d delete, / search, c clear the search; each has phones, emails and a note"), ("notes", "a new note, Enter opens it, d deletes, / searches title, tags and text"),
+    ("calc", &[("calc", "type an expression and press Enter: 2+3*4, (1+2)^3, sqrt(2), 10%3, pi, ans*2"), ("Up / Down", "bring back an earlier line; Ctrl-U clears; Ctrl-D leaves"), ("", "Functions: sqrt abs sin cos tan ln log exp floor ceil round.")]),
+    ("contacts and notes", &[("contacts", "a add, e edit, d delete, / search, c clear the search; each has phones, emails and a note"), ("notes", "a new note, Enter opens it, d deletes, / searches title, tags and text"),
         ("In a note", "space ticks a todo; a adds a line; t adds a todo ([ ] or [x]); e edits; d deletes; r renames; g sets tags")]),
-    ("THE AI SHELL", &[("! your words", "type ! and your words at the prompt: the AI picks one command or action, thir shows it, and you press Enter (yes) or n. Plain lines are a normal shell"), ("apps by words", "add Kasun to my contacts, 0771234567 - what is on my calendar tomorrow - set an alarm for 6:30 - add buy milk to my notes as a todo"),
+    ("the ai shell", &[("! your words", "type ! and your words at the prompt: the AI picks one command or action, thir shows it, and you press Enter (yes) or n. Plain lines are a normal shell"), ("apps by words", "add Kasun to my contacts, 0771234567 - what is on my calendar tomorrow - set an alarm for 6:30 - add buy milk to my notes as a todo"),
         ("", "Reading contacts, notes or the calendar sends only the matching records to the AI; the confirm line says how many. Changes are always asked first."),
         ("AI off", "The AI is optional: choose no AI at first login, or turn it on or off in settings. With it off, ! lines say so and nothing goes to any provider"),
         ("examples", "! move notes into docs - ! make me a timer app - ! remind me at 5pm to call mum - ! change my AI provider - type ! alone for more")]),
-    ("SOUND AND SETTINGS", &[("settings", "time zone, wallpaper (blue and four more), sound on/off, volume, test sound"), ("beep", "play the alarm chime; beep 440 300 plays one note (Hz, ms)"),
+    ("sound and settings", &[("settings", "time zone, wallpaper (navy and four more), sound on/off, volume, test sound"), ("beep", "play the alarm chime; beep 440 300 plays one note (Hz, ms)"),
         ("", "Without a sound device the top bar notice flashes instead."), ("Your data", "~/.config/thir/<app>/ in plain text files only you can read")]),
 ];
 
@@ -31,11 +31,11 @@ pub fn lines(w: usize) -> Vec<(String, bool)> {
     for (sec, rows) in GUIDE {
         v.push((String::new(), false)); v.push((sec.to_string(), true));
         for (k, d) in *rows {
-            if k.is_empty() { for part in wrap(d, w.saturating_sub(2)) { v.push((format!("  {DIM}{part}{R}"), false)); } continue }
+            if k.is_empty() { for part in wrap(d, w.saturating_sub(2)) { v.push((format!(" {DIM}{part}{R}"), false)); } continue }
             let kw = 18.min(w / 3);
             let mut it = wrap(d, w.saturating_sub(kw + 3)).into_iter();
-            v.push((format!("  {CYAN}{}{R} {}", pad(&fit(k, kw), kw), it.next().unwrap_or_default()), false));
-            for more in it { v.push((format!("  {}  {more}", " ".repeat(kw)), false)); }
+            v.push((format!(" {FG}{}{R} {DIM}{}{R}", pad(&fit(k, kw), kw), it.next().unwrap_or_default()), false));
+            for more in it { v.push((format!(" {} {DIM}{more}{R}", " ".repeat(kw + 1)), false)); }
         }
     }
     v
@@ -58,10 +58,10 @@ pub fn run() -> i32 {
         let all = lines(w);
         let room = rows.saturating_sub(7);
         top = top.min(all.len().saturating_sub(room));
-        let mut l = vec![String::new(), head("HELP", "the thir guide", w), format!("  {DIM}{}{R}", count(GUIDE.len(), "section", "sections")), String::new(), hdr("KEYS AND COMMANDS"), rule(w)];
-        for (t, h) in all.iter().skip(top).take(room) { l.push(if *h { format!("  {ACC}{t}{R}") } else { t.clone() }); }
+        let mut l = vec![head("help", "the thir guide", w), String::new(), hdr("keys and commands"), rule(w)];
+        for (t, h) in all.iter().skip(top).take(room) { l.push(if *h { format!(" {ACC}{t}{R}") } else { t.clone() }); }
         while l.len() < rows.saturating_sub(3) { l.push(String::new()); }
-        l.push(rule(w)); l.push(dots(&[format!("{GOOD}{} sections{R}", GUIDE.len()), format!("{}%", if all.len() <= room { 100 } else { (top + room) * 100 / all.len() })]));
+        l.push(rule(w)); l.push(dots(&[format!("{DIM}{}{R}", count(GUIDE.len(), "section", "sections")), format!("{}%", if all.len() <= room { 100 } else { (top + room) * 100 / all.len() })]));
         l.push(hints(&[("up/down", "scroll"), ("space", "page"), ("1-9", "section"), ("q", "quit")]));
         draw(&l);
         let Some(keys) = s.keys(-1) else { return 0 };

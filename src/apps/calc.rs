@@ -90,18 +90,18 @@ pub fn run() -> i32 {
     loop {
         let (cols, rows) = crate::term::size(); let w = width(cols);
         let ok = hist.iter().filter(|h| h.1.parse::<f64>().is_ok()).count();
-        let mut l = vec![String::new(), head("CALC", &format!("ans {}", show(ans)), w), format!("  {DIM}{}{R}", count(hist.len(), "calculation", "calculations")), String::new(), hdr(&format!("{}RESULT", pad("EXPRESSION", w.saturating_sub(18)))), rule(w)];
+        let mut l = vec![head("calc", &format!("ans {}", show(ans)), w), String::new(), hdr(&format!("   {}result", pad("expression", w.saturating_sub(20)))), rule(w)];
         let room = rows.saturating_sub(l.len() + 5);
         let shown = &hist[hist.len().saturating_sub(room)..];
         for (e, r) in shown {
             let good = r.parse::<f64>().is_ok();
-            l.push(format!("  {}{}{} {}", if good { format!("{GOOD}\u{2713}{R} ") } else { format!("{BAD}\u{d7}{R} ") }, pad(&fit(e, w.saturating_sub(22)), w.saturating_sub(20)), if good { GOOD } else { BAD }, format!("{}{R}", pad(&fit(r, 16), 16))));
+            l.push(format!(" {} {}{}{R}", if good { format!("{GOOD}\u{2713}{R}") } else { format!("{BAD}\u{d7}{R}") }, pad(&fit(e, w.saturating_sub(22)), w.saturating_sub(20)), format!("{}{}", if good { FG } else { BAD }, pad(&fit(r, 16), 16))));
         }
-        if hist.is_empty() { l.push(format!("  {DIM}Try 2+3*4, (1+2)^3, sqrt(2), 10/4 or ans*2{R}")); }
-        while l.len() < rows.saturating_sub(5) { l.push(String::new()); }
-        l.push(rule(w)); l.push(dots(&[format!("{} total", hist.len()), format!("{GOOD}{ok} ok{R}"), if hist.len() > ok { format!("{BAD}{} errors{R}", hist.len() - ok)} else { format!("{DIM}0 errors{R}") }]));
-        l.push(format!("  {CYAN}\u{203a}{R} {}\x1b[7m \x1b[0m", fit(&buf, w.saturating_sub(4)))); 
-        l.push(hints(&[("enter", "calculate"), ("up/down", "history"), ("ctrl-u", "clear"), ("ctrl-d", "quit")]));
+        if hist.is_empty() { l.push(format!(" {DIM}Try 2+3*4, (1+2)^3, sqrt(2), 10/4 or ans*2{R}")); }
+        while l.len() < rows.saturating_sub(4) { l.push(String::new()); }
+        l.push(rule(w)); l.push(dots(&[format!("{DIM}{} total{R}", hist.len()), format!("{GOOD}{ok} ok{R}"), if hist.len() > ok { format!("{BAD}{} errors{R}", hist.len() - ok)} else { format!("{DIM}0 errors{R}") }]));
+        l.push(format!(" {ACC}\u{203a}{R} {}{ACCBG} {R}", fit(&buf, w.saturating_sub(4))));
+        l.push(hints(&[("enter", "calculate"), ("up/down", "history"), ("ctrl+u", "clear"), ("q", "quit")]));
         draw(&l);
         let Some(keys) = s.keys(-1) else { return 0 };
         for k in keys {

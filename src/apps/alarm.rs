@@ -103,9 +103,10 @@ const GLYPHS: [(char, [&str; 5]); 12] = [
 ];
 /// `text` (digits, ':' and '.') in 5 lines of blocks, each dot two characters wide so the digits look square.
 pub fn big(text: &str, color: &str) -> Vec<String> {
+    // Every row has the same width (blank cells are kept, only the gap after the last digit goes): the rows are centred one by one, so rows of different widths would slide sideways against each other.
     (0..5).map(|r| {
-        let s: String = text.chars().filter_map(|c| GLYPHS.iter().find(|g| g.0 == c)).map(|g| g.1[r].chars().map(|p| if p == '#' { "\u{2588}\u{2588}" } else { "  " }).collect::<String>() + "  ").collect();
-        format!("{color}{}{R}", s.trim_end())
+        let s = text.chars().filter_map(|c| GLYPHS.iter().find(|g| g.0 == c)).map(|g| g.1[r].chars().map(|p| if p == '#' { "\u{2588}\u{2588}" } else { "  " }).collect::<String>()).collect::<Vec<_>>().join("  ");
+        format!("{color}{s}{R}")
     }).collect()
 }
 fn centre(l: &str, cols: usize) -> String { format!("{}{l}", " ".repeat(cols.saturating_sub(vis(l)) / 2)) }
@@ -116,10 +117,10 @@ struct Watch { start: Option<Instant>, before: u64 /* ms */, laps: Vec<u64> }
 impl Watch { fn ms(&self) -> u64 { self.before + self.start.map_or(0, |s| s.elapsed().as_millis() as u64) } }
 fn watch_text(ms: u64) -> String { format!("{:02}:{:02}.{:02}", ms / 60000, ms / 1000 % 60, ms / 10 % 100) }
 
-const TABS: [&str; 4] = ["CLOCK", "STOPWATCH", "TIMER", "ALARMS"];
+const TABS: [&str; 4] = ["clock", "stopwatch", "timer", "alarms"];
 fn tabs(t: usize, w: usize) -> Vec<String> {
-    let row: Vec<String> = TABS.iter().enumerate().map(|(i, n)| if i == t { format!("{ACC}\u{25b8} {n}{R}") } else { format!("{DIM}{} {n}{R}", i + 1) }).collect();
-    vec![String::new(), head("CLOCK", &chrono_zone(), w), String::new(), format!("  {}", row.join("   ")), rule(w), String::new()]
+    let row: Vec<String> = TABS.iter().enumerate().map(|(i, n)| if i == t { format!("{ACC}{} {n}{R}", i + 1) } else { format!("{DIM}{} {n}{R}", i + 1) }).collect();
+    vec![head("clock", &chrono_zone(), w), String::new(), format!(" {}", row.join("   ")), String::new()]
 }
 fn chrono_zone() -> String { format!("UTC{}", clock::format_offset(clock::home_tz().unwrap_or(0))) }
 
@@ -136,46 +137,47 @@ pub fn run() -> i32 {
         match tab {
             0 => {
                 let t = clock::local(now, off);
-                sc(&mut l, big(&format!("{:02}:{:02}:{:02}", t.hour, t.min, t.sec), CYAN));
+                sc(&mut l, big(&format!("{:02}:{:02}:{:02}", t.hour, t.min, t.sec), FG));
                 l.push(String::new());
-                l.push(centre(&format!("{ACC}{} {:02} {} {}{R}", ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][t.wday as usize], t.day, clock::MONTH[t.month as usize - 1], t.year), w + 4));
+                l.push(centre(&format!("{FG}{} {:02} {} {}{R}", clock::WDAY_FULL[t.wday as usize], t.day, clock::MONTH[t.month as usize - 1], t.year), w + 4));
                 let next = alarms.iter().filter(|a| a.on && timer_secs(a).is_none()).filter_map(|a| next_ring(a.when, now, off).map(|t| (t, a))).min_by_key(|x| x.0);
                 l.push(String::new());
-                l.push(centre(&match next { Some((t, _)) => format!("{GOOD}\u{25cf}{R} next alarm {ACC}{}{R} {DIM}in {}{R}", day_text(t, now, off), dur_text(t - now)), None => format!("{DIM}\u{25cb} no alarm set{R}") }, w + 4));
+                l.push(centre(&match next { Some((t, _)) => format!("{DIM}next alarm{R} {FG}{}{R} {DIM}in {}{R}", day_text(t, now, off), dur_text(t - now)), None => format!("{DIM}No alarm set. Press 4, then a to add one.{R}") }, w + 4));
             }
             1 => {
-                sc(&mut l, big(&watch_text(sw.ms()), if sw.start.is_some() { GOOD } else { ACC }));
+                sc(&mut l, big(&watch_text(sw.ms()), if sw.start.is_some() { GOOD } else { FG }));
                 l.push(String::new());
-                l.push(centre(&if sw.start.is_some() { format!("{GOOD}\u{25cf} running{R}") } else if sw.before > 0 { format!("{WARN}stopped{R}") } else { format!("{DIM}\u{25cb} ready{R}") }, w + 4));
-                for (i, x) in sw.laps.iter().enumerate().rev().take(rows.saturating_sub(18)) { l.push(format!("  {DIM}lap {:<3}{R} {CYAN}{}{R}  {DIM}+{}{R}", i + 1, watch_text(*x), watch_text(x - if i > 0 { sw.laps[i - 1] } else { 0 }))); }
+                l.push(centre(&if sw.start.is_some() { format!("{ACC}\u{25d0}{R} {DIM}running{R}") } else if sw.before > 0 { format!("{WARN}stopped{R}") } else { format!("{DIM}\u{25cb} ready{R}") }, w + 4));
+                for (i, x) in sw.laps.iter().enumerate().rev().take(rows.saturating_sub(18)) { l.push(format!(" {DIM}lap {:<3}{R} {FG}{}{R}  {DIM}+{}{R}", i + 1, watch_text(*x), watch_text(x - if i > 0 { sw.laps[i - 1] } else { 0 }))); }
             }
             2 => match alarms.iter().find(|a| timer_secs(a).is_some()) {
                 Some(a) => {
                     let (total, left) = (timer_secs(a).unwrap_or(1), match a.when { When::At(t) => t - now, _ => 0 });
-                    let (txt, c) = if left > 0 { (dur_text(left), if left <= 10 { WARN } else { CYAN }) } else { ("00:00".into(), BAD) };
+                    let (txt, c) = if left > 0 { (dur_text(left), if left <= 10 { WARN } else { FG }) } else { ("00:00".into(), BAD) };
                     sc(&mut l, big(&txt, c)); l.push(String::new());
                     let filled = (((total - left.max(0)) as usize * (w - 2)) / total.max(1) as usize).min(w - 2);
-                    l.push(centre(&format!("{c}{}{R}{DIM}{}{R}", "\u{2588}".repeat(filled), "\u{2591}".repeat(w - 2 - filled)), w + 4));
-                    l.push(centre(&if left > 0 { format!("{GOOD}\u{25cf}{R} counting down {DIM}from {}{R}", dur_text(total)) } else { format!("{BAD}\u{2713} time is up{R}") }, w + 4));
+                    l.push(centre(&format!("{ACC}{}{R}{BDIM}{}{R}", "\u{25ae}".repeat(filled), "\u{2500}".repeat(w - 2 - filled)), w + 4));
+                    l.push(centre(&if left > 0 { format!("{ACC}\u{25d0}{R} {DIM}counting down from {}{R}", dur_text(total)) } else { format!("{BAD}time is up{R}") }, w + 4));
                 }
-                None => { sc(&mut l, big("00:00", DIM)); l.push(String::new()); l.push(centre(&format!("{DIM}\u{25cb} no timer. Press {CYAN}t{DIM} to start one{R}"), w + 4)); }
+                None => { sc(&mut l, big("00:00", DIM)); l.push(String::new()); l.push(centre(&format!("{DIM}No timer. Press {FG}t{DIM} to start one.{R}"), w + 4)); }
             },
             _ => {
                 let rowsv: Vec<String> = alarms.iter().map(|a| {
                     let (t, rep) = describe(a.when, now, off);
-                    let (g, c) = if !a.on { ("\u{25cb}", DIM) } else if matches!(a.when, When::At(x) if x <= now) { ("\u{2713}", GOOD) } else { ("\u{25cf}", CYAN) };
-                    format!("{DIM}{:<2}{R} {c}{g}{R}  {ACC}{t}{R}  {:<22} {}", a.id, fit(&rep, 22), fit(&a.label, w.saturating_sub(36)))
+                    let (g, c) = if !a.on { ("\u{25cb}", DIM) } else if matches!(a.when, When::At(x) if x <= now) { ("\u{2713}", GOOD) } else { ("\u{25cf}", ACC) };
+                    format!("{DIM}{:<2}{R} {c}{g}{R}  {FG}{t}{R}  {:<22} {}", a.id, fit(&rep, 22), fit(&a.label, w.saturating_sub(36)))
                 }).collect();
                 let (on, done) = (alarms.iter().filter(|a| a.on).count(), alarms.iter().filter(|a| matches!(a.when, When::At(x) if x <= now)).count());
-                let p = Page { title: "", right: "", count: count(alarms.len(), "alarm", "alarms"), header: "#   S  TIME   REPEAT                 LABEL".into(), rows: rowsv,
-                    foot: vec![format!("{} total", alarms.len()), format!("{GOOD}{on} on{R}"), format!("{DIM}{done} done{R}")], note: note.clone(), hints: vec![("a", "add"), ("e", "edit"), ("space", "on/off"), ("d", "delete"), ("1-4", "tabs"), ("q", "quit")], empty: "No alarms yet. Press a to add one." };
-                let mut pl = p.lines(&mut sel, cols, rows.saturating_sub(3));
-                pl.drain(..2); l.truncate(5); l.extend(pl);   // the tab header replaces the page header
+                let p = Page { title: "", right: "", count: count(alarms.len(), "alarm", "alarms"), header: "#   s  time   repeat                 label".into(), rows: rowsv,
+                    foot: vec![format!("{} total", alarms.len()), format!("{GOOD}{on} on{R}"), format!("{DIM}{done} done{R}")], note: note.clone(), hints: vec![("a", "add"), ("e", "edit"), ("space", "on/off"), ("d", "delete"), ("1-4", "tab"), ("q", "quit")], empty: "No alarms yet. Press a to add one." };
+                let mut pl = p.lines(&mut sel, cols, rows.saturating_sub(2));
+                pl.drain(..2); l.extend(pl);   // the tab header replaces the page title
             }
         }
         if tab != 3 {
-            l.push(String::new()); if !note.is_empty() { l.push(format!("  {note}")); }
-            l.push(hints(&match tab { 0 => vec![("1-4", "tabs"), ("q", "quit")], 1 => vec![("space", "start/stop"), ("l", "lap"), ("r", "reset"), ("1-4", "tabs"), ("q", "quit")], _ => vec![("t", "new timer"), ("c", "cancel"), ("1-4", "tabs"), ("q", "quit")] }));
+            while l.len() + 2 < rows { l.push(String::new()); }
+            l.push(if note.is_empty() { String::new() } else { format!(" {note}") });
+            l.push(hints(&match tab { 0 => vec![("1-4", "tab"), ("q", "quit")], 1 => vec![("space", "start/stop"), ("l", "lap"), ("r", "reset"), ("1-4", "tab"), ("q", "quit")], _ => vec![("t", "new timer"), ("c", "cancel"), ("1-4", "tab"), ("q", "quit")] }));
         }
         draw(&l);
         let Some(keys) = s.keys(if tab == 1 && sw.start.is_some() { 50 } else { 250 }) else { return 0 };
@@ -265,6 +267,7 @@ mod tests {
     }
     #[test] fn big_digits_have_five_rows() {
         let b = big("12:30", ""); assert_eq!(b.len(), 5); assert!(b[0].contains('\u{2588}'));
+        for t in ["11:11", "00:00", "12:47.89", "01:28"] { let w = big(t, ""); assert!(w.iter().all(|r| vis(r) == vis(&w[0])), "{t}: rows differ in width"); }
         let plain: Vec<usize> = b.iter().map(|l| vis(l)).collect(); assert!(plain.iter().all(|&n| n == plain[0] || n >= 10));
     }
 }

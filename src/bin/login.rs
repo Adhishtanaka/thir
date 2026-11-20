@@ -51,11 +51,13 @@ fn load_or_die() -> Vec<User> {
     }
 }
 
-fn secret(prompt: &str) -> String { user::read_secret(prompt).unwrap_or_else(|_| exit(1)) }
-fn line(prompt: &str) -> String { user::read_line(prompt).unwrap_or_else(|_| exit(1)) }
+/// The prompts are dim labels; the typed text stays in the normal colour.
+fn secret(prompt: &str) -> String { user::read_secret(&format!("\x1b[90m{prompt}\x1b[0m")).unwrap_or_else(|_| exit(1)) }
+fn line(prompt: &str) -> String { user::read_line(&format!("\x1b[90m{prompt}\x1b[0m")).unwrap_or_else(|_| exit(1)) }
 
 /// First boot: make the first user. None = another console did it first.
 fn setup() -> Option<(User, Option<i32>)> {
+    println!("{}\n", thir::tui::head("first boot", &format!("thir {}", env!("CARGO_PKG_VERSION")), 40));
     println!("thir: first boot: create the first user");
     loop {
         let name = line("username: ");
@@ -99,6 +101,7 @@ fn main() {
     thir::sound::grant(None);   // a new login prompt: the last user's playback stream goes back to root
     let mut users = load_or_die();
     if users.is_empty() { match setup() { Some((u, tz)) => start(&u, tz), None => users = load_or_die() } }
+    println!("{}\n", thir::tui::head("sign in", &format!("thir {}", env!("CARGO_PKG_VERSION")), 40));
     for _ in 0..5 {
         let name = line("thir login: ");
         let pw = secret("password: ");
