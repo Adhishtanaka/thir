@@ -8,7 +8,7 @@ The whole system is about 10 MB and boots in a couple of seconds.
 
 ![thir running in VirtualBox: first boot, help, files, editor, split screen](docs/demo.gif)
 
-Full video: [docs/demo.mp4](docs/demo.mp4) (about 2 minutes, recorded in VirtualBox on a Mac).
+Full video: [docs/demo.mp4](docs/demo.mp4) (about 1 minute, recorded in VirtualBox on a Mac).
 
 ## Two versions
 
