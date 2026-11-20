@@ -1,0 +1,4 @@
+<!doctype html><meta charset=utf-8><title>upload</title>
+<body style="margin:0;background:rgb(10,20,200)">
+<input type=file id=f style="position:absolute;left:0;top:0;width:600px;height:100px;font-size:30px"
+ onchange="document.body.style.background = this.files[0].name === 'thir_test.bin' ? 'rgb(2,200,150)' : 'rgb(200,30,60)'; document.title = 'file-' + this.files[0].name">

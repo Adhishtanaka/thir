@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>tz-pending</title>
+<body style="margin:0;background:rgb(200,30,60)">
+<script>
+// thir's time zone is +05:30 in the test: JavaScript dates must say so (getTimezoneOffset is minutes WEST of UTC, so -330)
+const o = new Date(2026, 5, 15, 12, 0, 0).getTimezoneOffset(), z = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const iso = new Date(Date.UTC(2026, 5, 15, 12, 0, 0)).toString();
+document.title = "tz:" + o + ":" + z + ":" + iso.slice(16, 33);
+if (o === -330) document.body.style.background = "rgb(2,200,150)";
+</script>

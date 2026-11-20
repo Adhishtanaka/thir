@@ -13,7 +13,7 @@ Full video: [docs/demo.mp4](docs/demo.mp4) (about 1 minute, recorded in VirtualB
 ## What you get
 
 - A login with your own user and password. Passwords are stored as a slow, salted hash, never as plain text.
-- A desktop of terminal panes that you can split side by side, with a blue wallpaper and a small bear.
+- A desktop of terminal panes that you can split side by side, on a flat navy wallpaper with a big peach pixel "thir" (calm navy and peach: peach only means "here": focus, titles, selection). The thin top bar shows the pane numbers, the day and time, and the IP, volume and AI state. Every app shares one look: a peach title with a dim context, dim column heads, a filled selected row with a peach bar, and a key-hint row that ends with `q quit`. The wallpaper presets in `settings` are navy (the default), graphite, forest, plum and ember; an old `wall=blue` setting maps to navy. The only bear left is the filled one in `neofetch`.
 - Your files are saved on a disk and are still there after a restart.
 - A shell with Tab completion, history (Up and Down arrows) and grey suggestions from your history.
 - A few apps: `edit` (a simple editor, also called `nano`), `find`, `top` (CPU and memory use) and `neofetch`.
@@ -64,6 +64,21 @@ Type `!` and your words for everything else. `! what is using my disk?` gets an 
 
 The model never gets real power. Apps run in a sandbox with no access to your files or keys, and they only reach the websites you said yes to. You bring your own API key (Anthropic, OpenAI, Gemini, DeepSeek, or a local Ollama). It's still rough: small models sometimes need a retry, and a two-minute wait for an app is long. But watching a computer write itself a tool you asked for is pretty fun.
 
+## The web add-on (optional)
+
+The base thir has no browser. The web add-on adds one, plus a music and video player, a picture viewer and a voice recorder. It is one big file, `web.sqsh`, that thir mounts at `/web`. It is only in the `-web` images, or in a build made with `THIR_WEB=1 ./build.sh` (the first build compiles WebKit, which takes a few hours). On the desktop (not on a serial console):
+
+- `web https://en.wikipedia.org/wiki/Sri_Lanka` opens a page in its own pane. `web` alone asks for an address. Words without a dot, like `sri lanka`, are searched on DuckDuckGo. Only `http` and `https` addresses open, so `file:` and `javascript:` are refused. Ctrl-L is the address, Ctrl-T and Ctrl-W open and close tabs (up to 8), Ctrl-Tab switches, Ctrl-[ and Ctrl-] go back and forward, Ctrl-F finds, Ctrl-Q quits.
+- `play song.mp3`, `play ~/Music` or `play movie.mp4` plays music (a text screen) or video (in a pane).
+- `view photo.jpg` or `view ~/Pictures` shows pictures, with zoom, pan and a slideshow.
+- `rec` records the microphone to `~/Recordings`. thir asks first, in its own top bar, every time.
+
+You can also ask the AI: `! open wikipedia sri lanka`, `! play my music`, `! show my photos`, `! record a voice note`. It only picks the command; thir shows it and asks first. The AI never sees page text, pictures or sound.
+
+A browser needs regular updates, because web sites attack browsers all the time. The add-on is not updated by itself yet, so rebuild or replace `web.sqsh` every month or two. The browser runs locked in: the page process cannot reach the network or write any file, the network process can write only the browser's own folders and `~/Downloads`, and nothing can read your other files or keys (Landlock and seccomp). It is not as strong as the sandbox of a big browser, because this kernel has no namespaces. Pages cannot use your camera, microphone or location, and a certificate error is never skipped.
+
+The add-on is mostly other people's code: WPE WebKit ([source](https://wpewebkit.org/releases/)), glib, libsoup and GnuTLS (LGPL, [source](https://download.gnome.org/sources/)), ffmpeg without the GPL parts (LGPL, [source](https://ffmpeg.org/releases/)), Mesa (MIT, [source](https://archive.mesa3d.org/)), and Noto and Droid fonts (OFL and Apache). The build scripts are in `scripts/build-web*.sh` and `docker/web.Dockerfile`.
+
 ## Try it
 
 Download the files from the [latest release](https://github.com/Adhishtanaka/thir/releases/latest).
@@ -109,4 +124,4 @@ You need a Mac with Docker and QEMU (`brew install qemu`).
 
 ## License
 
-thir's own code is under the [MIT License](LICENSE). The Linux kernel inside the images is GPL-2.0 (unmodified 6.12.117, [source](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.117.tar.xz)), and the Terminus font is under the SIL Open Font License. rustls and ring (Apache-2.0/MIT/ISC) encrypt web connections; root certificates from webpki-roots (CDLA-Permissive-2.0). Lua 5.4 (MIT) is included too.
+thir's own code is under the [MIT License](LICENSE). The Linux kernel inside the images is GPL-2.0 (unmodified 6.12.117, [source](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.117.tar.xz)), and the Terminus font is under the SIL Open Font License. rustls and ring (Apache-2.0/MIT/ISC) encrypt web connections; root certificates from webpki-roots (CDLA-Permissive-2.0). Lua 5.4 (MIT) is included too. The optional web add-on adds WPE WebKit, glib, libsoup, GnuTLS and ffmpeg (LGPL, with the source links in its section above), Mesa (MIT) and the Noto and Droid fonts.

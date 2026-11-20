@@ -47,10 +47,14 @@ magick "$tmp/s.ppm" "$PNG"
 magick "$tmp/login-keep.ppm" "${PNG%.png}-login.png"
 colors=$(magick identify -format %k "$PNG")
 [ "$(magick identify -format %wx%h "$PNG")" = 2560x1664 ] || { echo "FAIL: wrong screenshot size"; exit 1; }
-foot=$(magick "$PNG" -crop 240x88+1160+1576 +repage -format %k info:)   # bear mark + "thir" in the footer strip
-[ "$foot" -gt 20 ] || { echo "FAIL: footer mark missing ($foot colors)"; exit 1; }
+has() { magick "$1" -unique-colors txt:- | grep -qi "#$2"; }   # does the picture contain this exact colour
+has "$PNG" F0B27F || { echo "FAIL: no peach (focused border, pane title) on the desktop"; exit 1; }
+has "$PNG" 08152B || { echo "FAIL: no wall/bar blue on the desktop"; exit 1; }
+has "$PNG" 0B1C36 || { echo "FAIL: no pane fill"; exit 1; }
+has "${PNG%.png}-login.png" F0B27F || { echo "FAIL: the login wordmark (peach) is missing"; exit 1; }
 if grep -qF -- "$PW" "$log"; then echo "FAIL: password in the serial log"; exit 1; fi
-[ "$colors" -gt 100 ] || { echo "FAIL: screenshot has only $colors colors"; exit 1; }
+[ "$colors" -gt 4 ] || { echo "FAIL: screenshot has only $colors colors"; exit 1; }
 keys alt-q alt-q; sleep 3      # both panes closed: back to the login screen
 shot out; magick "$tmp/out.ppm" "${PNG%.png}-logout.png"
+has "${PNG%.png}-logout.png" F0B27F || { echo "FAIL: the logout screen has no wordmark"; exit 1; }
 echo "PASS: $PNG ($colors colors); also ${PNG%.png}-login.png and ${PNG%.png}-logout.png"

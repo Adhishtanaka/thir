@@ -1,0 +1,4 @@
+<!doctype html><meta charset=utf-8><title>dialog</title>
+<body style="margin:0;background:rgb(10,20,200)">
+<button id=b style="position:absolute;left:0;top:0;width:400px;height:300px;font-size:24px"
+ onclick="alert('hello there'); const c = confirm('proceed?'); const n = c ? prompt('name?', 'bob') : null; document.body.style.background = (c && n === 'bobx') ? 'rgb(2,200,150)' : 'rgb(200,30,60)'; document.title = 'done-' + c + '-' + n">ask</button>

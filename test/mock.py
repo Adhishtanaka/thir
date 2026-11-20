@@ -17,6 +17,12 @@ BIN = bytes(range(256))
 USER_TEXT = "mock reply %d café"
 PEOPLE = b'{"people":[{"name":"Ada"},{"name":"Linus"},{"name":"Grace"}]}\n'   # agent do downloads and reads it; a key or auth header gets a 403
 
+def big_page():   # 800 gradient cards and 1500 text paragraphs
+    rows = "".join('<p style="margin:0 0 6px;font:16px sans-serif">%d. The quick brown fox jumps over the lazy dog, again and again, in <b>bold</b> and <i>italic</i> and <code>code</code> &mdash; %s</p>' % (i, "x" * (i % 40)) for i in range(1500))
+    cards = "".join('<div style="display:inline-block;width:150px;height:100px;margin:4px;background:linear-gradient(135deg,hsl(%d,70%%,50%%),hsl(%d,70%%,30%%));border-radius:8px;box-shadow:0 2px 6px #0006"></div>' % (i * 7 % 360, i * 13 % 360) for i in range(800))
+    return ("<!doctype html><meta charset=utf-8><title>big-ok</title><body style='margin:8px'>" + cards + rows + "<script>document.title='big-ok-'+document.querySelectorAll('p').length</script>").encode()
+BIG = big_page()
+
 def err(reason): return 400, json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": "mock: " + reason}}).encode()
 
 SLOW = float(os.environ.get("THIR_MOCK_SLOW", "0"))   # seconds per chunk (3x before the first byte): slow streams for screenshots
@@ -30,7 +36,9 @@ APP_ROUTES = {"add Kasun to my contacts, 0771234567": "CONTACT_ADD Kasun | 07712
               "what is Kasun's number": "CONTACT_FIND kasun", "what is Zed's number": "CONTACT_FIND zed", "add buy milk to my notes as a todo": "NOTE_ADD Todo | [ ] buy milk", "what do my notes say about milk": "NOTE_FIND milk",
               "set an alarm for 6:30": "ALARM_ADD 06:30 | once |", "timer for 10 minutes": "TIMER 10m", "what is 12 times 15": "CALC 12*15"}
 ROUTES = {"please open the calculator": "RUN calc", "make me a weather app": "BUILD", "I live in Colombo": "REMEMBER city: Colombo", "remind me in 5 seconds to drink water": "REMIND +5s drink water",
-          "open ../../bin/sh": "RUN ../../bin/sh", "run a shell for me": "RUN echo a; echo b", "move notes into docs": "RUN mv notes.txt docs/", "delete everything": "RUN rm -r docs", "forget my city": "FORGET city"}
+          "open ../../bin/sh": "RUN ../../bin/sh", "run a shell for me": "RUN echo a; echo b", "move notes into docs": "RUN mv notes.txt docs/", "delete everything": "RUN rm -r docs", "forget my city": "FORGET city",
+          "open wikipedia sri lanka": "RUN web https://en.wikipedia.org/wiki/Sri_Lanka", "play my music": "RUN play ~/Music", "show my photos": "RUN view ~/Pictures", "record a voice note": "RUN rec",
+          "open the file etc passwd in the browser": "RUN web file:///etc/passwd"}
 def route(msg):   # the shell's picks, by the user's line (the text after ===LINE===)
     line = msg.split("===LINE===\n")[-1].strip()
     if line == "what apps do I have": return "ANSWER\nmock: you have calc" if "===SYSTEM===" in msg and "- calc v1" in msg else "ANSWER\nmock: no system summary"
@@ -70,6 +78,9 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Length", "5"); self.end_headers(); self.wfile.flush(); time.sleep(5); self.wfile.write(b"late\n")
         elif p.startswith("/apps/") and "/" not in p[6:] and not p[6:].startswith(".") and os.path.isfile(os.path.join(APPS, p[6:])): self.send(200, open(os.path.join(APPS, p[6:]), "rb").read())
         elif p == "/people.json": self.send(403 if (self.headers.get("authorization") or self.headers.get("x-api-key")) else 200, PEOPLE, "application/json")
+        elif p == "/dl.bin": self.send(200, bytes(range(256)) * 12, "application/octet-stream", [("Content-Disposition", 'attachment; filename="../thir test.bin"')])   # web: the download prompt
+        elif p.startswith("/web/") and p[5:] in ("js.html", "btn.html", "input.html", "tall.html", "tz.html", "blank.html", "dialog.html", "find.html", "upload.html", "lang.html", "dpr.html"): self.send(200, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", p[5:]), "rb").read(), "text/html; charset=utf-8")   # web: the page fixtures
+        elif p == "/web/big.html": self.send(200, BIG, "text/html; charset=utf-8")   # web: a heavy-ish page for measuring memory
         elif p == "/downgrade": self.redirect("http://10.0.2.2:18080/hello")
         else: self.send(404, b"not found\n")
     do_HEAD = do_GET

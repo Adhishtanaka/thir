@@ -1,0 +1,7 @@
+<!doctype html><meta charset=utf-8><title>dpr</title>
+<body style="margin:0;background:rgb(200,30,60)">
+<script>
+// green only at device scale 2 (thir's den scale 2 on a 2560x1664 screen)
+document.title = "dpr-" + devicePixelRatio;
+if (devicePixelRatio === 2) document.body.style.background = "rgb(2,200,150)";
+</script>
