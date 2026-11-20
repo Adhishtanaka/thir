@@ -50,7 +50,8 @@ colors=$(magick identify -format %k "$PNG")
 has() { magick "$1" -unique-colors txt:- | grep -qi "#$2"; }   # does the picture contain this exact colour
 has "$PNG" F0B27F || { echo "FAIL: no peach (focused border, pane title) on the desktop"; exit 1; }
 has "$PNG" 08152B || { echo "FAIL: no wall/bar blue on the desktop"; exit 1; }
-has "$PNG" 0B1C36 || { echo "FAIL: no pane fill"; exit 1; }
+has "$PNG" 0A1A33 || { echo "FAIL: no translucent shell pane (pane fill over the wall at alpha 191)"; exit 1; }
+has "$PNG" 64534C || { echo "FAIL: the muted wordmark does not show under the panes"; exit 1; }
 has "${PNG%.png}-login.png" F0B27F || { echo "FAIL: the login wordmark (peach) is missing"; exit 1; }
 if grep -qF -- "$PW" "$log"; then echo "FAIL: password in the serial log"; exit 1; fi
 [ "$colors" -gt 4 ] || { echo "FAIL: screenshot has only $colors colors"; exit 1; }
