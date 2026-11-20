@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "thir"
-version = "0.4.1-ai"
+version = "0.4.2-ai"
 dependencies = [
  "argon2",
  "libc",
