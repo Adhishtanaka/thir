@@ -1,0 +1,18 @@
+# wpe-shim: installed in the add-on as WPEWebProcess and WPENetworkProcess (the real programs are renamed *.real). A small static program: sandbox, then exec.
+[package]
+name = "wpe-shim"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+thir = { path = "../.." }
+libc = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true

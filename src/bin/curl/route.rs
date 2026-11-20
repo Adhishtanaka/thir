@@ -3,7 +3,7 @@
 //! through its own parser after a yes. An AI action is a fixed verb: an app name must pass app_name_ok and exist; a fact passes memory::add; a time passes
 //! parse_when; BUILD, EDIT, FIX and DO get the line the user typed, not the model's words. Everything is shown first and done only after the user says yes;
 //! removing and forgetting show a warning and default to no. This file starts no programs: actions are calls into make, act, memory, schedule and setup.
-use crate::{agent::{clean, ctx_for, load_config, sanitize, stream, Chosen}, appact, context, make, memory, progress::{self, fit, ACC, CYAN, DIM, GOOD, R}, schedule, setup};
+use crate::{agent::{clean, ctx_for, load_config, sanitize, stream, Chosen}, appact, context, make, memory, progress::{self, fit, CYAN, DIM, FG, GOOD, R}, schedule, setup};
 use std::io::BufRead;
 use thir::{clock, files::{app_name_ok, printable}};
 
@@ -67,8 +67,8 @@ fn fail(m: &str) -> i32 { eprintln!("{m}"); 1 }
 /// The yes/no line. `warn` is a danger: a yellow line first and the default flips to no.
 fn ask(label: &str, what: &str, cost: &str) -> bool { ask_w(label, what, cost, "") }
 fn ask_w(label: &str, what: &str, cost: &str, warn: &str) -> bool {
-    if !warn.is_empty() { println!("  \x1b[33m! {warn}\x1b[0m"); }
-    let q = format!("  {CYAN}\u{2192}{R} {ACC}{label}{R} {what}{}  run? {DIM}{}{R} ", if cost.is_empty() { String::new() } else { format!(" {DIM}\u{b7} {cost}{R}") }, if warn.is_empty() { "[Y/n]" } else { "[y/N]" });
+    if !warn.is_empty() { println!(" \x1b[31m! {warn}\x1b[0m"); }
+    let q = format!(" {CYAN}\u{2192}{R} {FG}{label}{R} {what}{}  run?  {GOOD}[y]{R} run{}   {DIM}[n] cancel{}{R} ", if cost.is_empty() { String::new() } else { format!(" {DIM}\u{b7} {cost}{R}") }, if warn.is_empty() { " (default)" } else { "" }, if warn.is_empty() { "" } else { " (default)" });
     if warn.is_empty() { return make::ask_yes(&q); }
     print!("{q}"); let _ = std::io::Write::flush(&mut std::io::stdout());
     let mut l = String::new();
@@ -120,7 +120,7 @@ fn act(flags: &[String], home: &std::path::Path, line: &str, pick: Pick, ch: &Ch
         Pick::Answer(t) => { println!("  {DIM}\u{2192} answer{R}"); Indent { bol: true }.put(&format!("{t}\n")); 0 }
         Pick::Run(c) => match std::env::var("THIR_PICK_FD").ok().and_then(|v| v.parse::<i32>().ok()) {   // nsh checks, shows and asks
             Some(fd) => { use std::os::fd::FromRawFd; let mut f = unsafe { std::fs::File::from_raw_fd(fd) }; let _ = std::io::Write::write_all(&mut f, c.as_bytes()); 0 }
-            None => { println!("  {CYAN}\u{2192}{R} {ACC}{}{R}", printable(&c)); 0 }
+            None => { println!(" {CYAN}\u{2192}{R} {FG}{}{R}", printable(&c)); 0 }
         },
         Pick::Build => if ask("build an app:", &what, "2 to 5 API calls") { make::command("build", &with(&[line])) } else { no() },
         Pick::Undo(a) => { if let Err(m) = has_app(&a) { return fail(&m); } if ask("go back one version of", &a, "") { make::command("undo", &[a]) } else { no() } }
@@ -152,7 +152,7 @@ fn act(flags: &[String], home: &std::path::Path, line: &str, pick: Pick, ch: &Ch
 /// to answer from just that data; nothing is sent when nothing matches.
 fn app_act(a: appact::Act, line: &str, ch: &Chosen) -> i32 {
     let no = || { println!("  nothing done."); 0 };
-    if let appact::Act::Calc(e) = &a { return match appact::calculate(e) { Ok(r) => { println!("  {CYAN}\u{2192}{R} {ACC}{}{R}", printable(&r)); 0 } Err(m) => fail(&format!("agent: {m}")) }; }
+    if let appact::Act::Calc(e) = &a { return match appact::calculate(e) { Ok(r) => { println!(" {CYAN}\u{2192}{R} {FG}{}{R}", printable(&r)); 0 } Err(m) => fail(&format!("agent: {m}")) }; }
     if appact::is_read(&a) {
         let Some((what, block)) = appact::read_block(&a) else { println!("  {DIM}\u{2192}{R} {}", appact::nothing(&a)); return 0 };
         if !ask("private data:", &what, "only this goes to the AI") { return no(); }
@@ -181,6 +181,8 @@ mod tests {
         assert_eq!(parse_pick("REMIND daily 07:00 open weather"), Ok(Pick::Remind(s("daily 07:00 open weather"))));
         assert_eq!(parse_pick("ANSWER\nline one\nline two"), Ok(Pick::Answer(s("line one\nline two")))); assert_eq!(parse_pick("ANSWER mock: x"), Ok(Pick::Answer(s("mock: x"))));
         assert_eq!(parse_pick("```\nRUN calc\n```"), Ok(Pick::Run(s("calc"))));   // a fence is not part of the answer
+        for (reply, cmd) in [("RUN web https://en.wikipedia.org/wiki/Sri_Lanka", "web https://en.wikipedia.org/wiki/Sri_Lanka"), ("RUN play ~/Music", "play ~/Music"), ("RUN view ~/Pictures", "view ~/Pictures"), ("RUN rec", "rec")] { assert_eq!(parse_pick(reply), Ok(Pick::Run(s(cmd)))); }   // the browser and media examples of prompts/route.txt
+        for ex in ["open wikipedia sri lanka -> RUN web https://en.wikipedia.org/wiki/Sri_Lanka", "play my music -> RUN play ~/Music", "show my photos -> RUN view ~/Pictures", "record a voice note -> RUN rec"] { assert!(PROMPT.contains(ex), "{ex}"); }
         assert_eq!(parse_pick("ANSWER\na\x1b[2Jb"), Ok(Pick::Answer(s("a[2Jb"))));
     }
     #[test] fn bad_replies_are_refused() {

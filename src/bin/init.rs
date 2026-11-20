@@ -61,14 +61,34 @@ fn mount_data() {
         Err(e) => eprintln!("thir: /data unavailable: {e}"),
     }
 }
+/// Loop-mount the optional web add-on (root-only squashfs on the data disk) read-only at /web. Loop setup by ioctl: no losetup binary.
+fn mount_web() {
+    use std::os::fd::AsRawFd;
+    const SRC: &str = "/data/system/web.sqsh";
+    if !Path::new(SRC).exists() { return }
+    let r = (|| -> io::Result<()> {
+        let ctl = File::options().read(true).write(true).open("/dev/loop-control")?;
+        let n = unsafe { libc::ioctl(ctl.as_raw_fd(), 0x4C82 /* LOOP_CTL_GET_FREE */) };
+        if n < 0 { return Err(io::Error::last_os_error()) }
+        let dev = format!("/dev/loop{n}");
+        if !wait_for(&dev, 2000) { return Err(io::Error::new(io::ErrorKind::NotFound, format!("{dev} missing"))) }
+        let (lo, back) = (File::options().read(true).write(true).open(&dev)?, File::open(SRC)?);   // a read-only backing file makes the loop device read-only
+        if unsafe { libc::ioctl(lo.as_raw_fd(), 0x4C00 /* LOOP_SET_FD */, back.as_raw_fd()) } != 0 { return Err(io::Error::last_os_error()) }
+        let cdev = std::ffi::CString::new(dev).unwrap();
+        mount(&cdev, c"/web", c"squashfs", libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV, c"")   // the loop device stays attached while mounted
+    })();
+    match r { Ok(()) => println!("thir: mounted /web"), Err(e) => eprintln!("thir: /web unavailable: {e}") }
+}
 /// The sound card shows up when the HDA driver has probed, often after init is running. Then init (root) unmutes the mixer and locks every node to root 0600;
 /// login hands the playback stream to the user who logs in (thir::sound::grant). The volume setting is in the samples, so users never need the mixer.
+/// Every second after that init re-applies the recorded holder, so a card that appeared after the login still gets its playback node to the user (never capture or control).
 fn open_sound() {
     std::thread::spawn(|| {
         for _ in 0..300 {
-            if Path::new("/dev/snd/pcmC0D0p").exists() && Path::new("/dev/snd/controlC0").exists() { thir::sound::grant(None); thir::sound::unmute(); return }
+            if Path::new("/dev/snd/pcmC0D0p").exists() && Path::new("/dev/snd/controlC0").exists() { thir::sound::sync(); thir::sound::unmute(); break }
             sleep(Duration::from_millis(100));
         }
+        loop { thir::sound::sync(); sleep(Duration::from_secs(1)); }
     });
 }
 fn shutdown(cmd: libc::c_int) -> ! {
@@ -89,12 +109,16 @@ fn main() {
     mount_warn(c"sysfs", c"/sys", c"sysfs", 0, c"");
     mount_warn(c"tmpfs", c"/tmp", c"tmpfs", nosuid, c"mode=1777");
     mount_warn(c"tmpfs", c"/run", c"tmpfs", 0, c"mode=0755");
+    unsafe { libc::mkdir(c"/run/den".as_ptr(), 0o755); libc::mkdir(c"/dev/shm".as_ptr(), 0o755); }
+    mount_warn(c"tmpfs", c"/dev/shm", c"tmpfs", nosuid | libc::MS_NOEXEC, c"mode=1777");
     println!("thir: mounted /dev /proc /sys /tmp /run");
     // the kernel defaults are 0; root processes (den, login) read paths users control
     for k in ["protected_hardlinks", "protected_symlinks", "protected_fifos", "protected_regular"] {
         if let Err(e) = fs::write(format!("/proc/sys/fs/{k}"), "1") { eprintln!("thir: {k}: {e}"); }
     }
+    if let Err(e) = fs::write("/proc/sys/kernel/yama/ptrace_scope", "1") { eprintln!("thir: ptrace_scope: {e}"); }
     mount_data();
+    mount_web();
     if unsafe { libc::sethostname(c"thir".as_ptr(), 4) } != 0 { eprintln!("thir: sethostname: {}", io::Error::last_os_error()); }
     if let Err(e) = net::set_up("lo") { eprintln!("thir: lo up: {e}"); }
     match net::interfaces() { Ok(v) => for i in &v { println!("thir: iface {}", i.line()); }, Err(e) => eprintln!("thir: interfaces: {e}") }

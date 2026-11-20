@@ -97,16 +97,16 @@ pub fn used(facts: &[String], before: &str, after: &str) -> Vec<String> {
 
 fn numbered(facts: &[String]) -> String { facts.iter().enumerate().map(|(i, f)| format!("  {:<2} {f}\n", i + 1)).collect() }
 
-/// The memory as a table: the part before ":" of a fact is cyan.
+/// The memory as a table: the part before ":" of a fact is dim.
 fn table(facts: &[String]) -> String {
-    use crate::progress::{self as p, CYAN, R};
+    use crate::progress::{self as p, DIM, R};
     let w = p::tw();
     let rows: String = facts.iter().enumerate().map(|(i, f)| match f.split_once(':') {
-        Some((k, v)) => format!("  {:<2} {CYAN}{}:{R}{}\n", i + 1, p::fit(k, w), p::fit(v, w.saturating_sub(k.chars().count() + 5))),
-        None => format!("  {:<2} {}\n", i + 1, p::fit(f, w.saturating_sub(5))),
+        Some((k, v)) => format!(" {:<2} {DIM}{}:{R}{}\n", i + 1, p::fit(k, w), p::fit(v, w.saturating_sub(k.chars().count() + 5))),
+        None => format!(" {:<2} {}\n", i + 1, p::fit(f, w.saturating_sub(5))),
     }).collect();
     let n = format!("{} fact{}", facts.len(), if facts.len() == 1 { "" } else { "s" });
-    format!("\n{}\n  {n}\n\n{}\n{}\n{rows}{}\n{}\n  {}! forget fact N{R} removes one \u{b7} edit ~/.config/thir/memory to change them all\n", p::hdr("MEMORY"), p::hdr("#  FACT"), p::rule(w), p::rule(w), p::dots(&[n.clone(), format!("{}only you can read this{R}", p::DIM)]), CYAN)
+    format!("\n{}\n\n{}\n{}\n{rows}{}\n{}\n {}! forget fact N{R} removes one \u{b7} edit ~/.config/thir/memory to change them all\n", p::head("memory", &n, w), p::hdr("#  fact"), p::rule(w), p::rule(w), p::dots(&[format!("{}{n}{R}", p::DIM), format!("{}only you can read this{R}", p::DIM)]), p::DIM)
 }
 
 /// `!remember | memory | forget`: no key and no provider config are read here.

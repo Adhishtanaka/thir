@@ -14,11 +14,13 @@ pub mod net;
 pub mod notify;
 pub mod parse;
 pub mod procinfo;
+pub mod sandbox;
 pub mod sound;
 pub mod store;
 pub mod term;
 pub mod tui;
 pub mod user;
+pub mod web;
 
 /// nsh exit codes that init turns into actions. Not 101: that is Rust's panic exit code.
 pub const EXIT_POWEROFF: i32 = 120;

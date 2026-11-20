@@ -47,13 +47,13 @@ pub fn usage() -> String {
     ROWS.iter().fold("The ! commands (type ! and a name; Tab completes them):\n".to_string(), |o, (c, d)| o + &format!("  {c:<27} {d}\n")) + NOTES
 }
 
-/// The help on a terminal: the shared table look, commands in cyan, the options dim (shortened to fit one screen).
+/// The help on a terminal: the shared table look, commands in FG, the options dim (shortened to fit one screen).
 fn help() -> String {
-    use crate::progress::{self as p, CYAN, DIM, R};
+    use crate::progress::{self as p, DIM, FG, R};
     let w = term::size().0.saturating_sub(4).clamp(40, 76);
-    let rows: String = ROWS.iter().map(|(c, d)| format!("  {CYAN}{c:<27}{R} {d}\n")).collect();
-    let notes: String = NOTES.lines().take(4).map(|l| format!("  {DIM}{l}{R}\n")).collect();
-    format!("\n{}\n  type ! and a name; Tab completes them\n\n{}\n{}\n{rows}{}\n{notes}", p::hdr("THE ! COMMANDS"), p::hdr(&format!("{:<27} WHAT IT DOES", "COMMAND")), p::rule(w), p::rule(w))
+    let rows: String = ROWS.iter().map(|(c, d)| format!(" {FG}{c:<27}{R} {DIM}{d}{R}\n")).collect();
+    let notes: String = NOTES.lines().take(4).map(|l| format!(" {DIM}{l}{R}\n")).collect();
+    format!("\n{}\n {DIM}type ! and a name; Tab completes them{R}\n\n{}\n{}\n{rows}{}\n{notes}", p::head("the ! commands", "", w), p::hdr(&format!("{:<27} what it does", "command")), p::rule(w), p::rule(w))
 }
 
 fn print_help() { if unsafe { libc::isatty(1) } == 1 { print!("{}", help()); } else { print!("{}", usage()); } }

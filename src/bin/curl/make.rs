@@ -95,7 +95,7 @@ pub fn approval_text(m: &Manifest, new: &[String], had_some: bool, color: bool) 
     let mut rows: Vec<String> = hosts.iter().map(|(h, plain)| if *plain { format!("  {WARN}!{R}  {WARN}connect to {h}{R}") } else { format!("  {CYAN}\u{2192}{R}  connect to {CYAN}{h}{R}") }).collect();
     rows.push(format!("  {GOOD}+{R}  keep its own data in ~/apps/{name}/data"));
     rows.push(format!("  {GOOD}\u{2713}{R}  cannot read your other files or keys, or run programs"));
-    format!("\n{}\n\n{}\n{}\n{}\n\n  \u{203a} ", progress::hdr(&format!("{} {}", name.to_uppercase(), also.to_uppercase())), rows.join("\n"), progress::rule(progress::tw()), progress::keys("allow and run", "cancel"))
+    format!("\n{}\n\n{}\n{}\n{}\n\n  \u{203a} ", progress::head(&format!("{name} {also}"), "", progress::tw()), rows.join("\n"), progress::rule(progress::tw()), progress::keys("allow and run", "cancel"))
 }
 
 /// A yes/no question that changes something for good: a table of what happens (`lost`: the note is a loss that cannot be taken back), the keys, then the `question` (default no).
@@ -103,7 +103,7 @@ pub fn confirm(title: &str, risk: &str, note: &str, lost: bool, yes: &str, quest
     if unsafe { libc::isatty(1) } == 1 {
         use progress::{BAD, CYAN, R, WARN};
         let n = if lost { format!("  {BAD}\u{d7}{R}  {BAD}{note}{R}") } else { format!("  {CYAN}\u{2192}{R}  {note}") };
-        println!("\n{}\n\n  {WARN}!{R}  {WARN}{risk}{R}\n{n}\n{}\n{}\n", progress::hdr(&title.to_uppercase()), progress::rule(progress::tw()), progress::keys(yes, "keep it"));
+        println!("\n{}\n\n  {WARN}!{R}  {WARN}{risk}{R}\n{n}\n{}\n{}\n", progress::head(title, "", progress::tw()), progress::rule(progress::tw()), progress::keys(yes, "keep it"));
         return ask("  \u{203a} ");   // the table above shows the keys
     }
     ask(question)
@@ -385,7 +385,7 @@ static SUMMARY: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 fn not_buildable(r: &str) -> String { format!("agent: that is not an app I can build: {r}") }
 
 fn build(ch: &Chosen, home: &Path, facts: &[String], idea: &str) -> Result<String, String> {
-    let mut j = job(ch, vec![], &format!("BUILD  {}", progress::fit(&printable(idea), 30)), &format!("agent: building with {} via {} (API use costs money)", ch.model, ch.p.name), &["plan", "code", "check", "test run"]);
+    let mut j = job(ch, vec![], &format!("build  {}", progress::fit(&printable(idea), 30)), &format!("agent: building with {} via {} (API use costs money)", ch.model, ch.p.name), &["plan", "code", "check", "test run"]);
     j.p.step("plan", "planning");
     let (spec, _) = j.call(SPEC_PROMPT, format!("{}===REQUEST===\n{idea}", memory::block(facts)))?;
     let plan_lines = spec.lines().count();
@@ -427,7 +427,7 @@ fn change(ch: &Chosen, name: &str, kind: Change, facts: &[String], text: &str) -
             ("fixing", "fixing code", fill(FIX_PROMPT, &[("{error}", &err), ("{spec}", &spec), ("{code}", &code)]))
         }
     };
-    let mut j = job(ch, load_store(&dir), &format!("{}  {name}", verb.trim_end_matches("ing").to_uppercase()), &format!("agent: {verb} {name} with {} via {} (API use costs money)", ch.model, ch.p.name), &["code", "check", "test run"]);
+    let mut j = job(ch, load_store(&dir), &format!("{}  {name}", verb.trim_end_matches("ing").to_lowercase()), &format!("agent: {verb} {name} with {} via {} (API use costs money)", ch.model, ch.p.name), &["code", "check", "test run"]);
     let (h, new) = match j.generate(label, user, &spec, false)? { Gen::No(r) => return Err(format!("agent: cannot make that change: {r}")), Gen::App(h, c) => (h, c) };
     if kind == Change::Edit { j.memory_note(&memory::used(facts, &code, &new)); }
     let net = h.net.unwrap_or_else(|| m.net.clone());
@@ -599,18 +599,18 @@ pub fn list(args: &[String]) -> i32 {
         }
         return 0;
     }
-    use progress::{fit, BAD, CYAN, DIM, GOOD, R, WARN};
+    use progress::{fit, BAD, CYAN, DIM, R, WARN};
     let (w, nw) = (progress::tw(), all.iter().map(|a| a.0.len()).max().unwrap_or(4).clamp(4, 20));
     let aw = w.saturating_sub(nw + 2 + 3 + 2 + 2 + 14).clamp(10, 40);
     let uses = all.iter().filter(|a| a.1.as_ref().is_ok_and(|m| !m.net.is_empty())).count();
-    println!("\n{}\n  {} app{}\n\n{}\n{}", progress::hdr("APPS"), all.len(), if all.len() == 1 { "" } else { "s" }, progress::hdr(&format!("{:<nw$}  {:<3}  {:<aw$}  NET", "NAME", "V", "ABOUT")), progress::rule(w));
+    println!("\n{}\n\n{}\n{}", progress::head("apps", &format!("{} app{}", all.len(), if all.len() == 1 { "" } else { "s" }), w), progress::hdr(&format!("{:<nw$}  {:<3}  {:<aw$}  net", "name", "v", "about")), progress::rule(w));
     for (n, m) in &all {
         match m {
             Ok(m) => {
                 let c = if m.net.is_empty() { format!("{DIM}none{R}") } else { format!("{}{}{R}", if m.net.iter().any(|o| o.starts_with("http:")) { WARN } else { CYAN }, fit(&printable(&net(m)), 24)) };
-                println!("  {GOOD}{n:<nw$}{R}  {:<3}  {:<aw$}  {c}", format!("v{}", m.version), fit(&printable(&m.about), aw));
+                println!(" {}{n:<nw$}{R}  {DIM}{:<3}{R}  {:<aw$}  {c}", progress::FG, format!("v{}", m.version), fit(&printable(&m.about), aw));
             }
-            Err(e) => println!("  {BAD}{n:<nw$}{R}  {BAD}broken: {}{R}", fit(&printable(e), w.saturating_sub(nw + 12))),
+            Err(e) => println!(" {BAD}{n:<nw$}{R}  {BAD}broken: {}{R}", fit(&printable(e), w.saturating_sub(nw + 12))),
         }
     }
     println!("{}\n{}", progress::rule(w), progress::dots(&[format!("{} app{}", all.len(), if all.len() == 1 { "" } else { "s" }), format!("{CYAN}{uses} use{} the network{R}", if uses == 1 { "s" } else { "" })]));

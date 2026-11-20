@@ -1,4 +1,5 @@
 //! Terminal grid plus a small escape-sequence parser. Never panics, whatever bytes it gets.
+use super::theme::{FG, PALETTE, SLOTS};
 pub const DEF_FG: u8 = 16;
 pub const DEF_BG: u8 = 17;
 
@@ -12,6 +13,8 @@ enum St { Ground, Esc, EscSkip, Csi, Osc }
 pub struct Term {
     pub cols: usize, pub rows: usize, pub cells: Vec<Cell>,
     pub cx: usize, pub cy: usize, pub cursor_on: bool, pub dirty: bool,
+    /// A full-screen app is running (`ESC [ ? 1049 h`, also 1047 and 47): den draws the pane opaque. shortcut: only the flag, the shell's screen is not saved (apps clear theirs when they end).
+    pub alt: bool,
     /// Window title set by `ESC ] 0 ; text BEL` or `ESC ] 2 ; text BEL` (printable, at most 40 characters); `title_changed` tells the bar to redraw.
     pub title: String, pub title_changed: bool,
     pen: Cell, wrap: bool, st: St, params: Vec<u32>, private: bool, need: u8, acc: u32, osc: Vec<u8>,
@@ -20,7 +23,7 @@ pub struct Term {
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
         let (cols, rows) = (cols.max(1), rows.max(1));
-        Term { cols, rows, cells: vec![BLANK; cols * rows], cx: 0, cy: 0, cursor_on: true, dirty: true, title: String::new(), title_changed: false, pen: BLANK, wrap: false, st: St::Ground, params: vec![0], private: false, need: 0, acc: 0, osc: vec![] }
+        Term { cols, rows, cells: vec![BLANK; cols * rows], cx: 0, cy: 0, cursor_on: true, dirty: true, alt: false, title: String::new(), title_changed: false, pen: BLANK, wrap: false, st: St::Ground, params: vec![0], private: false, need: 0, acc: 0, osc: vec![] }
     }
 
     /// Keeps the top-left part of the old content.
@@ -121,6 +124,7 @@ impl Term {
                 let b = self.blank(); self.cells[row + s..row + t.min(c)].fill(b);
             }
             b'm' => self.sgr(),
+            b'h' | b'l' if self.private && matches!(self.params[0], 47 | 1047 | 1049) => self.alt = f == b'h',
             b'h' | b'l' if self.private && self.params[0] == 25 => self.cursor_on = f == b'h',
             _ => return,
         }
@@ -128,8 +132,14 @@ impl Term {
     }
 
     fn sgr(&mut self) {
-        for i in 0..self.params.len() {
+        let mut i = 0;
+        while i < self.params.len() {
             let n = self.params[i];
+            if n == 38 || n == 48 {   // 38;2;r;g;b (24 bit) or 38;5;n (256 colours): kept as the nearest theme colour
+                let c = match self.params.get(i + 1) { Some(2) if i + 4 < self.params.len() => { let c = nearest(self.params[i + 2], self.params[i + 3], self.params[i + 4]); i += 4; c } Some(5) => { i += 2; DEF_FG } _ => DEF_FG };
+                if n == 38 { self.pen.fg = c } else { self.pen.bg = if c == DEF_FG { DEF_BG } else { c } }
+                i += 1; continue;
+            }
             let p = &mut self.pen;
             match n {
                 0 => *p = BLANK,
@@ -141,8 +151,17 @@ impl Term {
                 100..=107 => p.bg = (n - 100 + 8) as u8,
                 _ => {}
             }
+            i += 1;
         }
     }
+}
+
+/// The cell color (0..15 palette or a theme slot) closest to an RGB; exact theme colors map to their slot.
+fn nearest(r: u32, g: u32, b: u32) -> u8 {
+    let rgb = (r.min(255) << 16) | (g.min(255) << 8) | b.min(255);
+    if rgb == 0xd4dcec { return DEF_FG }
+    let d = |c: u32| { let f = |s: u32| ((c >> s & 255) as i32 - (rgb >> s & 255) as i32).pow(2); f(16) + f(8) + f(0) };
+    PALETTE.iter().enumerate().map(|(i, &c)| (i as u8, c)).chain(SLOTS).chain([(DEF_FG, FG)]).min_by_key(|x| d(x.1)).map_or(DEF_FG, |x| x.0)
 }
 
 #[cfg(test)]
@@ -175,6 +194,13 @@ mod tests {
         assert_eq!(t.cells[3], Cell { ch: 'D', ..BLANK });
         t.feed(b"\x1b[m\x1b[36mE"); assert_eq!(t.cells[4].fg, 6);
     }
+    #[test] fn truecolor_maps_to_theme_slots() {
+        let mut t = Term::new(10, 1);
+        t.feed(b"\x1b[38;2;240;178;127;48;2;21;41;74mA\x1b[0m\x1b[38;2;143;180;240mB\x1b[1mC");
+        assert_eq!((t.cells[0].fg, t.cells[0].bg), (18, 19));
+        assert_eq!(t.cells[1].fg, 4);   // close to ansi 4 (#7fb2f0)
+        assert!(t.cells[2].bold);
+    }
     #[test] fn erase() {
         let mut t = Term::new(4, 3); t.feed(b"aaaa\r\nbbbb\r\ncccc");
         t.feed(b"\x1b[2;3H\x1b[K"); assert_eq!(row(&t, 1), "bb");
@@ -183,6 +209,7 @@ mod tests {
         t.feed(b"\x1b[2J"); assert_eq!(row(&t, 0), "");
     }
     #[test] fn erase_uses_background() { let mut t = Term::new(2, 1); t.feed(b"\x1b[41m\x1b[K"); assert_eq!(t.cells[1].bg, 1); }
+    #[test] fn alt_screen_flag() { let mut t = Term::new(4, 2); assert!(!t.alt); t.feed(b"\x1b[?1049h"); assert!(t.alt); t.feed(b"\x1b[?25l"); assert!(t.alt); t.feed(b"\x1b[?1049l"); assert!(!t.alt); }
     #[test] fn cursor_visibility() { let mut t = Term::new(2, 1); t.feed(b"\x1b[?25l"); assert!(!t.cursor_on); t.feed(b"\x1b[?25h"); assert!(t.cursor_on); }
     #[test] fn backspace_tab_utf8() {
         let mut t = Term::new(20, 1); t.feed("a\u{8}b\tc é€".as_bytes());

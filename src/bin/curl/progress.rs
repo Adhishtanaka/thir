@@ -1,12 +1,14 @@
-//! The look of every agent screen: a bold UPPERCASE title, a header row, a rule, rows with coloured status glyphs, a rule, a footer of coloured counts.
-//! Colour carries meaning: green done / ok, cyan active / info, yellow warning, red failure; dim only for hints.
+//! The look of every agent screen (the design system, see src/tui.rs): a peach lower-case title, dim column heads over a rule, rows with status glyphs (✓ done, ◐ working, ○ waiting, × failed), a rule, a footer of counts.
+//! Colour carries meaning: green done / ok, peach working / here, yellow caution, red failure; dim for hints and details.
 //! Here: those shared parts, the live table of !build, edit and fix (Progress), the chat's "thinking" mark.
 //! The pure part (Model: rows, text counting, line formatting) is tested; Progress adds the ticker thread that redraws the live block.
 //! Not a tty: Progress prints the plain lines of old (no escapes, no thread).
 use std::{io::Write, sync::{atomic::{AtomicBool, Ordering::SeqCst}, Arc, Mutex}, thread, time::{Duration, Instant}};
 use thir::{files::printable, term};
 
-pub use thir::tui::{dots, fit, hdr, head, rule, vis, ACC, BAD, CYAN, DIM, GOOD, R, WARN};   // the look is shared with the apps (src/tui.rs)
+pub use thir::tui::{dots, fit, hdr, head, rule, vis, ACC, BAD, DIM, FG, GOOD, R, WARN};   // the look is shared with the apps (src/tui.rs)
+/// In the agent screens the arrow, the active step and "info" are peach (the accent); blue is for links only.
+pub const CYAN: &str = ACC;
 const SPIN: [&str; 4] = ["\u{25d0}", "\u{25d3}", "\u{25d1}", "\u{25d2}"];   // ◐ ◓ ◑ ◒ (den's font gets them from font.rs)
 const TICK_MS: u64 = 100;
 const LABEL_W: usize = 9;
@@ -14,10 +16,10 @@ const LABEL_W: usize = 9;
 /// The turning glyph of an active row.
 pub fn spin(ms: u64) -> &'static str { SPIN[(ms / 150 % 4) as usize] }
 
-/// Width of a table (its rule): the terminal, at most 56.
-pub fn tw() -> usize { term::size().0.saturating_sub(4).clamp(30, 56) }
+/// Width of a table (its rule): the terminal, at most 72.
+pub fn tw() -> usize { term::size().0.saturating_sub(4).clamp(30, 72) }
 /// The answer keys of a dialog; the default (`[n]`) is stated.
-pub fn keys(yes: &str, no: &str) -> String { format!("  {GOOD}[y]{R} {yes}   {DIM}[n] {no} (default){R}") }
+pub fn keys(yes: &str, no: &str) -> String { format!(" {GOOD}[y]{R} {yes}   {DIM}[n] {no} (default){R}") }
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mark { Pending, Active, Done, Warn, Bad }
 
@@ -87,30 +89,30 @@ impl Model {
         while self.shown < self.rows.len() && !matches!(self.rows[self.shown].mark, Mark::Pending | Mark::Active) { out.push(self.line(self.shown, now, w)); self.shown += 1; }
         out
     }
-    /// `  N  S  label  detail`: the glyph, label and detail share one colour that says what the step is doing (a fix step is yellow).
+    /// ` N  S  label  detail`: the glyph, label and detail share one colour that says what the step is doing (a fix step is yellow).
     fn line(&self, i: usize, now: u64, w: usize) -> String {
         let r = &self.rows[i];
         let fix = r.label.starts_with("fix ");
         let (g, c, dc) = match r.mark {
-            Mark::Pending => ("\u{25cb}", "", ""),
-            Mark::Active => (spin(now), if fix { WARN } else { CYAN }, if fix { WARN } else { CYAN }),
-            Mark::Done => ("\u{2713}", GOOD, ""),
+            Mark::Pending => ("\u{25cb}", DIM, DIM),
+            Mark::Active => (spin(now), if fix { WARN } else { ACC }, if fix { WARN } else { ACC }),
+            Mark::Done => ("\u{2713}", GOOD, DIM),
             Mark::Warn | Mark::Bad => ("\u{d7}", BAD, BAD),
         };
-        let lc = if r.mark == Mark::Done && fix { WARN } else if r.mark == Mark::Active { c } else { "" };
+        let lc = if r.mark == Mark::Done && fix { WARN } else if r.mark == Mark::Active { c } else if r.mark == Mark::Pending { DIM } else { "" };
         let note = match r.mark {
             Mark::Pending => String::new(),
             Mark::Active => { let s = now.saturating_sub(r.t0) / 1000; if self.lines() > 0 { format!("{} lines \u{b7} {s} s", self.lines()) } else { format!("thinking {s} s") } }
             _ => r.note.clone(),
         };
-        let head = format!("  {:<2} {c}{g}{R}  {lc}{}{R}", i + 1, if note.is_empty() { r.label.clone() } else { format!("{:<LABEL_W$}", r.label) });
-        if note.is_empty() { head } else { format!("{head}  {dc}{}{R}", fit(&note, (w + 2).saturating_sub(8 + LABEL_W + 2).max(8))) }
+        let head = format!(" {:<2} {c}{g}{R}  {lc}{}{R}", i + 1, if note.is_empty() { r.label.clone() } else { format!("{:<LABEL_W$}", r.label) });
+        if note.is_empty() { head } else { format!("{head}  {dc}{}{R}", fit(&note, (w + 1).saturating_sub(7 + LABEL_W + 2).max(8))) }
     }
     /// The footer: counts, the done ones green, the active cyan, the failed red.
     fn foot(&self, now: u64) -> String {
         let (t, d, a, f) = self.counts();
-        let mut p = vec![format!("{t} total"), if d > 0 { format!("{GOOD}{d} done{R}") } else { format!("{d} done") }];
-        if a > 0 { p.push(format!("{CYAN}{a} active{R}")); }
+        let mut p = vec![format!("{DIM}{t} total{R}"), if d > 0 { format!("{GOOD}{d} done{R}") } else { format!("{DIM}{d} done{R}") }];
+        if a > 0 { p.push(format!("{ACC}{a} working{R}")); }
         if f > 0 { p.push(format!("{BAD}{f} failed{R}")); }
         p.push(format!("{DIM}{} s{R}", now / 1000));
         dots(&p)
@@ -120,7 +122,7 @@ impl Model {
         let mut v = vec![];
         for (i, r) in self.rows.iter().enumerate().skip(self.shown) {
             v.push(self.line(i, now, w));
-            if r.mark == Mark::Active && !self.last.is_empty() { v.push(format!("     {DIM}\u{2570} {}{R}", fit(&printable(&self.last), (w + 2).saturating_sub(7)))); }
+            if r.mark == Mark::Active && !self.last.is_empty() { v.push(format!("    {DIM}\u{2570} {}{R}", fit(&printable(&self.last), (w + 1).saturating_sub(6)))); }
         }
         v.push(rule(w)); v.push(self.foot(now));
         v
@@ -159,7 +161,7 @@ impl Progress {
         if unsafe { libc::isatty(1) } != 1 { println!("{plain_header}"); return Progress { sh: None, th: None, open: AtomicBool::new(false) }; }
         term::cursor_hide();
         let w = tw().min(term::size().0.max(20) - 3);
-        term::put(format!("\n{}\n  {} step{}{DIM} \u{b7} {detail}{R}\n\n{}\n{}\n", head(title, model, w), labels.len(), if labels.len() == 1 { "" } else { "s" }, hdr(&format!("#  S  {:<LABEL_W$}  DETAIL", "STEP")), rule(w)).as_bytes());
+        term::put(format!("\n{}\n {DIM}{} step{} \u{b7} {detail}{R}\n\n{}\n{}\n", head(title, model, w), labels.len(), if labels.len() == 1 { "" } else { "s" }, hdr(&format!("#  s  {:<LABEL_W$}  detail", "step")), rule(w)).as_bytes());
         let sh = Arc::new(Shared { m: Mutex::new(Inner { model: Model::new(labels), drawn: 0, last: vec![], finale: None }), stop: AtomicBool::new(false), t0: Instant::now() });
         let s2 = sh.clone();
         let th = thread::spawn(move || while !s2.stop.load(SeqCst) {
@@ -213,23 +215,23 @@ impl Progress {
         let c = format!("{calls} call{}", if calls == 1 { "" } else { "s" });
         let Some(sh) = &self.sh else { let l = format!("{what} in {secs} s ({c}, about {k}k tokens)"); println!("{l}"); return l; };
         let (t, d, ..) = sh.m.lock().unwrap().model.counts();
-        let foot = dots(&[format!("{t} total"), format!("{GOOD}{d} done{R}"), format!("{GOOD}{what}{R}"), format!("{DIM}{secs} s{R}"), format!("{DIM}{c}{R}"), format!("{DIM}about {k}k tokens{R}")]);
+        let foot = dots(&[format!("{DIM}{t} total{R}"), format!("{GOOD}{d} done{R}"), format!("{GOOD}{what}{R}"), format!("{DIM}{secs} s{R}"), format!("{DIM}{c}{R}"), format!("{DIM}about {k}k tokens{R}")]);
         self.close(Some(foot.clone()));
-        let mut o = vec![foot, String::new(), format!("  {ACC}NEXT{R}")];
-        for (v, cmd) in next { o.push(format!("  {v:<7} {CYAN}{cmd}{R}")); }
-        if !hint.is_empty() { o.push(String::new()); o.push(format!("  {hint}")); }
+        let mut o = vec![foot, String::new(), format!(" {DIM}next{R}")];
+        for (v, cmd) in next { o.push(format!(" {DIM}{v:<7}{R} {FG}{cmd}{R}")); }
+        if !hint.is_empty() { o.push(String::new()); o.push(format!(" {hint}")); }
         let l = o.join("\n");
         term::put(format!("\n{}\n", o[2..].join("\n")).as_bytes());
         l
     }
 }
 /// A result line like the table rows: `  ✓ text` (green) or `  × text` (red).
-pub fn mark(ok: bool, s: &str) -> String { if ok { format!("  {GOOD}\u{2713}{R} {s}") } else { format!("  {BAD}\u{d7}{R} {s}") } }
+pub fn mark(ok: bool, s: &str) -> String { if ok { format!(" {GOOD}\u{2713}{R} {s}") } else { format!(" {BAD}\u{d7}{R} {s}") } }
 impl Drop for Progress { fn drop(&mut self) { self.close(None); } }
 
 /// The chat's wait mark on stderr: a turning glyph, `thinking` and the seconds, erased when the first text arrives.
 pub struct Think { st: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)> }
-pub fn think_line(ms: u64) -> String { format!("{CYAN}{} thinking{R} {DIM}{} s{R}", spin(ms), ms / 1000) }
+pub fn think_line(ms: u64) -> String { format!("{ACC}{}{R} {DIM}thinking {} s{R}", spin(ms), ms / 1000) }
 fn err(s: &str) { let _ = std::io::stderr().write_all(s.as_bytes()); }
 impl Think {
     pub fn start() -> Think {
@@ -270,45 +272,45 @@ mod tests {
         let mut m = Model::new(&["plan"]); m.begin("plan", 0); m.text("a\n===END===\n"); assert_eq!(m.last, "a"); m.finish(None, 0);
         m.begin("read", 0); assert_eq!((m.rows.len(), m.rows[1].mark, m.rows[1].label.as_str()), (2, Mark::Active, "read")); m.finish(None, 0);
         m.begin("plan", 0); assert_eq!((m.rows.len(), m.rows[2].mark), (3, Mark::Active));
-        assert_eq!(plain(&mark(true, "x")), "  ✓ x"); assert_eq!(plain(&mark(false, "x")), "  × x");
+        assert_eq!(plain(&mark(true, "x")), " ✓ x"); assert_eq!(plain(&mark(false, "x")), " × x");
     }
     #[test] fn steps_settle_in_order_and_show_what_is_left() {
         let mut m = m(); m.begin("plan", 0); m.text("a\nb\n");
-        assert_eq!(plain(&m.block(5400, 54).join("|")), "  1  ◐  plan       2 lines · 5 s|     ╰ b|  2  ○  code|  3  ○  check|  4  ○  test run|  ".to_string() + &"─".repeat(54) + "|  4 total · 0 done · 1 active · 5 s");
+        assert_eq!(plain(&m.block(5400, 54).join("|")), " 1  ◐  plan       2 lines · 5 s|    ╰ b| 2  ○  code| 3  ○  check| 4  ○  test run| ".to_string() + &"─".repeat(54) + "| 4 total · 0 done · 1 working · 5 s");
         m.finish(None, 9000); m.begin("code", 9000);
-        let s = m.take_settled(9000, 54); assert_eq!(s.len(), 1); assert_eq!(plain(&s[0]), "  1  ✓  plan       2 lines · 9 s");
-        assert_eq!(plain(&m.block(21000, 54)[0]), "  2  ◐  code       thinking 12 s");
+        let s = m.take_settled(9000, 54); assert_eq!(s.len(), 1); assert_eq!(plain(&s[0]), " 1  ✓  plan       2 lines · 9 s");
+        assert_eq!(plain(&m.block(21000, 54)[0]), " 2  ◐  code       thinking 12 s");
         assert!(m.take_settled(0, 54).is_empty());
-        assert!(m.block(0, 54)[0].contains(CYAN) && s[0].contains(GOOD));   // the active row is cyan, a done glyph green
+        assert!(m.block(0, 54)[0].contains(ACC) && s[0].contains(GOOD));   // the active row is peach, a done glyph green
     }
     #[test] fn a_failed_check_adds_a_fix_step_and_fresh_checks() {
         let mut m = m(); m.begin("plan", 0); m.finish(None, 1000); m.begin("code", 1000); m.finish(None, 2000); m.begin("check", 2000); m.finish(Some("passed"), 2000); m.begin("test run", 2000);
         m.retry(1, 3, "no function main", 3000);
         let s: Vec<String> = m.take_settled(3000, 54).iter().map(|l| plain(l)).collect();
-        assert_eq!(s.last().unwrap(), "  4  ×  test run   no function main");
+        assert_eq!(s.last().unwrap(), " 4  ×  test run   no function main");
         assert!(m.rows[3].mark == Mark::Warn && m.take_settled(0, 54).is_empty());
         let b: Vec<String> = m.block(3000, 54).iter().map(|l| plain(l)).collect();
-        assert_eq!(b[..3], ["  5  ◐  fix 1/3    thinking 0 s", "  6  ○  check", "  7  ○  test run"]);
-        assert!(b[4].contains("7 total") && b[4].contains("3 done") && b[4].contains("1 active") && b[4].contains("1 failed"), "{}", b[4]);
+        assert_eq!(b[..3], [" 5  ◐  fix 1/3    thinking 0 s", " 6  ○  check", " 7  ○  test run"]);
+        assert!(b[4].contains("7 total") && b[4].contains("3 done") && b[4].contains("1 working") && b[4].contains("1 failed"), "{}", b[4]);
         assert!(m.block(3000, 54)[0].contains(WARN));   // a fix row is yellow
         m.finish(None, 8000);
-        assert_eq!(plain(&m.take_settled(8000, 54)[0]), "  5  ✓  fix 1/3    fixing (1/3) · 5 s");
+        assert_eq!(plain(&m.take_settled(8000, 54)[0]), " 5  ✓  fix 1/3    fixing (1/3) · 5 s");
     }
     #[test] fn head_and_rules_have_equal_width() {
-        assert_eq!(vis(&head("BUILD  weather", "deepseek-flash", 54)), 56); assert_eq!(vis(&rule(54)), 56); assert!(vis(&head("T", &"m".repeat(80), 40)) > 0);
-        assert_eq!(plain(&keys("go", "stop")), "  [y] go   [n] stop (default)");
+        assert_eq!(vis(&head("build  weather", "deepseek-flash", 54)), 55); assert_eq!(vis(&rule(54)), 55); assert!(vis(&head("T", &"m".repeat(80), 40)) > 0);
+        assert_eq!(plain(&keys("go", "stop")), " [y] go   [n] stop (default)");
         assert_eq!(vis(&format!("{ACC}ab{R}c")), 3);
     }
     #[test] fn a_note_goes_before_the_first_unfinished_step() {
         let mut m = m(); m.begin("plan", 0); m.finish(None, 1000); m.note("memory", "city: Colombo");
         let b: Vec<String> = m.take_settled(1000, 54).iter().map(|l| plain(l)).collect();
-        assert_eq!(b, ["  1  ✓  plan       1 s", "  2  ✓  memory     city: Colombo"]);
+        assert_eq!(b, [" 1  ✓  plan       1 s", " 2  ✓  memory     city: Colombo"]);
         assert_eq!(m.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["plan", "memory", "code", "check", "test run"]);
         let mut e = Model::new(&["code"]); e.begin("code", 0); e.finish(None, 0); e.note("memory", "x"); assert_eq!(e.rows[1].label, "memory");
     }
     #[test] fn lines_fit_the_width_and_failure_drops_pending_rows() {
         let mut m = m(); m.begin("plan", 0); m.finish(Some(&"x".repeat(200)), 0);
-        let l = plain(&m.take_settled(0, 40)[0]); assert_eq!(l.chars().count(), 42); assert!(l.ends_with('…'));
+        let l = plain(&m.take_settled(0, 40)[0]); assert_eq!(l.chars().count(), 41); assert!(l.ends_with('…'));
         m.begin("code", 0); m.text("x\n"); m.fail("declined");
         assert_eq!(m.rows.len(), 2); assert_eq!(m.rows[1].mark, Mark::Bad); assert!(plain(m.block(0, 54).last().unwrap()).contains("1 failed"));
     }

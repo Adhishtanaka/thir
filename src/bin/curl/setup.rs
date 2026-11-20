@@ -37,10 +37,10 @@ fn say(s: &str) { println!("  {s}"); }
 fn run(home: &std::path::Path, text: &str) -> i32 {
     'pick: loop {
         let w = progress::tw();
-        println!("\n{}\n  thir works with or without an AI. API use costs money;\n  a local ollama is free.\n", progress::head("SET UP YOUR AI", "", w));
-        println!("{}\n{}", progress::hdr("#  PROVIDER   NOTE"), progress::rule(w));
-        println!("  {CYAN}0{R}  {:<9}  {DIM}use thir without AI (turn it on later in settings){R}", "no AI");
-        for (i, (n, note)) in CHOICES.iter().enumerate() { println!("  {CYAN}{}{R}  {n:<9}  {DIM}{note}{R}", i + 1); }
+        println!("\n{}\n {DIM}thir works with or without an AI. API use costs money;\n a local ollama is free.{R}\n", progress::head("set up your AI", "", w));
+        println!("{}\n{}", progress::hdr("#  provider   note"), progress::rule(w));
+        println!(" {CYAN}0{R}  {:<9}  {DIM}use thir without AI (turn it on later in settings){R}", "no AI");
+        for (i, (n, note)) in CHOICES.iter().enumerate() { println!(" {CYAN}{}{R}  {n:<9}  {DIM}{note}{R}", i + 1); }
         println!("{}", progress::rule(w));
         let n = loop {
             let Some(c) = make::ask_line("  choice [0]: ") else { return 1 };

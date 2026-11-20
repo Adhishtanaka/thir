@@ -6,17 +6,20 @@ pub mod calc;
 pub mod contacts;
 pub mod help;
 pub mod notes;
+pub mod play;
 pub mod prefs;
+pub mod rec;
 pub mod settings;
+pub mod view;
 
 /// The apps `tools` starts by its own name (symlinks in /bin).
-pub const NAMES: &[&str] = &["clock", "calendar", "calc", "contacts", "notes", "settings", "help", "beep", "bell"];
+pub const NAMES: &[&str] = &["clock", "calendar", "calc", "contacts", "notes", "settings", "help", "beep", "bell", "view", "play", "rec"];
 
 /// Starts the app called `name`; the exit code.
 pub fn run(name: &str, args: &[String]) -> i32 {
     match name {
         "clock" => alarm::run(), "calendar" => cal::run(), "calc" => calc::run(), "contacts" => contacts::run(), "notes" => notes::run(),
-        "settings" => settings::run(), "help" => help::run(), "bell" => bell::run(), "beep" => bell::beep(args),
+        "settings" => settings::run(), "help" => help::run(), "bell" => bell::run(), "beep" => bell::beep(args), "view" => view::run(args), "play" => play::run(args), "rec" => rec::run(args),
         _ => { eprintln!("thir: unknown app {name}"); 2 }
     }
 }

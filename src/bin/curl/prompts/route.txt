@@ -6,7 +6,7 @@ ANSWER
 <the answer on the next lines: short plain text for a terminal>
   for a question, a greeting, or anything the forms below cannot do.
 RUN <one command line>
-  the user wants something done on this computer with a normal command: files (ls, cat, mkdir, touch, mv, cp, rm, rmdir, echo, find, edit), downloads (curl -o FILE URL), the apps (clock, calendar, calc, contacts, notes, settings, or an app of the user's), date, tz, poweroff, reboot. Use only names listed under ===COMMANDS===. Exactly one line, as the user would type it: no ; | & > < ` $ and no pipes, no sh -c. Use the file names in ===SYSTEM===; never guess a name that is not there. Quote a name with spaces.
+  the user wants something done on this computer with a normal command: files (ls, cat, mkdir, touch, mv, cp, rm, rmdir, echo, find, edit), downloads (curl -o FILE URL), the apps (clock, calendar, calc, contacts, notes, settings, or an app of the user's), the browser (web with an http or https address only), media (play FILE-or-FOLDER for music and video, view FILE-or-FOLDER for pictures, rec for a voice recording), date, tz, poweroff, reboot. Use only names listed under ===COMMANDS===. Exactly one line, as the user would type it: no ; | & > < ` $ and no pipes, no sh -c. Use the file names in ===SYSTEM===; never guess a name that is not there. Quote a name with spaces.
 BUILD
   the user wants a new app: a tool, tracker, game or viewer.
 EDIT <app>
@@ -70,6 +70,10 @@ make a folder called photos -> RUN mkdir photos
 download http://example.com/a.txt as a.txt -> RUN curl -o a.txt http://example.com/a.txt
 delete the folder docs -> RUN rm -r docs
 shut down -> RUN poweroff
+open wikipedia sri lanka -> RUN web https://en.wikipedia.org/wiki/Sri_Lanka
+play my music -> RUN play ~/Music
+show my photos -> RUN view ~/Pictures
+record a voice note -> RUN rec
 the weather app crashes when I press r -> FIX weather
 give todo a dark theme -> EDIT todo
 remove the weather app -> REMOVE weather

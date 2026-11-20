@@ -2,7 +2,7 @@
 use super::layout::Dir;
 
 #[derive(Debug, PartialEq)]
-pub enum Action { Split, Close, Fullscreen, Focus(Dir) }
+pub enum Action { Split, Close, Fullscreen, StopMic, Focus(Dir) }
 #[derive(Debug, PartialEq)]
 pub enum Key { Bytes(Vec<u8>), Act(Action) }
 
@@ -20,6 +20,11 @@ fn printable(code: u16) -> Option<(u8, u8)> {
 }
 
 impl Keys {
+    /// Alt or Cmd is held: a surface app gets no key presses then (they are window-manager keys).
+    pub fn wm(&self) -> bool { self.wm }
+    /// The held modifiers as surface protocol bits (shift, ctrl, caps lock).
+    pub fn mods(&self) -> u32 { self.shift as u32 | (self.ctrl as u32) << 1 | (self.caps as u32) << 3 }
+    pub fn is_wm_key(code: u16) -> bool { matches!(code, 56 | 100 | 125 | 126) }
     /// `value`: 0 release, 1 press, 2 repeat. Returns None for modifiers, releases and unknown keys.
     pub fn event(&mut self, code: u16, value: i32) -> Option<Key> {
         let down = value != 0;
@@ -33,7 +38,7 @@ impl Keys {
         if !down { return None }
         if self.wm {
             return Some(Key::Act(match code {
-                28 => Action::Split, 16 => Action::Close, 33 => Action::Fullscreen,
+                28 => Action::Split, 16 => Action::Close, 33 => Action::Fullscreen, 19 => Action::StopMic,
                 103 | 37 => Action::Focus(Dir::Up), 108 | 36 => Action::Focus(Dir::Down),
                 105 | 35 => Action::Focus(Dir::Left), 106 | 38 => Action::Focus(Dir::Right),
                 _ => return None,   // other Alt combinations are swallowed
@@ -81,10 +86,16 @@ mod tests {
         assert_eq!(k.event(46, 1), b(b"\x03")); assert_eq!(k.event(32, 1), b(b"\x04")); assert_eq!(k.event(2, 1), None);
         k.event(29, 0); assert_eq!(k.event(46, 1), b(b"c"));
     }
+    #[test] fn mods_and_wm_keys() {
+        let mut k = Keys::default(); assert_eq!(k.mods(), 0);
+        k.event(42, 1); k.event(29, 1); assert_eq!(k.mods(), 3); k.event(58, 1); k.event(58, 0); assert_eq!(k.mods(), 11);
+        assert!(!k.wm()); k.event(56, 1); assert!(k.wm()); assert!(Keys::is_wm_key(56) && Keys::is_wm_key(125) && !Keys::is_wm_key(30));
+    }
     #[test] fn alt_actions() {
         let mut k = Keys::default(); k.event(56, 1);
         assert_eq!(k.event(28, 1), Some(Key::Act(Action::Split))); assert_eq!(k.event(16, 1), Some(Key::Act(Action::Close)));
-        assert_eq!(k.event(33, 1), Some(Key::Act(Action::Fullscreen)));
+        assert_eq!(k.event(33, 1), Some(Key::Act(Action::Fullscreen))); assert_eq!(k.event(19, 1), Some(Key::Act(Action::StopMic)));
+        k.event(56, 0); assert_eq!(k.event(19, 1), b(b"r")); k.event(56, 1);   // without Alt it is a plain r
         assert_eq!(k.event(105, 1), Some(Key::Act(Action::Focus(Dir::Left)))); assert_eq!(k.event(38, 1), Some(Key::Act(Action::Focus(Dir::Right))));
         assert_eq!(k.event(30, 1), None);
         k.event(56, 0); assert_eq!(k.event(28, 1), b(b"\r"));

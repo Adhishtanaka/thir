@@ -239,14 +239,14 @@ fn path_w(rs: &[Row]) -> usize { rs.iter().map(|r| r.path.chars().count()).max()
 /// The width of the rule: wide enough for the longest row, at most what the terminal holds.
 fn table_w(rs: &[Row], pw: usize) -> usize { let want = rs.iter().map(|r| 8 + pw.max(r.path.chars().count()) + 2 + vis(&r.note)).max().unwrap_or(0); want.max(tw().min(54)).min(term::size().0.saturating_sub(3).max(54)) }
 
-/// `  N  S  path  detail`: `gc` colours the glyph, `pc` the path, `nc` the detail.
+/// ` N  S  path  detail`: `gc` colours the glyph, `pc` the path, `nc` the detail.
 fn row_line(i: usize, g: &str, gc: &str, pc: &str, path: &str, pw: usize, note: &str, nc: &str) -> String {
-    let l = format!("  {:<2} {gc}{g}{R}  {pc}{path}{R}", i + 1);
+    let l = format!(" {:<2} {gc}{g}{R}  {pc}{path}{R}", i + 1);
     if note.is_empty() { l } else { format!("{l}{}  {nc}{note}{R}", " ".repeat(pw.saturating_sub(path.chars().count()))) }
 }
 
 /// The header row and the rule above the rows.
-fn table_head(pw: usize, w: usize) -> [String; 2] { [hdr(&format!("#  S  {:<pw$}  DETAIL", "CHANGE")), rule(w)] }
+fn table_head(pw: usize, w: usize) -> [String; 2] { [hdr(&format!("#  s  {:<pw$}  detail", "change")), rule(w)] }
 
 /// What agent will do: the table from its header row to the closing rule, one row per step; text to be written is shown (6 lines) so nothing is a surprise.
 pub fn describe(home: &Path, cwd: &Path, steps: &[Step]) -> String {
@@ -256,7 +256,7 @@ pub fn describe(home: &Path, cwd: &Path, steps: &[Step]) -> String {
     let mut o = table_head(pw, w).to_vec();
     for (i, r) in rs.iter().enumerate() {
         o.push(row_line(i, r.sym, r.sc, "", &r.path, pw, &r.note, r.nc));
-        o.extend(r.prev.iter().map(|p| format!("        {DIM}{p}{R}")));
+        o.extend(r.prev.iter().map(|p| format!("       {DIM}{p}{R}")));
     }
     o.push(rule(w));
     o.join("\n")
@@ -267,21 +267,21 @@ enum Stat { Wait, Run, Ok(String), Err(String) }
 
 /// The table while the steps run: the S column turns ◐ (cyan) then ✓ (green) row by row, a failed row is red; the footer counts them.
 fn run_lines(rs: &[Row], st: &[Stat], pw: usize, w: usize, ms: u64) -> Vec<String> {
-    let avail = (w + 2).saturating_sub(8 + pw + 2).max(8);
+    let avail = (w + 1).saturating_sub(7 + pw + 2).max(8);
     let mut v = table_head(pw, w).to_vec();
     for (i, (r, s)) in rs.iter().zip(st).enumerate() {
         v.push(match s {
-            Stat::Wait => row_line(i, "\u{25cb}", "", "", &r.path, pw, &r.note, r.nc),
+            Stat::Wait => row_line(i, "\u{25cb}", DIM, DIM, &r.path, pw, &r.note, DIM),
             Stat::Run => row_line(i, spin(ms), CYAN, CYAN, &r.path, pw, &r.note, CYAN),
-            Stat::Ok(f) => row_line(i, "\u{2713}", GOOD, "", &r.path, pw, if f.is_empty() { &r.note } else { f }, ""),
+            Stat::Ok(f) => row_line(i, "\u{2713}", GOOD, "", &r.path, pw, if f.is_empty() { &r.note } else { f }, DIM),
             Stat::Err(e) => row_line(i, "\u{d7}", BAD, "", &r.path, pw, &fit(&clean(e), avail), BAD),
         });
     }
     v.push(rule(w));
     let n = |f: fn(&Stat) -> bool| st.iter().filter(|s| f(s)).count();
     let (done, run, bad) = (n(|s| matches!(s, Stat::Ok(_))), n(|s| *s == Stat::Run), n(|s| matches!(s, Stat::Err(_))));
-    let mut p = vec![format!("{} total", st.len()), if done > 0 { format!("{GOOD}{done} done{R}") } else { "0 done".into() }];
-    if run > 0 { p.push(format!("{CYAN}{run} active{R}")); }
+    let mut p = vec![format!("{DIM}{} total{R}", st.len()), if done > 0 { format!("{GOOD}{done} done{R}") } else { format!("{DIM}0 done{R}") }];
+    if run > 0 { p.push(format!("{CYAN}{run} working{R}")); }
     if bad > 0 { p.push(format!("{BAD}{bad} failed{R}")); }
     p.push(format!("{DIM}{} s{R}", ms / 1000));
     v.push(dots(&p));
@@ -457,8 +457,8 @@ fn plan(ch: &Chosen, home: &Path, cwd: &Path, facts: &[String], task: &str) -> R
     let read: Arc<Mutex<Option<(String, bool)>>> = Arc::new(Mutex::new(None));
     let r2 = read.clone();
     let live = Live::start(move |ms| {
-        let mut v = vec![format!("  {CYAN}{} planning…{R} {DIM}{} s{R}", spin(ms), ms / 1000)];
-        match &*r2.lock().unwrap() { Some((t, false)) => v.push(format!("  {CYAN}{} {t}{R}", spin(ms))), Some((t, true)) => v.push(format!("  {GOOD}\u{2713}{R} {t}")), None => {} }
+        let mut v = vec![format!(" {CYAN}{}{R} {DIM}planning {} s{R}", spin(ms), ms / 1000)];
+        match &*r2.lock().unwrap() { Some((t, false)) => v.push(format!(" {CYAN}{} {t}{R}", spin(ms))), Some((t, true)) => v.push(format!(" {GOOD}\u{2713}{R} {t}")), None => {} }
         v
     });
     let r = ask_plan(ch, home, cwd, facts, task, &read);
@@ -515,7 +515,7 @@ pub fn command(args: &[String]) -> i32 {
     let (pw, w) = (path_w(&rs), table_w(&rs, path_w(&rs)));
     let title = head(&format!("DO  {n} change{}", if n == 1 { "" } else { "s" }), &fit(&printable(&ch.model), 24), w);
     println!("{title}\n{}", describe(&home, &cwd, &steps));
-    if !ask(&format!("  {}apply {n} change{}?{R} {DIM}[y/N]{R} ", progress::ACC, if n == 1 { "" } else { "s" })) { println!("\n  nothing changed."); return 1; }
+    if !ask(&format!(" {}apply {n} change{}?{R}   {GOOD}[y]{R} apply   {DIM}[n] cancel (default){R} ", progress::FG, if n == 1 { "" } else { "s" })) { println!("\n  nothing changed."); return 1; }
     println!();
     let st = Arc::new(Mutex::new(vec![Stat::Wait; n]));
     let width = term::size().0;
@@ -624,9 +624,9 @@ mod tests {
         let d = plain(&describe(&h, &h, &[Step::Mkdir(h.join("data")), Step::New(h.join("n.txt"), text.clone()), Step::Replace(h.join("o.txt"), "a\nb\n".into(), 14), Step::Append(h.join("n.txt"), "x\n".into(), false),
             Step::Move(h.join("a"), h.join("docs/a")), Step::Copy(h.join("a"), h.join("b"), 1300), Step::Fetch("http://10.0.2.2:1/p.json".into(), h.join("data/p.json")), Step::Fetch("https://x.example/p".into(), h.join("p"))]));
         let n: Vec<String> = d.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect();   // columns collapsed
-        for want in ["# S CHANGE DETAIL", "1 + data/ new folder", "2 + n.txt new · 8 lines", "milk", "… 2 more lines", "3 ~ o.txt overwrites 14 B", "4 » n.txt adds 1 line", "5 → a → docs/a move", "6 + b copy of a",
+        for want in ["# s change detail", "1 + data/ new folder", "2 + n.txt new · 8 lines", "milk", "… 2 more lines", "3 ~ o.txt overwrites 14 B", "4 » n.txt adds 1 line", "5 → a → docs/a move", "6 + b copy of a",
                      "7 ↓ data/p.json 10.0.2.2:1 not encrypted", "8 ↓ p x.example"] { assert!(n.iter().any(|l| l == want), "{want}\n{d}"); }
-        assert!(d.contains("        milk") && d.lines().last().unwrap().contains("──────"));
+        assert!(d.contains("       milk") && d.lines().last().unwrap().contains("──────"));
         assert!(describe(&h, &h, &[Step::New(h.join("a"), "x\u{1b}[2J\n".into())]).contains("x?[2J"));
     }
     #[test] fn the_run_table_turns_rows_and_counts_them() {
@@ -635,8 +635,8 @@ mod tests {
         let t = |st: &[Stat]| run_lines(&rs, st, path_w(&rs), 54, 2500);
         let v = t(&[Stat::Ok(String::new()), Stat::Run, Stat::Wait]);
         let p: Vec<String> = v.iter().map(|l| plain(l)).collect();
-        assert!(p[2].starts_with("  1  ✓  d/") && p[3].starts_with("  2  ◐  d/a") && p[4].starts_with("  3  ○  a → b"), "{p:?}");
-        assert!(v[2].contains(GOOD) && v[3].contains(CYAN) && p.last().unwrap() == "  3 total · 1 done · 1 active · 2 s", "{p:?}");
+        assert!(p[2].starts_with(" 1  ✓  d/") && p[3].starts_with(" 2  ◐  d/a") && p[4].starts_with(" 3  ○  a → b"), "{p:?}");
+        assert!(v[2].contains(GOOD) && v[3].contains(CYAN) && p.last().unwrap() == " 3 total · 1 done · 1 working · 2 s", "{p:?}");
         let p: Vec<String> = t(&[Stat::Ok("1 line".into()), Stat::Err("it is gone\x1b[2J".into()), Stat::Wait]).iter().map(|l| plain(l)).collect();
         assert!(p[2].ends_with("1 line") && p[3].contains("×") && p[3].ends_with("it is gone[2J") && p.last().unwrap().contains("1 failed"), "{p:?}");
     }

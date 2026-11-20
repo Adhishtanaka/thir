@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>js-pending</title>
+<body style="margin:0;background:#fff"><h1 id=h>pending</h1>
+<script>
+// busy loop so JSC tiers up into the JIT, then prove JS ran by colouring the page and setting the title
+let s = 0; for (let i = 0; i < 3e6; i++) s = (s + i * 7) % 1000003;
+document.body.style.background = "rgb(2,200,150)";
+document.getElementById("h").textContent = "sum=" + s;
+document.title = "js-ok-" + (6 * 7);
+</script>

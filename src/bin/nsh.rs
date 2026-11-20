@@ -12,9 +12,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ("programs", &[("edit [file]", "full-screen editor (also: nano)"), ("find [dir] [-name P]", "find files; P uses * and ?; -type f|d"), ("top", "CPU, memory and processes"),
         ("fetch", "system summary with a bear (also: neofetch)"),
         ("curl [opts] URL", "download a page or file (curl -h for options)"),
+        ("web [URL]", "browser (needs the web add-on)"),
         ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
     ("apps", &[("clock", "big time, stopwatch, timer, alarms"), ("calendar", "month view, events, reminders"), ("calc", "calculator with history"), ("contacts", "names, phones, emails"),
-        ("notes", "notes with tags and todos"), ("settings", "time zone, wallpaper, sound"), ("beep [hz ms]", "play the alarm chime or a note")]),
+        ("notes", "notes with tags and todos"), ("settings", "time zone, wallpaper, sound"), ("beep [hz ms]", "play the alarm chime or a note"),
+        ("play FILE|DIR [-s]", "music and video (needs the web add-on)"), ("view FILE|DIR", "pictures (needs the web add-on)"), ("rec", "record the microphone (den asks first)")]),
 ];
 
 /// Names of the builtins: every section except "programs" and "apps", first word of the usage.
@@ -61,7 +63,7 @@ fn prompt() -> String {
         Ok(h) if !h.is_empty() && h != "/" && (cwd == h || cwd.starts_with(&format!("{h}/"))) => format!("~{}", &cwd[h.len()..]),
         _ => cwd,
     };
-    format!("\x1b[1;32m{}@{}\x1b[0m:\x1b[1;34m{}\x1b[0m$ ", printable(&user), printable(&host), printable(&cwd))
+    format!("\x1b[38;2;240;178;127m{}@{}\x1b[0m:\x1b[90m{}\x1b[0m$ ", printable(&user), printable(&host), printable(&cwd))
 }
 
 /// Backslash-escape what parse_cmd treats specially, so a completed name stays one word and never becomes a redirect.
@@ -145,7 +147,7 @@ fn show_notices(seen: &mut i64, uid: u32) {
     for (t, m) in notify::read(&format!("{h}/.notify"), uid) {
         if t <= *seen { continue }
         let l = clock::local(t, off);
-        println!("  \x1b[33m\u{2192}\x1b[0m {:02}:{:02}  {}", l.hour, l.min, printable(&m));
+        println!(" \x1b[33m\u{2192}\x1b[0m {:02}:{:02}  {}", l.hour, l.min, printable(&m));
         *seen = t;
     }
 }
@@ -231,7 +233,7 @@ fn builtin(argv: &[String], out: &mut dyn Write, stdin: &io::Stdin, hist: &[Stri
             match fs::read_dir(d) {
                 Ok(rd) => {
                     let mut names: Vec<String> = rd.filter_map(|e| e.ok())
-                        .map(|e| { let n = printable(&e.file_name().to_string_lossy()); if e.path().is_dir() { if color { format!("\x1b[1;34m{n}/\x1b[0m") } else { n + "/" } } else { n } }).collect();
+                        .map(|e| { let n = printable(&e.file_name().to_string_lossy()); if e.path().is_dir() { if color { format!("\x1b[34m{n}/\x1b[0m") } else { n + "/" } } else { n } }).collect();
                     names.sort();
                     for n in names { let _ = writeln!(out, "{n}"); }
                 }
@@ -272,6 +274,7 @@ fn dangerous(argv: &[String]) -> Option<&'static str> {
         "rm" | "rmdir" => Some("this deletes files or folders"),
         "poweroff" | "reboot" => Some("this shuts down or restarts thir"),
         "passwd" => Some("this changes your password"),
+        "rec" => Some("this turns on the microphone"),
         "mv" | "cp" => { let o: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect(); if let [s, d] = o[..] { if Path::new(&target(s, d)).exists() { return Some("this replaces a file that exists"); } } None }
         "curl" => rest.windows(2).any(|w| w[0] == "-o" && Path::new(&w[1]).exists()).then_some("this replaces a file that exists"),
         _ => None,
@@ -299,11 +302,17 @@ fn ask_ai(words: &str, names: &[String]) -> Option<String> {
 
 /// Shows the proposed command exactly and asks. Enter is yes, or no when it is dangerous.
 fn confirm_cmd(line: &str, warn: Option<&str>) -> bool {
-    if let Some(w) = warn { println!("  \x1b[33m! {w}\x1b[0m"); }
-    let q = format!("  \x1b[36m\u{2192}\x1b[0m {}   run? \x1b[2m{}\x1b[0m ", line, if warn.is_some() { "[y/N]" } else { "[Y/n]" });
+    if let Some(w) = warn { println!(" \x1b[31m! {w}\x1b[0m"); }
+    let q = format!(" \x1b[38;2;240;178;127m\u{2192}\x1b[0m {}   run?  \x1b[32m[y]\x1b[0m run{}   \x1b[90m[n] cancel{}\x1b[0m ", line, if warn.is_some() { "" } else { " (default)" }, if warn.is_some() { " (default)" } else { "" });
     let Some(a) = thir::term::read_line(&mut Editor::new(vec![]), &q, &|_, _| vec![]) else { return false };
     let a = a.trim().to_lowercase();
     if warn.is_some() { matches!(a.as_str(), "y" | "yes") } else { matches!(a.as_str(), "" | "y" | "yes") }
+}
+
+/// `~` or `~/x` as a whole word becomes the home folder (`~user` is left alone: thir has no user lookup in the shell).
+fn tilde(a: &str, home: &str) -> Option<String> {
+    if home.is_empty() || !home.starts_with('/') { return None }
+    if a == "~" { Some(home.to_string()) } else { a.strip_prefix("~/").map(|r| format!("{}/{r}", home.trim_end_matches('/'))) }
 }
 
 fn main() {
@@ -322,7 +331,7 @@ fn main() {
             if let Ok(mut f) = OpenOptions::new().append(true).create(true).mode(0o600).open(&path) { let _ = writeln!(f, "{}", line.trim()); }
         }
         let names = || candidates("", "").into_iter().filter(|n| !HIDDEN.contains(&n.as_str())).collect::<Vec<_>>();
-        let cmd = match classify(&line, &is_cmd, &names) {
+        let mut cmd = match classify(&line, &is_cmd, &names) {
             Line::Ask(w) if w.is_empty() => { print!("{ASK_HELP}"); continue; }
             Line::Ask(w) => {
                 let Some(l) = ask_ai(&w, &names()) else { continue };
@@ -333,6 +342,7 @@ fn main() {
             Line::Typo(w, c) => { eprintln!("nsh: {}: command not found. Did you mean {c}?", printable(&w)); continue; }
             Line::Shell => match parse_cmd(&line) { Ok(c) => c, Err(e) => { eprintln!("nsh: {e}"); continue; } },
         };
+        for a in cmd.argv.iter_mut().skip(1) { if let Some(h) = tilde(a, &std::env::var("HOME").unwrap_or_default()) { *a = h; } }   // `play ~/Music`
         let Some(name) = cmd.argv.first() else { continue };
         let file = match &cmd.redirect {   // opened first; umask makes it 0600
             Some((p, append)) => match OpenOptions::new().write(true).create(true).append(*append).truncate(!*append).open(p) {
@@ -349,6 +359,7 @@ fn main() {
         c.args(&cmd.argv[1..]);
         if let Some(f) = file { c.stdout(Stdio::from(f)); }
         match unsafe { c.pre_exec(|| { for s in [libc::SIGINT, libc::SIGQUIT] { libc::signal(s, libc::SIG_DFL); } Ok(()) }) }.status() {
+            Err(e) if e.kind() == io::ErrorKind::NotFound && name == "web" => eprintln!("nsh: web needs the web add-on: this system has no browser installed"),
             Err(e) if e.kind() == io::ErrorKind::NotFound && !name.contains('/') => eprintln!("nsh: {}: command not found (type ! and your words to ask the AI)", printable(name)),
             Err(e) => eprintln!("nsh: {name}: {e}"),
             Ok(s) if !s.success() => match s.signal() { Some(n) => println!("[signal {n}]"), None => println!("[exit {}]", s.code().unwrap_or(-1)) },
@@ -378,7 +389,7 @@ mod tests {
         let mut all: Vec<&str> = HELP.iter().flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
         let n = all.len(); all.sort(); all.dedup(); assert_eq!(all.len(), n);
         let progs: Vec<&str> = HELP.iter().filter(|s| s.0 == "programs").flat_map(|s| s.1.iter()).map(|u| u.0.split(' ').next().unwrap()).collect();
-        assert_eq!(progs, ["edit", "find", "top", "fetch", "curl", "passwd", "dhcp"]);
+        assert_eq!(progs, ["edit", "find", "top", "fetch", "curl", "web", "passwd", "dhcp"]);
         assert!(HELP.iter().filter(|s| s.0 == "apps").flat_map(|s| s.1.iter()).all(|u| thir::apps::NAMES.contains(&u.0.split(' ').next().unwrap())));
         assert!(builtins().all(|b| !progs.contains(&b)) && builtins().any(|b| b == "date") && help_cmd("find").unwrap().starts_with("find [dir]"));
     }
@@ -392,16 +403,24 @@ mod tests {
         assert_eq!(cls("  !  "), Line::Ask("".into())); assert_eq!(cls("!"), Line::Ask("".into())); assert_eq!(cls("!fix weather"), Line::Ask("fix weather".into()));
         for l in ["make me a weather app", "what's the time now", "I live in Colombo", "can you make a timer"] { assert_eq!(cls(l), Line::Shell, "{l}"); }
     }
-    fn ok(l: &str) -> Result<Vec<String>, String> { check_line(l, &|w| ["ls", "mv", "cp", "rm", "mkdir", "curl", "echo", "clock"].contains(&w)).map(|c| c.argv) }
+    fn ok(l: &str) -> Result<Vec<String>, String> { check_line(l, &|w| ["ls", "mv", "cp", "rm", "mkdir", "curl", "echo", "clock", "web", "play", "view", "rec"].contains(&w)).map(|c| c.argv) }
     #[test] fn model_lines_are_checked() {
+        // the browser and media examples of the route prompt are plain commands; a file: address is still a command line for `web`, which refuses it itself
+        assert_eq!(ok("web https://en.wikipedia.org/wiki/Sri_Lanka").unwrap(), ["web", "https://en.wikipedia.org/wiki/Sri_Lanka"]); assert_eq!(ok("play ~/Music").unwrap(), ["play", "~/Music"]);
+        assert_eq!(ok("view ~/Pictures").unwrap(), ["view", "~/Pictures"]); assert_eq!(ok("rec").unwrap(), ["rec"]); assert!(ok("web file:///etc/passwd").is_ok());
         assert_eq!(ok("mv notes.txt docs/").unwrap(), ["mv", "notes.txt", "docs/"]); assert_eq!(ok("mkdir \"my docs\"").unwrap(), ["mkdir", "my docs"]); assert_eq!(ok("clock").unwrap(), ["clock"]);
         for l in ["ls; rm -rf ~", "ls | cat", "ls && rm x", "echo `id`", "echo $(id)", "echo $HOME", "ls > x", "ls < x", "ls\nrm x", "ls\rrm x", "", "sh -c ls", "!build x", "/bin/sh", "./x", "../../bin/sh", "ls \x1b[2J", &format!("echo {}", "a".repeat(300)), "echo 'unclosed"] {
             assert_eq!(ok(l), Err("could not turn that into one command".into()), "{l:?}");
         }
     }
+    #[test] fn tilde_means_home() {
+        assert_eq!(tilde("~", "/home/a").as_deref(), Some("/home/a")); assert_eq!(tilde("~/Music", "/home/a").as_deref(), Some("/home/a/Music")); assert_eq!(tilde("~/x", "/").as_deref(), Some("/x"));
+        for a in ["~bob", "a~", "x/~", "~~", ""] { assert_eq!(tilde(a, "/home/a"), None, "{a}"); } assert_eq!(tilde("~", ""), None); assert_eq!(tilde("~", "rel"), None);
+    }
     #[test] fn destroying_commands_get_a_warning() {
         let v = |l: &str| dangerous(&l.split(' ').map(String::from).collect::<Vec<_>>());
-        for l in ["rm x", "rm -r docs", "rmdir d", "poweroff", "reboot", "passwd"] { assert!(v(l).is_some(), "{l}"); }
+        for l in ["rm x", "rm -r docs", "rmdir d", "poweroff", "reboot", "passwd", "rec"] { assert!(v(l).is_some(), "{l}"); }
+        for l in ["web https://en.wikipedia.org/wiki/Sri_Lanka", "play ~/Music", "view ~/Pictures"] { assert!(v(l).is_none(), "{l}"); }
         let f = std::env::temp_dir().join(format!("thir-nsh-{}", std::process::id())); fs::write(&f, "x").unwrap(); let f = f.to_string_lossy().into_owned();
         assert!(v(&format!("mv a {f}")).is_some() && v(&format!("cp a {f}")).is_some() && v(&format!("curl -o {f} http://x")).is_some());
         fs::remove_file(&f).unwrap();

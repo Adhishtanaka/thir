@@ -1,0 +1,23 @@
+# thir-web: the browser program (the sandbox shim for the WebKit helper processes is its own crate, shim/). Built only for the web add-on, inside the Alpine build container (scripts/build-web.sh),
+# because it links the add-on's WebKit. The default `cargo build` of the repo never sees it.
+[package]
+name = "thir-web"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace]
+
+[[bin]]
+name = "thir-web"
+path = "src/main.rs"
+
+[dependencies]
+thir = { path = ".." }
+libc = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
