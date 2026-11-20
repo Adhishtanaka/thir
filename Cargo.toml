@@ -1,6 +1,6 @@
 [package]
 name = "thir"
-version = "0.4.0-ai"
+version = "0.4.1-ai"
 edition = "2021"
 license = "MIT"
 
