@@ -19,7 +19,7 @@ Full video: [docs/demo.mp4](docs/demo.mp4) (about 1 minute, recorded in VirtualB
 - A few apps: `edit` (a simple editor, also called `nano`), `find`, `top` (CPU and memory use) and `neofetch`.
 - `curl`, for downloading web pages and files over HTTP and HTTPS.
 - (optional) An AI shell: type `!` and your words, like `! move notes into docs` or `! make me a timer app`. The AI turns them into one command or action, thir shows it, and nothing runs until you press Enter (yes). Anything that deletes or powers off defaults to no. Lines without `!` are a normal shell.
-- (optional) The AI also works the apps: `! add Kasun to my contacts, 0771234567", `! what is on my calendar tomorrow`, `! set an alarm for 6:30`, `! add buy milk to my notes as a todo`. thir shows what it will do and asks first. When a question needs your contacts, notes or calendar, only the matching records go to the AI, and thir says how many.
+- (optional) The AI also works the apps: `! add Kasun to my contacts, 0771234567`, `! what is on my calendar tomorrow`, `! set an alarm for 6:30`, `! add buy milk to my notes as a todo`. thir shows what it will do and asks first. When a question needs your contacts, notes or calendar, only the matching records go to the AI, and thir says how many.
 - Reminders, shown in the top bar of the desktop.
 - (optional) AI setup at the first login. You pick a provider and add your own key, or choose "no AI". You can change it later in settings.
 - (optional) Self-healing apps: if an app the AI built breaks, thir sends the error back and the AI fixes it.
