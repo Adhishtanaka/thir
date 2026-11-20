@@ -1,0 +1,56 @@
+===APP===
+name: weather
+title: Weather
+about: Weather for your city
+net: none
+===CODE===
+local city = store.get("city", "Colombo")
+if type(city) ~= "string" or city == "" then city = "Colombo" end
+
+-- 5-line ASCII icons, 13 characters wide; each line has its own colour
+local ICONS = {
+  sun = { {"    \\   /    ", "warn"}, {"     .-.     ", "warn"}, {" -- (   ) -- ", "warn"}, {"     `-'     ", "warn"}, {"    /   \\    ", "warn"} },
+  cloud = { {"             ", "text"}, {"     .--.    ", "text"}, {"  .-(    ).  ", "text"}, {" (___.__)__) ", "text"}, {"             ", "text"} },
+  rain = { {"     .--.    ", "text"}, {"  .-(    ).  ", "text"}, {" (___.__)__) ", "text"}, {"   ' ' ' '   ", "info"}, {"  ' ' ' '    ", "info"} },
+}
+local days = {
+  {"Wed 18", "rain", "Light drizzle", 24, 31, 24}, {"Thu 19", "cloud", "Cloudy", 23, 32, 0},
+  {"Fri 20", "rain", "Light drizzle", 24, 31, 51}, {"Sat 21", "rain", "Drizzle", 24, 30, 81}, {"Sun 22", "sun", "Clear sky", 24, 32, 59},
+}
+
+local function icon(x, y, name)
+  for i, l in ipairs(ICONS[name] or ICONS.cloud) do ui.text(x, y + i - 1, l[1], l[2]) end
+end
+
+function draw(w, h)
+  ui.title("Weather", "updated 10:17")
+  ui.text(2, 3, "WEATHER", "accent")
+  ui.text(2, 4, "Weather for ")
+  ui.text(14, 4, city .. ", Sri Lanka", "cyan")
+  icon(2, 6, "sun")
+  ui.cols(18, 7, {12}, {"temperature"}, "cyan"); ui.text(30, 7, "30°C, feels like 35°C", "warn")
+  ui.cols(18, 8, {12}, {"sky"}, "cyan"); ui.text(30, 8, "Clear sky")
+  ui.cols(18, 9, {12}, {"wind"}, "cyan"); ui.text(30, 9, "8 km/h")
+  ui.cols(18, 10, {12}, {"humidity"}, "cyan"); ui.text(30, 10, "59%", "info")
+  local pw = math.max(10, math.min(15, math.floor((w - 2) / #days)))
+  for i, d in ipairs(days) do
+    local x = 2 + (i - 1) * pw
+    ui.box(x, 12, pw, 11, d[1])
+    icon(x + 1, 13, d[2])
+    ui.text(x + 1, 19, ui.pad(d[3], pw - 2))
+    ui.cols(x + 1, 20, {pw - 2}, {d[4] .. "° / " .. d[5] .. "°"}, d[5] >= 31 and "warn" or "text")
+    ui.cols(x + 1, 21, {pw - 2}, {"rain " .. d[6] .. "%"}, d[6] >= 50 and "info" or "text")
+  end
+  local wet = 0
+  for _, d in ipairs(days) do if d[6] >= 50 then wet = wet + 1 end end
+  ui.text(2, 23, #days .. " days", "text"); ui.text(9, 23, "·", "dim"); ui.text(11, 23, wet .. " with rain", "info"); ui.text(23, 23, "·", "dim"); ui.text(25, 23, "ok", "good")
+  ui.footer("c change city · r refresh · q quit")
+end
+
+function key(k)
+  if k == "c" then
+    local t = ui.input("City: ")
+    if t and t ~= "" then city = t; store.set("city", city) end
+  end
+end
+===END===

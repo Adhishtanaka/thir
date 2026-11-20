@@ -35,3 +35,5 @@ off() {
   if kill -0 "$qpid" 2>/dev/null; then echo "FAIL: QEMU still running after poweroff"; exit 1; fi
   exec 3>&-
 }
+ai_offline() {  # first-boot AI setup: choose "no AI" (the default)
+  wait_for 'choice \[0\]: '; send 0; wait_for 'the AI is off'; }

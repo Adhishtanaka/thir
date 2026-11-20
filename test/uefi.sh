@@ -27,6 +27,7 @@ send alice;  wait_for 'password: '
 send "$PW"; wait_for 'repeat password: '
 send "$PW"; wait_for 'utc offset'
 send ''; wait_for 'user alice created'
+ai_offline
 wait_for '\$ $'
 run 'cat /proc/mounts' "^/dev/$dev /data ext4 "
 run 'echo persisted > note.txt' '\$ $'

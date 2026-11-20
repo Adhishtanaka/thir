@@ -1,0 +1,8 @@
+The app below fails. Find the root cause and return the whole fixed app.
+===ERROR===
+{error}
+===SPEC===
+{spec}
+===CURRENT CODE===
+{code}
+Fix the cause, not only the line. If the error says what the user wants (it may start with "the user says:"), do exactly that, even if the current code looks intended; for example, if the user says typing a letter quits the app, replace hand-made text entry in key() with ui.input. Keep every feature, the look, the keys and the stored data format. If a value can be nil, check it and show a message instead of crashing. Reply in the OUTPUT format with the same name.

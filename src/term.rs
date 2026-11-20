@@ -40,7 +40,7 @@ impl Raw {
 }
 impl Drop for Raw { fn drop(&mut self) { put(b"\x1b[?25h\x1b[0m"); raw_off(&self.0); } }
 
-extern "C" fn restore_and_raise(sig: i32) {   // put the terminal back when a signal ends the program
+extern "C" fn restore_and_raise(sig: i32) {   // SIGALRM is the watchdog of `agent run` (nothing else sets an alarm); SIGABRT: a failed allocation under its memory limit
     if let Some(t) = SAVED.get() { unsafe { libc::tcsetattr(0, libc::TCSANOW, t); } }
     unsafe { const B: &[u8] = b"\x1b[0m\x1b]2;\x07\x1b[?25h"; libc::write(1, B.as_ptr() as *const _, B.len()); }   // colours, den title and cursor back (write is async-signal-safe)
     unsafe { libc::signal(sig, libc::SIG_DFL); libc::raise(sig); }
@@ -104,7 +104,7 @@ pub fn prompt_with(dec: &mut Decoder, row: usize, label: &str, initial: &str) ->
 }
 
 /// One line from the user with editing and Tab completion. None = end of input. Raw mode is always off again on return.
-pub fn read_line(ed: &mut Editor, prompt: &str, complete: &dyn Fn(bool, &str) -> Vec<String>) -> Option<String> {
+pub fn read_line(ed: &mut Editor, prompt: &str, complete: &dyn Fn(&str, &str) -> Vec<String>) -> Option<String> {
     let p = prompt;
     let Some(old) = raw_on() else {
         print!("{p}"); let _ = io::stdout().flush();
@@ -119,7 +119,7 @@ pub fn read_line(ed: &mut Editor, prompt: &str, complete: &dyn Fn(bool, &str) ->
         if n <= 0 { break None }
         ed.cols = size().0;
         for k in ed.decode(&buf[..n as usize]) {   // shortcut: keys after Enter in the same read are dropped
-            if k == Key::Tab { let (first, w) = ed.word(); let o = ed.complete(&complete(first, &w), p); put(&o); continue }
+            if k == Key::Tab { let (before, w) = ed.split_word(); let o = ed.complete(&complete(&before, &w), p); put(&o); continue }
             let (a, o) = ed.key(k, p); put(&o);
             match a { Act::Submit(l) => break 'read Some(l), Act::Eof => break 'read None, Act::None => {} }
         }

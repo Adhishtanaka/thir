@@ -16,6 +16,18 @@ pub fn test_sound() -> String {
     match sound::play(&sound::chime(vol)) { Ok(()) => format!("{GOOD}\u{2713}{R} played the chime"), Err(e) if e.kind() == std::io::ErrorKind::NotFound => format!("{DIM}no sound device found. Alarms flash and show in the top bar.{R}"), Err(e) => format!("{DIM}the sound device would not play ({e}). Alarms flash and show in the top bar.{R}") }
 }
 
+/// Runs a program on the terminal in normal (cooked) mode, then goes back to the app's raw mode; a message for the screen.
+fn run_cooked(prog: &str, args: &[&str]) -> String {
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(0, &mut saved) } != 0 { return String::new() }
+    let mut t = saved; t.c_lflag |= libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN; t.c_iflag |= libc::ICRNL; t.c_oflag |= libc::OPOST | libc::ONLCR;
+    unsafe { libc::tcsetattr(0, libc::TCSANOW, &t); }
+    crate::term::put(b"\x1b[0m\x1b[2J\x1b[H\x1b[?25h");
+    let ok = std::process::Command::new(prog).args(args).status().is_ok_and(|s| s.success());
+    unsafe { libc::tcsetattr(0, libc::TCSANOW, &saved); }
+    if ok { format!("{GOOD}\u{2713}{R} done") } else { format!("{WARN}setup did not finish{R}") }
+}
+
 pub fn run() -> i32 {
     let Some(mut s) = Screen::start("settings") else { return 1 };
     let (mut sel, mut note) = (Sel::default(), String::new());
@@ -26,10 +38,13 @@ pub fn run() -> i32 {
         let wi = prefs::wall_index(&st);
         let tz = clock::format_offset(clock::home_tz().unwrap_or(0));
         let bar = format!("{}{}", "\u{2588}".repeat(vol as usize / 10), "\u{2591}".repeat(10 - vol as usize / 10));
-        let items: Vec<(&str, String, &str)> = vec![
+        let ai_on = std::fs::read_to_string(format!("{}/.config/thir/ai", store::home())).map_or(true, |t| t.trim() != "off");   // ~/.config/thir/ai = off: the user chose no AI
+        let mut items: Vec<(&str, String, &str)> = vec![
             ("Time zone", format!("{CYAN}UTC{tz}{R}"), "enter to change"), ("Wallpaper", format!("{}\u{2588}\u{2588}{R} {ACC}{}{R}", SWATCH[wi], WALLS[wi].0), "enter or left/right"),
             ("Sound", if on { format!("{GOOD}\u{25cf} on{R}") } else { format!("{DIM}\u{25cb} off{R}") }, "enter to switch"), ("Volume", format!("{CYAN}{bar}{R} {vol}%"), "left/right"), ("Test sound", format!("{DIM}play the alarm chime{R}"), "enter"),
         ];
+        items.push(("AI", if ai_on { format!("{GOOD}\u{25cf} on{R}") } else { format!("{DIM}\u{25cb} off{R}") }, if ai_on { "enter to turn off (keys stay)" } else { "enter to turn on" }));
+        items.push(("Provider", format!("{CYAN}AI provider and key{R}"), "enter to change"));
         let rows_t: Vec<String> = items.iter().map(|(n, v, h)| format!("{ACC}{}{R} {} {DIM}{h}{R}", pad(n, 12), pad(v, 24))).collect();
         let p = Page { title: "SETTINGS", right: "", count: count(items.len(), "setting", "settings"), header: "SETTING      VALUE".into(), rows: rows_t,
             foot: vec![format!("{CYAN}UTC{tz}{R}"), format!("{} wallpaper", WALLS[wi].0), if on { format!("{GOOD}sound on {vol}%{R}") } else { format!("{DIM}sound off{R}") }], note: note.clone(),
@@ -47,6 +62,8 @@ pub fn run() -> i32 {
                 (Key::Enter | Key::Char(' '), 2) => { put("sound", if on { "off" } else { "on" }); }
                 (Key::Left | Key::Right, 3) => { put("volume", &(vol as i32 + dir * 10).clamp(0, 100).to_string()); note = test_sound(); }
                 (Key::Enter, 4) => note = test_sound(),
+                (Key::Enter, 5) => note = if ai_on { match std::fs::create_dir_all(format!("{}/.config/thir", store::home())).and_then(|_| std::fs::write(format!("{}/.config/thir/ai", store::home()), "off\n")) { Ok(()) => format!("{GOOD}\u{2713}{R} the AI is off. Saved keys stay until you remove them."), Err(e) => format!("{BAD}{e}{R}") } } else { run_cooked("/bin/agent", &["setup"]) },
+                (Key::Enter, 6) => note = run_cooked("/bin/agent", &["setup"]),
                 _ => {}
             }
         }

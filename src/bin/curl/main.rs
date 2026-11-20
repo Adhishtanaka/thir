@@ -1,5 +1,16 @@
-//! curl: thir's small HTTP/HTTPS client.
+//! curl: thir's small HTTP/HTTPS client. Run as `agent` (a symlink to this binary) it is the AI chat instead.
+mod act;
+mod agent;
+mod app;
+mod appact;
 mod conn;
+mod context;
+mod make;
+mod memory;
+mod progress;
+mod route;
+mod schedule;
+mod setup;
 
 use conn::{body_err, exchange, NetErr};
 use std::{fs::{File, OpenOptions}, io::{self, Read, Write}, os::unix::fs::OpenOptionsExt, process::exit, time::{Duration, Instant}};
@@ -101,7 +112,8 @@ pub fn human(n: u64) -> String { if n >= 1 << 20 { format!("{:.1} MiB", n as f64
 
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
-    args.remove(0);
+    let prog = args.remove(0);
+    if prog.rsplit('/').next() == Some("agent") { exit(agent::main(args)); }
     let o = parse_args(&args);
     let Some(first) = o.url.clone() else { eprint!("{USAGE}"); exit(2) };
     let mut url = Url::parse(&first).unwrap_or_else(|e| die(3, &e));

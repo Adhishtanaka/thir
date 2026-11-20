@@ -3,6 +3,13 @@ use std::{os::unix::{fs::chown, process::CommandExt}, path::Path, process::{exit
 use thir::{clock, user::{self, User}};
 
 fn die(msg: &str) -> ! { eprintln!("login: {msg}"); exit(1) }
+/// /bin/agent as the user, with nothing but the basics in its environment.
+fn agent(home: &str, user: &str, args: &[&str]) -> Command {
+    let mut c = Command::new("/bin/agent");
+    c.args(args).env_clear().env("PATH", "/bin").env("HOME", home).env("USER", user);
+    c
+}
+
 fn die_slow(msg: &str) -> ! { eprintln!("login: {msg}"); sleep(Duration::from_secs(5)); exit(1) }   // slow: init restarts us
 
 /// bell, the background helper (alarms, timers, reminders), as the user: a double fork, so init adopts and reaps it.
@@ -24,6 +31,13 @@ fn start(u: &User, tz: Option<i32>) -> ! {
     if let Err(e) = user::drop_to(u.uid, u.uid) { die(&format!("cannot drop privileges: {e}")); }
     if std::env::set_current_dir(&home).is_err() { let _ = std::env::set_current_dir("/"); }
     if let Some(m) = tz { let _ = std::fs::write(format!("{home}/.tz"), format!("{}\n", clock::format_offset(m))); }   // umask 077 makes it 0600
+    // the shell and agent need an AI: no provider and key, no shell (login restarts and asks again)
+    if !agent(&home, &u.name, &["setup", "--if-needed"]).status().is_ok_and(|s| s.success()) { die_slow("the AI setup did not finish; log in again to finish it"); }
+    // the background helper (reminders, notices): a double fork, so init adopts and reaps it. login is single-threaded here, so fork in pre_exec is safe.
+    let mut d = agent(&home, &u.name, &["daemon"]);
+    d.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    unsafe { d.pre_exec(|| { if libc::fork() != 0 { libc::_exit(0); } libc::setsid(); Ok(()) }); }
+    if let Ok(mut c) = d.spawn() { let _ = c.wait(); }
     bell(&home, &u.name);
     let e = Command::new("/bin/nsh").env_clear().env("PATH", "/bin").env("HOME", &home).env("USER", &u.name).exec();
     die(&format!("/bin/nsh: {e}"))

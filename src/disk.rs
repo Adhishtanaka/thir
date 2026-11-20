@@ -7,6 +7,16 @@ pub fn ext_label(sb: &[u8]) -> Option<&str> {
     std::str::from_utf8(&l[..l.iter().position(|&b| b == 0).unwrap_or(16)]).ok()
 }
 
+/// (used, total) kB of the filesystem at `path`.
+pub fn usage_kb(path: &str) -> Option<(u64, u64)> {
+    let p = std::ffi::CString::new(path).ok()?;
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(p.as_ptr(), &mut s) } != 0 { return None }
+    let unit = s.f_frsize as u64;
+    let total = s.f_blocks as u64 * unit / 1024;
+    Some((total.saturating_sub(s.f_bfree as u64 * unit / 1024), total))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

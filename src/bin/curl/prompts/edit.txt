@@ -1,0 +1,8 @@
+Change this app as asked and return the whole updated app.
+{about}===CHANGE===
+{request}
+===SPEC===
+{spec}
+===CURRENT CODE===
+{code}
+Implement the change fully. Keep all other features, the look, the keys and the stored data (read old store values safely). If the change needs a new web API, add its origin to the net line. If the change is impossible on thir (sound, files, images, other programs, an API key the user did not give), reply only: NO: <reason in at most 100 characters>. Otherwise reply in the OUTPUT format with the same name.

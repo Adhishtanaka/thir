@@ -30,6 +30,7 @@ send alice;  wait_for 'password: '
 send "$PW"; wait_for 'repeat password: '
 send "$PW"; wait_for 'utc offset'
 send ''; wait_for 'user alice created'
+ai_offline
 wait_for '\$ $'
 sleep 3; shot "${VBOX_SHOT:-$d/shot.png}"
 run 'cat /proc/mounts' '^/dev/sda2 /data ext4 '
