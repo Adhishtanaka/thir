@@ -4,3 +4,4 @@ dist/
 .DS_Store
 docs/den*.png
 docs/screenshots/
+.impeccable/

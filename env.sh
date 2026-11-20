@@ -16,16 +16,18 @@ case "$THIR_ARCH" in
     QEMU_BIN=qemu-system-x86_64; QEMU_MACHINE=(-M q35 -cpu max -accel tcg) ;;
   *) echo "unknown THIR_ARCH=$THIR_ARCH" >&2; return 1 ;;
 esac
+THIR_WEB=${THIR_WEB:-}   # 1 = web add-on build (WPE WebKit + ffmpeg + Mesa in /data/system/web.sqsh); aarch64 only for now
+if [ -n "$THIR_WEB" ] && [ "$THIR_ARCH" != aarch64 ]; then echo "THIR_WEB=1 needs THIR_ARCH=aarch64: the x86_64 WebKit build does not exist yet" >&2; return 1; fi
 THIR_FLAVOR=${THIR_FLAVOR:-}   # "vbox" (x86_64 only): AHCI disk + VMSVGA screen for VirtualBox on x86 hosts; never for the USB image
 FSUF=${THIR_FLAVOR:+-$THIR_FLAVOR}
 OUT=out/$THIR_ARCH$FSUF
-DATA_IMG=${DATA_IMG:-$OUT/data.img}   # raw ext4 image; path relative to the repo root (also /work in the container)
-DATA_SIZE=${DATA_SIZE:-128M}
+DATA_IMG=${DATA_IMG:-$OUT/data${THIR_WEB:+-web}.img}   # raw ext4 image; path relative to the repo root (also /work in the container)
+DATA_SIZE=${DATA_SIZE:-${THIR_WEB:+1G}}; DATA_SIZE=${DATA_SIZE:-128M}
 GUI_RES=${GUI_RES:-1280x800}
 AUDIODEV=${AUDIODEV:-none}   # QEMU audio backend (run.sh gui uses coreaudio; tests use none or wav,path=FILE to capture what the guest plays)
-QEMU_BASE=("$QEMU_BIN" "${QEMU_MACHINE[@]}" -m 256 -smp 1
+QEMU_BASE=("$QEMU_BIN" "${QEMU_MACHINE[@]}" -m ${QEMU_MEM:-256} -smp ${QEMU_SMP:-1}
       -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -device virtio-rng-pci
-      -audiodev "$AUDIODEV,id=snd0" -device intel-hda -device hda-output,audiodev=snd0)
-QEMU_GPU=(-device virtio-gpu-pci,id=gpu0,xres=${GUI_RES%x*},yres=${GUI_RES#*x} -device virtio-keyboard-pci)
+      -audiodev "$AUDIODEV,id=snd0" -device intel-hda -device hda-duplex,audiodev=snd0)
+QEMU_GPU=(-device virtio-gpu-pci,id=gpu0,xres=${GUI_RES%x*},yres=${GUI_RES#*x} -device virtio-keyboard-pci -device virtio-tablet-pci)
 QEMU=("${QEMU_BASE[@]}" "${QEMU_GPU[@]}" -kernel $OUT/Image -append "console=$CONSOLE panic=1"   # initramfs is inside the kernel
       -drive file=$DATA_IMG,format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0)

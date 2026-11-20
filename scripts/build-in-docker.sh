@@ -8,7 +8,11 @@ export CC_x86_64_unknown_linux_musl=x86_64-linux-gnu-gcc AR_x86_64_unknown_linux
 # Lua (lua-src) asks glibc headers for fopen64 & co, which musl lacks; pre-defining _FILE_OFFSET_BITS makes lprefix.h skip its own (off_t is 64-bit on both targets anyway)
 export CFLAGS_aarch64_unknown_linux_musl=-D_FILE_OFFSET_BITS=32 CFLAGS_x86_64_unknown_linux_musl=-D_FILE_OFFSET_BITS=32
 if [ "${1:-all}" = test ]; then cd /work && exec cargo test; fi
-mkdata() { rm -f "/work/$DATA_IMG"; truncate -s "$DATA_SIZE" "/work/$DATA_IMG"; mkfs.ext4 -q -F -L thirdata "/work/$DATA_IMG"; echo "data image: /work/$DATA_IMG ($DATA_SIZE)"; }
+# THIR_WEB: the data disk gets /system/web.sqsh (root 0600 in root 0700 /system, built by scripts/build-web.sh); mkfs.ext4 -d keeps the owners and modes
+webdir() { local d=/build/datadir; rm -rf $d; mkdir -p $d/system; cp "/work/$OUT/web.sqsh" $d/system/web.sqsh
+  chown -R 0:0 $d; chmod 755 $d; chmod 700 $d/system; chmod 600 $d/system/web.sqsh; echo "-d $d"; }
+mkdata() { rm -f "/work/$DATA_IMG"; truncate -s "$DATA_SIZE" "/work/$DATA_IMG"
+  mkfs.ext4 -q -F -L thirdata ${THIR_WEB:+$(webdir)} "/work/$DATA_IMG"; echo "data image: /work/$DATA_IMG ($DATA_SIZE)"; }
 if [ "${1:-all}" = data ]; then mkdata; exit 0; fi
 
 SRC=/build/linux-$KERNEL_VERSION; OBJ=/build/kobj-$THIR_ARCH$FSUF; O=/work/$OUT; LIST=/build/initramfs-$THIR_ARCH.list
@@ -17,7 +21,7 @@ KMAKE=(make -C "$SRC" O="$OBJ" ARCH="$KARCH" CROSS_COMPILE="$CROSS_COMPILE")
 mkdir -p "$OBJ" "$O"
 
 cd /work && cargo build --release --target "$RUST_TARGET"
-for b in init nsh dhcp den login passwd edit find top fetch curl tools; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
+for b in init nsh dhcp den login passwd edit find top fetch curl tools rec; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
 rm -f "$O/initramfs.cpio.gz"
 cat > "$LIST" <<EOL
 dir /dev 0755 0 0
@@ -30,6 +34,7 @@ dir /etc 0755 0 0
 dir /bin 0755 0 0
 dir /share 0755 0 0
 dir /data 0755 0 0
+dir /web 0755 0 0
 file /init $O/init 0755 0 0
 file /bin/nsh $O/nsh 0755 0 0
 file /bin/dhcp $O/dhcp 0755 0 0
@@ -43,7 +48,13 @@ file /bin/fetch $O/fetch 0755 0 0
 file /bin/curl $O/curl 0755 0 0
 slink /bin/agent /bin/curl 0777 0 0
 file /bin/tools $O/tools 0755 0 0
-$(for a in clock calendar calc contacts notes settings help beep bell; do echo "slink /bin/$a /bin/tools 0777 0 0"; done)
+file /bin/rec $O/rec 0755 0 0
+$(for a in clock calendar calc contacts notes settings help beep bell view play; do echo "slink /bin/$a /bin/tools 0777 0 0"; done)
+slink /lib /web/lib 0777 0 0
+slink /usr /web/usr 0777 0 0
+slink /etc/fonts /web/etc/fonts 0777 0 0
+slink /etc/ssl /web/etc/ssl 0777 0 0
+slink /bin/web /usr/bin/thir-web 0777 0 0
 slink /bin/neofetch /bin/fetch 0777 0 0
 slink /bin/nano /bin/edit 0777 0 0
 file /share/font16.psf /work/assets/fonts/Uni3-Terminus16.psf 0644 0 0
@@ -73,15 +84,16 @@ done
 cp "$OBJ/$KIMAGE" "$O/Image"
 
 mkimg() {   # GPT: p1 ESP (FAT32, the kernel as the default EFI app), p2 ext4 "thirdata". Plain files only: no loop devices in Docker.
-  local img=$O/thir.img esp=/build/esp-$THIR_ARCH.img
-  rm -f "$img" "$esp"; truncate -s 256M "$img"; truncate -s 64M "$esp"
-  printf 'label: gpt\nstart=2048, size=64MiB, type=uefi, name=thiresp\nstart=133120, size=190MiB, type=linux, name=thirdata\n' | sfdisk -q "$img"
+  local img=$O/thir${THIR_WEB:+-web}.img esp=/build/esp-$THIR_ARCH.img dsz=190 isz=256
+  [ -z "$THIR_WEB" ] || { dsz=1280; isz=1400; }   # the add-on needs room
+  rm -f "$img" "$esp"; truncate -s ${isz}M "$img"; truncate -s 64M "$esp"
+  printf 'label: gpt\nstart=2048, size=64MiB, type=uefi, name=thiresp\nstart=133120, size=%sMiB, type=linux, name=thirdata\n' $dsz | sfdisk -q "$img"
   mkfs.fat -F 32 -n THIRESP "$esp" > /dev/null
   mmd -i "$esp" ::/EFI ::/EFI/BOOT
   mcopy -i "$esp" "$O/Image" "::/EFI/BOOT/$EFI_NAME"
   dd if="$esp" of="$img" bs=1M seek=1 conv=notrunc,sparse status=none
-  mkfs.ext4 -q -F -L thirdata -E offset=$((65 * 1048576)) "$img" 190M
-  echo "uefi image: $img (ESP 64 MiB + thirdata 190 MiB)"
+  mkfs.ext4 -q -F -L thirdata ${THIR_WEB:+$(webdir)} -E offset=$((65 * 1048576)) "$img" ${dsz}M
+  echo "uefi image: $img (ESP 64 MiB + thirdata $dsz MiB)"
 }
 mkimg
 [ -f "/work/$DATA_IMG" ] || mkdata
