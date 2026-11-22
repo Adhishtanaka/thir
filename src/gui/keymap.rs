@@ -2,12 +2,12 @@
 use super::layout::Dir;
 
 #[derive(Debug, PartialEq)]
-pub enum Action { Split, Close, Fullscreen, StopMic, Focus(Dir) }
+pub enum Action { Split, Close, Fullscreen, StopMic, Copy, Paste, Focus(Dir) }
 #[derive(Debug, PartialEq)]
 pub enum Key { Bytes(Vec<u8>), Act(Action) }
 
 #[derive(Default)]
-pub struct Keys { shift: bool, ctrl: bool, wm: bool, caps: bool }
+pub struct Keys { shift: bool, ctrl: bool, alt: bool, meta: bool, caps: bool }
 
 /// (unshifted, shifted) for printable keys.
 fn printable(code: u16) -> Option<(u8, u8)> {
@@ -21,7 +21,7 @@ fn printable(code: u16) -> Option<(u8, u8)> {
 
 impl Keys {
     /// Alt or Cmd is held: a surface app gets no key presses then (they are window-manager keys).
-    pub fn wm(&self) -> bool { self.wm }
+    pub fn wm(&self) -> bool { self.alt || self.meta }
     /// The held modifiers as surface protocol bits (shift, ctrl, caps lock).
     pub fn mods(&self) -> u32 { self.shift as u32 | (self.ctrl as u32) << 1 | (self.caps as u32) << 3 }
     pub fn is_wm_key(code: u16) -> bool { matches!(code, 56 | 100 | 125 | 126) }
@@ -31,12 +31,14 @@ impl Keys {
         match code {
             42 | 54 => { self.shift = down; return None }
             29 | 97 => { self.ctrl = down; return None }
-            56 | 100 | 125 | 126 => { self.wm = down; return None }   // Alt or Cmd: some Mac keyboards have no Alt
+            56 | 100 => { self.alt = down; return None }
+            125 | 126 => { self.meta = down; return None }   // Cmd (Super) works like Alt for the window keys, since some Mac keyboards have no Alt
             58 => { if value == 1 { self.caps = !self.caps } return None }
             _ => {}
         }
         if !down { return None }
-        if self.wm {
+        if self.wm() {
+            if self.meta && !self.alt { match code { 46 => return Some(Key::Act(Action::Copy)), 47 => return Some(Key::Act(Action::Paste)), _ => {} } }   // Cmd+C, Cmd+V
             return Some(Key::Act(match code {
                 28 => Action::Split, 16 => Action::Close, 33 => Action::Fullscreen, 19 => Action::StopMic,
                 103 | 37 => Action::Focus(Dir::Up), 108 | 36 => Action::Focus(Dir::Down),
@@ -44,6 +46,7 @@ impl Keys {
                 _ => return None,   // other Alt combinations are swallowed
             }));
         }
+        if self.ctrl && self.shift { match code { 46 => return Some(Key::Act(Action::Copy)), 47 => return Some(Key::Act(Action::Paste)), _ => {} } }   // Ctrl+Shift+C, Ctrl+Shift+V
         let fixed: &[u8] = match code {
             1 => b"\x1b", 14 => b"\x7f", 15 => b"\t", 28 => b"\r",
             103 => b"\x1b[A", 108 => b"\x1b[B", 106 => b"\x1b[C", 105 => b"\x1b[D", 111 => b"\x1b[3~", 102 => b"\x1b[H", 107 => b"\x1b[F", 104 => b"\x1b[5~", 109 => b"\x1b[6~",
@@ -80,6 +83,14 @@ mod tests {
         assert_eq!(k.event(28, 1), Some(Key::Act(Action::Split)));
         k.event(125, 0); assert_eq!(k.event(28, 1), b(b"\r"));
         assert_eq!(k.event(102, 1), b(b"\x1b[H")); assert_eq!(k.event(107, 1), b(b"\x1b[F"));
+    }
+    #[test] fn copy_and_paste_keys() {
+        let mut k = Keys::default(); k.event(29, 1); k.event(42, 1);
+        assert_eq!(k.event(46, 1), Some(Key::Act(Action::Copy))); assert_eq!(k.event(47, 1), Some(Key::Act(Action::Paste)));
+        k.event(42, 0); assert_eq!(k.event(46, 1), b(b"\x03")); assert_eq!(k.event(47, 1), b(b"\x16")); k.event(29, 0);
+        k.event(125, 1); assert_eq!(k.event(46, 1), Some(Key::Act(Action::Copy))); assert_eq!(k.event(47, 1), Some(Key::Act(Action::Paste)));
+        assert_eq!(k.event(28, 1), Some(Key::Act(Action::Split)), "the Cmd window keys still work"); k.event(125, 0);
+        k.event(56, 1); assert_eq!(k.event(46, 1), None, "Alt+C stays swallowed"); k.event(56, 0); assert_eq!(k.event(46, 1), b(b"c"));
     }
     #[test] fn ctrl_letters() {
         let mut k = Keys::default(); k.event(29, 1);

@@ -15,6 +15,8 @@ pub struct Term {
     pub cx: usize, pub cy: usize, pub cursor_on: bool, pub dirty: bool,
     /// A full-screen app is running (`ESC [ ? 1049 h`, also 1047 and 47): den draws the pane opaque. shortcut: only the flag, the shell's screen is not saved (apps clear theirs when they end).
     pub alt: bool,
+    /// The app asked for bracketed paste (`?2004`) and for mouse events (`?1000`, `?1002`, `?1003`; `?1006` = SGR form).
+    pub bracketed: bool, pub mouse: bool, pub mouse_sgr: bool,
     /// Window title set by `ESC ] 0 ; text BEL` or `ESC ] 2 ; text BEL` (printable, at most 40 characters); `title_changed` tells the bar to redraw.
     pub title: String, pub title_changed: bool,
     pen: Cell, wrap: bool, st: St, params: Vec<u32>, private: bool, need: u8, acc: u32, osc: Vec<u8>,
@@ -23,7 +25,7 @@ pub struct Term {
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Term {
         let (cols, rows) = (cols.max(1), rows.max(1));
-        Term { cols, rows, cells: vec![BLANK; cols * rows], cx: 0, cy: 0, cursor_on: true, dirty: true, alt: false, title: String::new(), title_changed: false, pen: BLANK, wrap: false, st: St::Ground, params: vec![0], private: false, need: 0, acc: 0, osc: vec![] }
+        Term { cols, rows, cells: vec![BLANK; cols * rows], cx: 0, cy: 0, cursor_on: true, dirty: true, alt: false, bracketed: false, mouse: false, mouse_sgr: false, title: String::new(), title_changed: false, pen: BLANK, wrap: false, st: St::Ground, params: vec![0], private: false, need: 0, acc: 0, osc: vec![] }
     }
 
     /// Keeps the top-left part of the old content.
@@ -124,7 +126,10 @@ impl Term {
                 let b = self.blank(); self.cells[row + s..row + t.min(c)].fill(b);
             }
             b'm' => self.sgr(),
-            b'h' | b'l' if self.private && matches!(self.params[0], 47 | 1047 | 1049) => self.alt = f == b'h',
+            b'h' | b'l' if self.private && matches!(self.params[0], 47 | 1047 | 1049) => { self.alt = f == b'h'; if !self.alt { self.mouse = false; self.mouse_sgr = false; } }
+            b'h' | b'l' if self.private && self.params[0] == 2004 => self.bracketed = f == b'h',
+            b'h' | b'l' if self.private && matches!(self.params[0], 1000 | 1002 | 1003) => self.mouse = f == b'h',
+            b'h' | b'l' if self.private && self.params[0] == 1006 => self.mouse_sgr = f == b'h',
             b'h' | b'l' if self.private && self.params[0] == 25 => self.cursor_on = f == b'h',
             _ => return,
         }
@@ -210,6 +215,10 @@ mod tests {
     }
     #[test] fn erase_uses_background() { let mut t = Term::new(2, 1); t.feed(b"\x1b[41m\x1b[K"); assert_eq!(t.cells[1].bg, 1); }
     #[test] fn alt_screen_flag() { let mut t = Term::new(4, 2); assert!(!t.alt); t.feed(b"\x1b[?1049h"); assert!(t.alt); t.feed(b"\x1b[?25l"); assert!(t.alt); t.feed(b"\x1b[?1049l"); assert!(!t.alt); }
+    #[test] fn paste_and_mouse_modes() {
+        let mut t = Term::new(4, 2); t.feed(b"\x1b[?2004h\x1b[?1000h\x1b[?1006h"); assert!(t.bracketed && t.mouse && t.mouse_sgr);
+        t.feed(b"\x1b[?2004l"); assert!(!t.bracketed); t.feed(b"\x1b[?1049h\x1b[?1049l"); assert!(!t.mouse && !t.mouse_sgr);
+    }
     #[test] fn cursor_visibility() { let mut t = Term::new(2, 1); t.feed(b"\x1b[?25l"); assert!(!t.cursor_on); t.feed(b"\x1b[?25h"); assert!(t.cursor_on); }
     #[test] fn backspace_tab_utf8() {
         let mut t = Term::new(20, 1); t.feed("a\u{8}b\tc é€".as_bytes());

@@ -1,11 +1,18 @@
 //! den: tiling terminal GUI drawn straight to /dev/fb0. Alt is the window-manager key.
 use std::{fs::{self, File, OpenOptions}, io, os::{fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd}, unix::{fs::{MetadataExt, OpenOptionsExt}, process::CommandExt}}, process::{exit, Command, Stdio}, thread::sleep, time::Duration};
-use thir::{apps::prefs, sound as snd_cfg, clock, decide, sound, files::{printable, read_small}, notify, store, user, gui::{draw::{fill, glyph, text}, fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, pointer::{Pointer, Ptr}, mic::{self, Broker, Do}, surface::{self, recv_msg, Down, Got, Surface, Up}, theme::*, wall, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
+use thir::{apps::prefs, sound as snd_cfg, clock, decide, sound, files::{printable, read_small}, notify, store, user, gui::{cam::{self, Cam}, clip, draw::{fill, glyph, text}, fb::Fb, font::Font, keymap::{Action, Key, Keys}, layout::{Layout, Rect}, pointer::{Pointer, Ptr}, mic::{self, Broker, Do}, surface::{self, clip_msg, recv_msg, send_msg, Down, Got, Surface, Up, MOD_CTRL, MOD_SHIFT}, theme::*, wall, wallpaper, vt::{Term, DEF_BG, DEF_FG}}, net, Action as Exit};
 
+/// Down::Cam states beyond the broker's: no camera at all, and a camera that would not open.
+const CAM_NONE: u32 = 4; const CAM_CANNOT: u32 = 5;
 const LOGIN_COLS: i32 = 44;
 const LOGIN_ROWS: i32 = 6;
+/// The very first login box is taller: it holds the welcome page.
+const WELCOME_ROWS: i32 = 14;
 
-struct Pane { id: usize, master: i32, pid: i32, term: Term, rect: Rect, visible: bool, dirty: bool, tty: u64, surface: Option<Surface> }   // tty: rdev of the pane's pty slave (who may connect a surface)
+struct Pane { id: usize, master: i32, pid: i32, term: Term, rect: Rect, visible: bool, dirty: bool, tty: u64, surface: Option<Surface>, sel: Option<Sel>, outq: Vec<u8> }   // sel: the mouse selection; outq: bytes the pty did not take yet (a big paste)
+/// A mouse selection from `a` to `b` (cells): `drag` while the button is down, `moved` once it covers more than the click itself.
+#[derive(Clone, Copy)]
+struct Sel { a: (usize, usize), b: (usize, usize), drag: bool, moved: bool, n: u8 }   // tty: rdev of the pane's pty slave (who may connect a surface)
 struct PtrDev { name: String, fd: i32, abs: Option<[(i32, i32); 2]> }   // a mouse (abs None) or a tablet with its ABS_X / ABS_Y ranges
 
 /// The mouse arrow: X = CUR_FILL (black), o = CUR_EDGE (white) outline, one cell per `sc` pixels; the white edge shows on the dark panes and the black fill on the blue wallpaper.
@@ -23,8 +30,11 @@ struct Den {
     listener: i32,   // /run/den/sock
     uid: Option<u32>,   // None = nobody is logged in: one centered login pane
     home: Option<String>,   // the logged-in user's home: ~/.tz for the bar clock, ~/.notify for notices, ~/.config/thir/settings for the wallpaper
-    mic: Broker, mic_dev: Option<File>, t0: std::time::Instant, bar_dirty: bool,   // the microphone: who may record, the open capture device (only den ever has it), the clock of the broker
-    wall_idx: usize, sc: i32,   // the wallpaper preset on screen (index into WALLS) and the pixel scale
+    first_boot: bool,   // no account exists yet: the login box is tall enough for the welcome page
+    clip: String, click: Option<(u64, (usize, usize), u8)>, grab: Option<usize>,   // the den-wide clipboard, the last click (time, cell, count), the pane the pressed mouse button belongs to
+    cam: Broker, cam_dev: Option<Cam>, cam_buf: Option<OwnedFd>, cam_last: u64, cam_slot: u32, cam_err: Option<u32>,   // the camera: the same kind of broker, the open device, the shared frame memory (2 slots), the last frame time
+    mic: Broker, mic_dev: Option<File>, mic_last: u64, mic_xruns: u32, t0: std::time::Instant, bar_dirty: bool,   // the microphone: who may record, the open capture device (only den ever has it), the clock of the broker
+    wall_idx: usize, accent_col: u32, pic: Option<Vec<u32>>, pic_stamp: String, mark_on: bool, sc: i32,   // the wallpaper preset on screen (index into WALLS) and the pixel scale
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -45,13 +55,13 @@ impl Den {
     fn new_pane(&mut self) -> usize {
         let id = self.next_id; self.next_id += 1;
         let (master, pid, tty) = spawn_shell(self.uid, 80, 24).unwrap_or_else(|e| { eprintln!("den: cannot start pane shell: {e}"); exit(1) });
-        self.panes.push(Pane { id, master, pid, term: Term::new(80, 24), rect: self.area, visible: false, dirty: true, tty, surface: None });
+        self.panes.push(Pane { id, master, pid, term: Term::new(80, 24), rect: self.area, visible: false, dirty: true, tty, surface: None, sel: None, outq: vec![] });
         id
     }
 
     /// The login screen: one pane of LOGIN_COLS x LOGIN_ROWS cells in the middle of the screen.
     fn login_rect(&self) -> Rect {
-        let (rw, rh) = (LOGIN_COLS * self.font.w as i32 + 2 * (self.m.border + self.m.padx), LOGIN_ROWS * self.font.h as i32 + 2 * (self.m.border + self.m.pady) + self.title_inset());
+        let (rw, rh) = (LOGIN_COLS * self.font.w as i32 + 2 * (self.m.border + self.m.padx), (if self.first_boot { WELCOME_ROWS } else { LOGIN_ROWS }) * self.font.h as i32 + 2 * (self.m.border + self.m.pady) + self.title_inset());
         Rect { x: (self.w as i32 - rw) / 2, y: self.h as i32 / 2 + 3 * self.sc * 5, w: rw, h: rh }
     }
 
@@ -62,7 +72,8 @@ impl Den {
             .and_then(|s| s.lines().find_map(|l| l.strip_prefix("Uid:")?.split_whitespace().next()?.parse::<u32>().ok()));
         if let Some(u) = uid.filter(|&u| u != 0) {
             self.home = user::load().ok().and_then(|v| v.into_iter().find(|x| x.uid == u)).map(|x| x.home());
-            self.uid = Some(u); self.relayout();
+            self.uid = Some(u); if std::mem::take(&mut self.first_boot) { self.wall_idx = usize::MAX; }   // the login box is its small size again: the wallpaper is made anew
+            self.relayout();
         }
     }
 
@@ -75,7 +86,7 @@ impl Den {
                 let (c, rw) = self.cell_size(r);
                 let p = &mut self.panes[i];
                 p.rect = r; p.dirty = true;
-                if (p.term.cols, p.term.rows) != (c, rw) { p.term.resize(c, rw); set_winsize(p.master, c, rw); }
+                if (p.term.cols, p.term.rows) != (c, rw) { p.term.resize(c, rw); set_winsize(p.master, c, rw); p.sel = None; }
             }
         }
         self.full_redraw = true;
@@ -96,27 +107,27 @@ impl Den {
             let inner = self.inner(self.panes[i].rect);
             let p = &mut self.panes[i];
             let Some(s) = p.surface.as_mut().filter(|s| s.ready()) else { continue };
-            let cfg = (inner.w as u32, inner.h as u32, p.id == focus && p.visible);
+            let cfg = (inner.w as u32, inner.h as u32, p.id == focus && p.visible, accent(), panel());
             if s.sent == Some(cfg) { continue }
             if s.sent.map_or(true, |o| (o.0, o.1) != (cfg.0, cfg.1)) { s.buf = None; p.term.dirty = true; }
             s.sent = Some(cfg);
-            s.send(Down::Configure { w: cfg.0, h: cfg.1, scale, focused: cfg.2 });
+            s.send(Down::Configure { w: cfg.0, h: cfg.1, scale, focused: cfg.2, accent: cfg.3, panel: cfg.4 });
         }
     }
 
     fn remove_pane(&mut self, id: usize, hup: bool) {
         let Some(i) = self.panes.iter().position(|p| p.id == id) else { return };
-        let a = self.mic.gone(id); self.mic_run(a);   // the pane's recording ends with it
+        let a = self.mic.gone(id); self.mic_run(a); let a = self.cam.gone(id); self.cam_run(a);   // the pane's recording ends with it
         let p = self.panes.remove(i);
         if hup { unsafe { libc::kill(p.pid, libc::SIGHUP); } }
         unsafe { libc::close(p.master); }
         self.zombies.push(p.pid);
-        if !self.layout.close(id) { let a = self.mic.stop(None); self.mic_run(a); self.uid = None; self.home = None; let n = self.new_pane(); self.layout = Layout::new(n); }   // last pane closed: logout
+        if !self.layout.close(id) { let a = self.mic.stop(None); self.mic_run(a); let a = self.cam.stop(None); self.cam_run(a); self.uid = None; self.home = None; let n = self.new_pane(); self.layout = Layout::new(n); }   // last pane closed: logout
         self.relayout();
     }
 
     fn color(&self, c: u8, bold: bool, def: u32) -> u32 {
-        match c { DEF_FG | DEF_BG => def, 0..=7 if bold => PALETTE[c as usize + 8], 0..=15 => PALETTE[c as usize], SLOT_ACCENT => ACCENT, SLOT_SEL => self.look.2, SLOT_WALL => self.look.0, SLOT_BORDER => BORDER_DIM, SLOT_PANEL => self.look.1, SLOT_SOFT => SOFT, _ => def }
+        match c { DEF_FG | DEF_BG => def, 0..=7 if bold => PALETTE[c as usize + 8], 0..=15 => PALETTE[c as usize], SLOT_ACCENT => accent(), SLOT_SEL => self.look.2, SLOT_WALL => self.look.0, SLOT_BORDER => BORDER_DIM, SLOT_PANEL => self.look.1, SLOT_SOFT => SOFT, _ => def }
     }
 
     fn draw_pane(&mut self, i: usize) {
@@ -124,13 +135,13 @@ impl Den {
         let m = self.m; let p = &self.panes[i]; let r = p.rect; let w = self.w;
         let (fw, fh) = (self.font.w as i32, self.font.h as i32);
         {   // wall again under the strip the title patch of an earlier draw may have left above the pane
-            let wall = (if self.uid.is_none() { &self.wall_login } else { &self.wall_big });
+            let wall = if self.uid.is_none() { &self.wall_login } else { &self.wall_big };
             for y in (r.y - fh / 2).max(0)..r.y { let o = y as usize * w + r.x.max(0) as usize; let e = (o + r.w as usize).min(self.back.len()); self.back[o..e].copy_from_slice(&wall[o..e]); }
         }
         if self.translucent(i) {
             for y in r.y.max(0)..(r.y + r.h).min(self.h as i32) { let (o, e) = (y as usize * w + r.x.max(0) as usize, y as usize * w + (r.x + r.w).clamp(0, w as i32) as usize); self.back[o..e].copy_from_slice(&self.tint[o..e]); }
         } else { fill(&mut self.back, w, r, self.look.1); }
-        let bc = if focused { ACCENT } else { BORDER_DIM };
+        let bc = if focused { accent() } else { BORDER_DIM };
         for e in [Rect { h: m.border, ..r }, Rect { y: r.y + r.h - m.border, h: m.border, ..r }, Rect { w: m.border, ..r }, Rect { x: r.x + r.w - m.border, w: m.border, ..r }] { fill(&mut self.back, w, e, bc); }
         let inner = self.inner(r);
         let mut shown = false;
@@ -141,11 +152,13 @@ impl Den {
         let p = &self.panes[i];
         if !shown {
             let (x0, y0) = (r.x + m.border + m.padx, inner.y + m.pady);
+            let sel = p.sel.filter(|s| s.moved).map(|s| (s.a, s.b));
             for cy in 0..p.term.rows { for cx in 0..p.term.cols {
                 let c = p.term.cells[cy * p.term.cols + cx];
                 let (mut fg, mut bg) = (self.color(c.fg, c.bold, FG), if c.bg == DEF_BG { None } else { Some(self.color(c.bg, false, 0)) });
                 if c.rev { let f = fg; fg = bg.unwrap_or(self.look.1); bg = Some(f); }
-                if focused && p.term.cursor_on && (cx, cy) == (p.term.cx, p.term.cy) { fg = self.look.0; bg = Some(ACCENT); }
+                if sel.is_some_and(|(a, b)| clip::selected(a, b, cx, cy)) { bg = Some(self.look.2); }   // the selection: the theme's selected-row colour
+                if focused && p.term.cursor_on && (cx, cy) == (p.term.cx, p.term.cy) { fg = self.look.0; bg = Some(accent()); }
                 let (x, y) = (x0 + cx as i32 * fw, y0 + cy as i32 * fh);
                 if let Some(b) = bg { fill(&mut self.back, w, Rect { x, y, w: fw, h: fh }, b); }
                 if c.ch != ' ' { glyph(&mut self.back, w, &self.font, x, y, c.ch, fg); }
@@ -169,7 +182,7 @@ impl Den {
         let (tx, ty) = (r.x + 18 * self.sc, r.y + m.border / 2 - fh / 2);
         let tw = name.chars().count() as i32 * fw;
         for y in ty.max(0)..(ty + fh).min(self.h as i32) { for x in (tx - 8 * self.sc).max(0)..(tx + tw + 8 * self.sc).min(w as i32) { let o = y as usize * w + x as usize; self.back[o] = wall::blend(self.look.0, (if self.uid.is_none() { &self.wall_login } else { &self.wall_big })[o], PANEL_ALPHA); } }   // the label's patch is wall colour over the wallpaper, so the mark does not show through the letters
-        text(&mut self.back, w, &self.font, tx, ty, name, if focused { ACCENT } else { DIM });
+        text(&mut self.back, w, &self.font, tx, ty, name, if focused { accent() } else { DIM });
         self.dirty_y = (self.dirty_y.0.min((r.y - fh / 2).max(0) as usize), self.dirty_y.1.max((r.y + r.h) as usize));
     }
 
@@ -205,12 +218,12 @@ impl Den {
         // left: pane numbers (the focused one in peach), then the focused pane's name
         let ids = self.layout.ids(self.area, m.gap);
         let mut x = l;
-        if self.uid.is_some() { for (k, &id) in ids.iter().enumerate() { x += self.segs(x, &[(&(k + 1).to_string(), if id == self.layout.focus { ACCENT } else { DIM }), (" ", DIM)]); } }
+        if self.uid.is_some() { for (k, &id) in ids.iter().enumerate() { x += self.segs(x, &[(&(k + 1).to_string(), if id == self.layout.focus { accent() } else { DIM }), (" ", DIM)]); } }
         let title = self.panes.iter().find(|p| p.id == self.layout.focus).map_or("", |p| p.term.title.as_str());   // set by the app in the pane (OSC 0/2)
         let name = if self.uid.is_none() { "login" } else if title.is_empty() { "shell" } else { title }.to_string();
         self.segs(x + if self.uid.is_some() { fw } else { 0 }, &[(&name, DIM)]);
         // right: ip, vol, ai
-        let (ai_t, ai_c) = match self.ai { Ai::On => ("ai on", OK), Ai::Working => ("ai working", ACCENT), Ai::Off => ("ai off", DIM) };
+        let (ai_t, ai_c) = match self.ai { Ai::On => ("ai on", OK), Ai::Working => ("ai working", accent()), Ai::Off => ("ai off", DIM) };
         let vol = match self.vol { Some(v) => format!("vol {v}"), None => "vol off".to_string() };
         let ip = ip_string();
         let rw = (ip.chars().count() + vol.chars().count() + ai_t.len() + 6) as i32 * fw;
@@ -223,19 +236,19 @@ impl Den {
         let now_ms = self.now_ms();
         let room = ((w as i32 - 2 * (rw.max(x - l) + 2 * m.gap)) / fw).max(10) as usize;
         let centred = |den: &mut Den, parts: &[(&str, u32)]| -> (i32, i32) { let tw: i32 = parts.iter().map(|p| p.0.chars().count() as i32).sum::<i32>() * fw; let x = (w as i32 - tw) / 2; den.segs(x, parts); (x, tw) };
-        if let Some(pane) = self.mic.asking() {   // the question is den's own: a peach outlined box, nothing in a pane can draw here
-            let q = format!("rec (pane {}) wants the microphone", n_of(pane));
+        let ask = self.mic.asking().map(|p| format!("rec (pane {}) wants the microphone", n_of(p))).or_else(|| self.cam.asking().map(|p| format!("camera (pane {}) wants to see", n_of(p))));
+        if let Some(q) = ask {   // the question is den's own: a peach outlined box, nothing in a pane can draw here
             let tw = (q.chars().count() + 3 + 9 + 3 + 18) as i32 * fw;
             let b = Rect { x: (w as i32 - tw) / 2 - fw, y: 2 * self.sc, w: tw + 2 * fw, h: m.bar - 4 * self.sc };
-            fill(&mut self.back, w, b, ACCENT); fill(&mut self.back, w, Rect { x: b.x + m.border, y: b.y + m.border, w: b.w - 2 * m.border, h: b.h - 2 * m.border }, self.look.1);
+            fill(&mut self.back, w, b, accent()); fill(&mut self.back, w, Rect { x: b.x + m.border, y: b.y + m.border, w: b.w - 2 * m.border, h: b.h - 2 * m.border }, self.look.1);
             centred(self, &[(&q, FG), ("   ", DIM), ("[y]", OK), (" allow", FG), ("   ", DIM), ("[n] deny (default)", DIM)]);
-        } else if let Some(sec) = self.mic.seconds(now_ms) {   // steady red while the microphone is open
-            let (x, _) = centred(self, &[("  ", ERR), (&format!("rec {}   ", mic::clock(sec)), FG), ("alt+r", FG), (" stop", DIM)]);
+        } else if let Some((name, sec)) = self.mic.seconds(now_ms).map(|s| ("rec", s)).or_else(|| self.cam.seconds(now_ms).map(|s| ("cam", s))) {   // steady red while the microphone or the camera is open
+            let (x, _) = centred(self, &[("  ", ERR), (&format!("{name} {}   ", mic::clock(sec)), FG), ("alt+r", FG), (" stop", DIM)]);
             fill(&mut self.back, w, Rect { x: x + 4 * self.sc, y: (m.bar - 8 * self.sc) / 2, w: 8 * self.sc, h: 8 * self.sc }, ERR);   // the red recording light: a solid square, easy to see
         } else if let Some((ts, n)) = notice {   // a notice from the helper replaces the clock while it is fresh; in its first 20 seconds it flashes (the alert when there is no sound)
             let t: String = format!("\u{2192} {}", printable(&n)).chars().take(room).collect();
             let flash = now - ts < 20 && now % 2 == 0;
-            if flash { let tw = t.chars().count() as i32 * fw; fill(&mut self.back, w, Rect { x: (w as i32 - tw) / 2 - fw / 2, y: 3 * self.sc, w: tw + fw, h: m.bar - 6 * self.sc }, ACCENT); }
+            if flash { let tw = t.chars().count() as i32 * fw; fill(&mut self.back, w, Rect { x: (w as i32 - tw) / 2 - fw / 2, y: 3 * self.sc, w: tw + fw, h: m.bar - 6 * self.sc }, accent()); }
             centred(self, &[(&t, if flash { self.look.0 } else { WARN })]);
         } else {
             centred(self, &[(&clock::day_time(now, off), FG)]);
@@ -245,7 +258,7 @@ impl Den {
 
     fn render(&mut self, bar: bool) {
         if self.full_redraw {
-            self.back.copy_from_slice((if self.uid.is_none() { &self.wall_login } else { &self.wall_big }));
+            self.back.copy_from_slice(if self.uid.is_none() { &self.wall_login } else { &self.wall_big });
             for i in 0..self.panes.len() { if self.panes[i].visible { self.draw_pane(i); } }
             self.draw_bar(); self.dirty_y = (0, self.h); self.full_redraw = false;
         } else {
@@ -291,6 +304,7 @@ impl Den {
     /// A key for the focused app (releases too). Alt and Cmd are never sent, and no press while they are held. True when an app took the key: the shell does not get it.
     fn app_key(&self, code: u16, val: i32) -> bool {
         let Some((_, s)) = self.focus_app() else { return false };
+        if val == 1 && code == 47 && self.keys.mods() & MOD_CTRL != 0 && !self.clip.is_empty() { let _ = send_msg(s.raw(), &clip_msg(&self.clip), None, true); }   // the paste key: the focused app gets the clipboard just before it
         if !Keys::is_wm_key(code) && (val == 0 || !self.keys.wm()) { s.send(Down::Key { code: code as u32, value: val as u32, mods: self.keys.mods() }); }
         true
     }
@@ -301,7 +315,7 @@ impl Den {
     }
     fn pointer_event(&mut self, dev: usize, ty: u16, code: u16, val: i32) {
         match self.ptr.event(self.ptrs[dev].abs, ty, code, val) {
-            Some(Ptr::Moved) => { self.cursor_on = true; if let Some((s, x, y)) = self.app_pointer() { s.send(Down::Pointer { x, y }); } }
+            Some(Ptr::Moved) => { self.cursor_on = true; self.text_drag(); if let Some((s, x, y)) = self.app_pointer() { s.send(Down::Pointer { x, y }); } }
             Some(Ptr::Button(c, down)) => {
                 if down && self.uid.is_some() {   // a click focuses the pane under the cursor, and that app gets the click and the position
                     let hit = self.panes.iter().find(|p| p.visible && (p.rect.x..p.rect.x + p.rect.w).contains(&self.ptr.x) && (p.rect.y..p.rect.y + p.rect.h).contains(&self.ptr.y)).map(|p| p.id);
@@ -310,9 +324,14 @@ impl Den {
                         if let Some((s, x, y)) = self.app_pointer() { s.send(Down::Pointer { x, y }); }
                     }
                 }
+                if self.uid.is_some() { self.text_button(c, down); }
                 if let Some((s, _, _)) = self.app_pointer() { s.send(Down::Button { code: c as u32, pressed: down }); }
             }
-            Some(Ptr::Scroll(dx, dy)) => { if let Some((s, _, _)) = self.app_pointer() { s.send(Down::Scroll { dx, dy }); } }
+            Some(Ptr::Scroll(dx, dy)) => {
+                if let Some((s, _, _)) = self.app_pointer() { s.send(Down::Scroll { dx, dy }); return }
+                let hit = self.panes.iter().position(|p| Self::text_pane(p) && p.term.mouse && (p.rect.x..p.rect.x + p.rect.w).contains(&self.ptr.x) && (p.rect.y..p.rect.y + p.rect.h).contains(&self.ptr.y));
+                if let (Some(i), false) = (hit, self.keys.mods() & MOD_SHIFT != 0) { for _ in 0..dy.unsigned_abs().min(5) { self.mouse_report(i, if dy > 0 { 64 } else { 65 }, true); } }   // the wheel goes to an app that asked for the mouse
+            }
             None => {}
         }
     }
@@ -331,14 +350,14 @@ impl Den {
             }
         }
     }
-    fn drop_surface(&mut self, i: usize) { let a = self.mic.gone(self.panes[i].id); self.mic_run(a); self.panes[i].surface = None; self.panes[i].term.dirty = true; }
+    fn drop_surface(&mut self, i: usize) { let a = self.mic.gone(self.panes[i].id); self.mic_run(a); let a = self.cam.gone(self.panes[i].id); self.cam_run(a); self.panes[i].surface = None; self.panes[i].term.dirty = true; }
 
     /// Messages from the app of pane `id` (trust checks 3 and 4 are in Surface::handle). Anything wrong drops the app and the pane shows its text again.
     fn surface_read(&mut self, id: usize) {
         let Some(i) = self.panes.iter().position(|p| p.id == id) else { return };
         for _ in 0..64 {
             let Some(s) = self.panes[i].surface.as_mut() else { return };
-            let mut buf = [0u8; 512];
+            let mut buf = vec![0u8; 4 + clip::MAX + 16];
             let (n, fds, bad) = match recv_msg(s.raw(), &mut buf, true) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
                 Ok((n, f, b)) if n > 0 => (n, f, b),
@@ -361,6 +380,15 @@ impl Den {
                     let a = self.mic.start(id, true, now); self.mic_run(a);
                 }
                 Ok(Got::MicStop) => { let a = self.mic.stop(Some(self.panes[i].id)); self.mic_run(a); }
+                Ok(Got::CamStart) => {
+                    // only the genuine, root-owned /bin/camera may raise the question; no camera at all: say so at once, ask nothing
+                    let ok = surface::peer_exe(s.raw()).is_ok_and(|e| mic::exe_ok(&e, std::path::Path::new("/bin/camera"), 0));
+                    if !ok { eprintln!("den: camera request refused: not /bin/camera"); return self.drop_surface(i) }
+                    if !cam::exists() { s.send(Down::Cam { state: CAM_NONE, w: 0, h: 0, fmt: 0 }); continue }
+                    let (id, now) = (self.panes[i].id, self.now_ms()); let a = self.cam.start(id, true, now); self.cam_run(a);
+                }
+                Ok(Got::CamStop) => { let a = self.cam.stop(Some(self.panes[i].id)); self.cam_run(a); }
+                Ok(Got::ClipSet(t)) => self.clip = clip::cap(&t).to_string(),
                 Ok(Got::Nothing) => {}
             }
             if commit { if let Some(s) = &self.panes[i].surface { s.send(Down::Done); } }
@@ -386,7 +414,7 @@ impl Den {
                 let r = sound::open_capture();
                 if let Err(e) = &r { eprintln!("den: microphone: {e}"); }
                 let (rate, now) = (r.as_ref().ok().map(|x| x.1), self.now_ms());
-                self.mic_dev = r.ok().map(|x| x.0);
+                self.mic_dev = r.ok().map(|x| x.0); self.mic_last = now; self.mic_xruns = 0;
                 if self.mic_dev.is_some() { eprintln!("den: microphone on"); }
                 let more = self.mic.opened(rate, now); self.mic_run(more);
             }
@@ -402,20 +430,154 @@ impl Den {
     fn mic_pump(&mut self) {
         let (Some(f), mic::State::Live { pane, .. }) = (self.mic_dev.as_ref(), self.mic.state) else { return };
         let mut buf = [0u8; surface::PCM_MAX];
+        let now = self.now_ms();
         for _ in 0..16 {
             let n = unsafe { libc::read(f.as_raw_fd(), buf.as_mut_ptr() as *mut _, buf.len()) };
             if n > 0 {
+                self.mic_last = now;
                 let m = surface::pcm_msg(&buf[..n as usize & !3]);
                 if let Some(s) = self.panes.iter().find(|p| p.id == pane).and_then(|p| p.surface.as_ref()) { let _ = surface::send_msg(s.raw(), &m, None, true); }
                 continue
             }
             match io::Error::last_os_error().raw_os_error() {
                 Some(libc::EAGAIN) if n < 0 => {}
-                Some(libc::EPIPE) if n < 0 => { sound::capture_restart(f); continue }   // overrun: start again
+                Some(libc::EPIPE) if n < 0 => { sound::capture_restart(f); self.mic_xruns += 1; }   // overrun: start again, and read on the next poll (never spin here)
                 _ => { eprintln!("den: microphone stopped: {}", io::Error::last_os_error()); let a = self.mic.stop(None); self.mic_run(a); }
             }
             break
         }
+        if mic::dead(self.mic_last, now, self.mic_xruns) { eprintln!("den: microphone gives no samples: stopped"); let a = self.mic.stop(None); self.mic_run(a); }
+    }
+
+    /// Does what the camera broker says, like `mic_run`: tell the app (with the frame memory when it is allowed), open the device here, or close it.
+    fn cam_run(&mut self, acts: Vec<Do>) {
+        if acts.is_empty() { return }
+        self.bar_dirty = true;
+        for a in acts { match a {
+            Do::Tell(pane, state, _) => {
+                let state = if state == mic::DENIED { self.cam_err.take().unwrap_or(state) } else { state };
+                let Some(s) = self.panes.iter().find(|p| p.id == pane).and_then(|p| p.surface.as_ref()) else { continue };
+                let (w, h, fmt) = self.cam_dev.as_ref().map_or((0, 0, 0), |c| (c.w, c.h, c.fmt));
+                let fd = if state == mic::GRANTED { self.cam_buf.as_ref().map(|f| f.as_raw_fd()) } else { None };
+                let _ = send_msg(s.raw(), &Down::Cam { state, w, h, fmt }.encode(), fd, true);
+            }
+            Do::Close => { if self.cam_dev.take().is_some() { eprintln!("den: camera off"); } self.cam_buf = None; }
+            Do::Open => {
+                let r = Cam::open().and_then(|c| cam::share_buffer().map(|f| (c, f)));
+                let (ok, now) = (r.is_ok(), self.now_ms());
+                match r { Ok((c, f)) => { eprintln!("den: camera on ({}x{})", c.w, c.h); self.cam_dev = Some(c); self.cam_buf = Some(f); } Err(e) => { eprintln!("den: camera: {e}"); self.cam_err = Some(CAM_CANNOT); } }
+                self.cam_last = now; self.cam_slot = 0;
+                let more = self.cam.opened(ok.then_some(1), now); self.cam_run(more);
+            }
+        } }
+    }
+    /// While the camera question is up every key press is den's (see `mic_consumes`).
+    fn cam_consumes(&mut self, code: u16, val: i32) -> bool {
+        if self.cam.asking().is_none() { return false }
+        if val == 1 { let now = self.now_ms(); let a = self.cam.key(code, now); self.cam_run(a); }
+        true
+    }
+    /// Copies the frames the camera has into the shared memory and tells the app; a camera that goes quiet ends the session.
+    fn cam_pump(&mut self) {
+        let mic::State::Live { pane, .. } = self.cam.state else { return };
+        let now = self.now_ms();
+        let (Some(c), Some(buf)) = (self.cam_dev.as_mut(), self.cam_buf.as_ref()) else { return };
+        let mut failed = false;
+        for _ in 0..4 {
+            match c.frame() {
+                Ok(Some(f)) => {
+                    let (slot, len) = (self.cam_slot, f.len().min(cam::SLOT));
+                    if unsafe { libc::pwrite(buf.as_raw_fd(), f.as_ptr() as *const _, len, (slot as usize * cam::SLOT) as _) } as usize != len { failed = true; break }
+                    self.cam_slot ^= 1; self.cam_last = now;
+                    if let Some(s) = self.panes.iter().find(|p| p.id == pane).and_then(|p| p.surface.as_ref()) { s.send(Down::CamFrame { slot, len: len as u32 }); }
+                }
+                Ok(None) => break,
+                Err(e) => { eprintln!("den: camera stopped: {e}"); failed = true; break }
+            }
+        }
+        if failed || now.saturating_sub(self.cam_last) >= 5000 { eprintln!("den: camera gives no pictures: stopped"); let a = self.cam.stop(None); self.cam_run(a); }
+    }
+
+    /// Writes to a pane's pty: what it takes now, the rest later (a long paste is bigger than the pty buffer). Typing or pasting ends a selection.
+    fn pane_write(&mut self, i: usize, b: &[u8]) {
+        let p = &mut self.panes[i];
+        if p.sel.take().is_some() { p.term.dirty = true; }
+        p.outq.extend_from_slice(b); Self::flush_out(p);
+    }
+    fn flush_out(p: &mut Pane) {
+        while !p.outq.is_empty() {
+            let n = unsafe { libc::write(p.master, p.outq.as_ptr() as *const _, p.outq.len()) };
+            if n <= 0 { break }
+            p.outq.drain(..n as usize);
+        }
+    }
+    /// The pane shows its text grid (no app pixels): the mouse can select there.
+    fn text_pane(p: &Pane) -> bool { p.visible && p.surface.as_ref().map_or(true, |s| s.buf.is_none()) }
+    /// The cell of pane `i` under the pointer (clamped into the grid).
+    fn cell_at(&self, i: usize) -> (usize, usize) {
+        let p = &self.panes[i]; let inner = self.inner(p.rect);
+        let (x0, y0) = (p.rect.x + self.m.border + self.m.padx, inner.y + self.m.pady);
+        ((((self.ptr.x - x0).max(0) / self.font.w as i32) as usize).min(p.term.cols - 1), (((self.ptr.y - y0).max(0) / self.font.h as i32) as usize).min(p.term.rows - 1))
+    }
+    /// A mouse event for the app in a text pane that asked for them: SGR (`?1006`) or the old X10 form. `b`: 0 left, 1 middle, 2 right, 64 wheel up, 65 wheel down.
+    fn mouse_report(&mut self, i: usize, b: u8, down: bool) {
+        let (x, y) = self.cell_at(i);
+        let m = if self.panes[i].term.mouse_sgr { format!("\x1b[<{b};{};{}{}", x + 1, y + 1, if down { 'M' } else { 'm' }).into_bytes() }
+            else if x < 223 && y < 223 { vec![0x1b, b'[', b'M', 32 + if down { b } else { 3 }, 33 + x as u8, 33 + y as u8] } else { return };
+        let p = &mut self.panes[i]; p.outq.extend_from_slice(&m); Self::flush_out(p);
+    }
+    /// A mouse button on a text pane: select (drag, double click = word, triple click = line), or report to an app that wants the mouse (Shift selects anyway).
+    fn text_button(&mut self, c: u16, down: bool) {
+        let shift = self.keys.mods() & MOD_SHIFT != 0;
+        let i = if down { self.panes.iter().position(|p| Self::text_pane(p) && (p.rect.x..p.rect.x + p.rect.w).contains(&self.ptr.x) && (p.rect.y..p.rect.y + p.rect.h).contains(&self.ptr.y)) }
+            else { self.grab.and_then(|id| self.panes.iter().position(|p| p.id == id)) };
+        let Some(i) = i else { return };
+        if down { self.grab = Some(self.panes[i].id); }
+        if self.panes[i].term.mouse && !shift && !self.panes[i].sel.is_some_and(|s| s.drag) {
+            if let Some(b) = match c { 0x110 => Some(0), 0x112 => Some(1), 0x111 => Some(2), _ => None } { self.mouse_report(i, b, down); }
+            return
+        }
+        if c != 0x110 { return }
+        let now = self.now_ms();
+        if down {
+            let cell = self.cell_at(i); let n = clip::clicks(self.click, now, cell); self.click = Some((now, cell, n));
+            let p = &mut self.panes[i];
+            let (a, b) = match n { 2 => { let (x0, x1) = clip::word(&p.term.cells, p.term.cols, cell.0, cell.1); ((x0, cell.1), (x1, cell.1)) } 3 => ((0, cell.1), (p.term.cols - 1, cell.1)), _ => (cell, cell) };
+            p.sel = Some(Sel { a, b, drag: true, moved: n > 1, n }); p.term.dirty = true;
+        } else if let Some(sel) = self.panes[i].sel.as_mut() {
+            sel.drag = false;
+            if !sel.moved { self.panes[i].sel = None; }
+            self.panes[i].term.dirty = true;
+        }
+    }
+    /// The pointer moved with the button down: the selection grows to the cell under it.
+    fn text_drag(&mut self) {
+        let Some(i) = self.grab.and_then(|id| self.panes.iter().position(|p| p.id == id)) else { return };
+        let cell = self.cell_at(i);
+        if let Some(sel) = self.panes[i].sel.as_mut().filter(|s| s.drag && s.n == 1) { if sel.b != cell { sel.b = cell; sel.moved = sel.moved || sel.b != sel.a; self.panes[i].term.dirty = true; } }
+    }
+    fn focus_idx(&self) -> Option<usize> { self.panes.iter().position(|p| p.id == self.layout.focus) }
+    /// Ctrl+Shift+C or Cmd+C: the selected text goes to the den-wide clipboard. An app with its own pixels (the browser) gets a Ctrl+C key instead.
+    fn copy(&mut self) {
+        if let Some((_, s)) = self.focus_app().filter(|(_, s)| s.buf.is_some()) {
+            s.send(Down::Key { code: 46, value: 1, mods: MOD_CTRL }); s.send(Down::Key { code: 46, value: 0, mods: MOD_CTRL }); return
+        }
+        let Some(p) = self.focus_idx().map(|i| &self.panes[i]) else { return };
+        if let Some(sel) = p.sel.filter(|s| s.moved) {
+            let t = clip::text(&p.term.cells, p.term.cols, sel.a, sel.b);
+            if !t.is_empty() { self.clip = clip::cap(&t).to_string(); }
+        }
+    }
+    /// Ctrl+Shift+V or Cmd+V: the clipboard goes into the focused pane. A browser gets the text, then a Ctrl+V key; only the focused app is ever given the clipboard.
+    fn paste(&mut self) {
+        if self.clip.is_empty() { return }
+        if let Some((_, s)) = self.focus_app().filter(|(_, s)| s.buf.is_some()) {
+            let _ = send_msg(s.raw(), &clip_msg(&self.clip), None, true);
+            s.send(Down::Key { code: 47, value: 1, mods: MOD_CTRL }); s.send(Down::Key { code: 47, value: 0, mods: MOD_CTRL }); return
+        }
+        let Some(i) = self.focus_idx() else { return };
+        let b = clip::paste_bytes(&self.clip, self.panes[i].term.bracketed);
+        self.pane_write(i, &b);
     }
 
     fn act(&mut self, a: Action) {
@@ -424,7 +586,9 @@ impl Den {
             Action::Split => { let n = self.new_pane(); self.layout.split(self.area, self.m.gap, n); }
             Action::Close => { let id = self.layout.focus; self.remove_pane(id, true); return }
             Action::Fullscreen => self.layout.toggle_full(),
-            Action::StopMic => { let a = self.mic.stop(None); self.mic_run(a); return }
+            Action::StopMic => { let a = self.mic.stop(None); self.mic_run(a); let a = self.cam.stop(None); self.cam_run(a); return }
+            Action::Copy => { self.copy(); return }
+            Action::Paste => { self.paste(); return }
             Action::Focus(d) => self.layout.move_focus(self.area, self.m.gap, d),
         }
         self.relayout();
@@ -439,10 +603,19 @@ impl Den {
         let off = self.home.as_deref().zip(self.uid).and_then(|(h, u)| read_small(&format!("{h}/.config/thir/ai"), u, 64)).is_some_and(|t| t.trim() == "off");
         let ai = match self.uid { Some(u) if !off && Self::agent_busy(u) => Ai::Working, _ if off => Ai::Off, _ => Ai::On };
         if (vol, ai) != (self.vol, self.ai) { self.vol = vol; self.ai = ai; self.bar_dirty = true; }
-        if idx == self.wall_idx { return }
-        self.wall_idx = idx;
+        let acc = st.as_deref().map_or(ACCENT, prefs::accent_color);
+        let stamp = st.as_deref().and_then(prefs::pic_stamp).unwrap_or_default();
+        let mark = st.as_deref().map_or(true, prefs::wordmark);
+        if stamp != self.pic_stamp {   // a new picture (or none): read it again, with every check, or fall back to the colour wallpaper
+            self.pic = if stamp.is_empty() { None } else { self.home.as_deref().zip(self.uid).and_then(|(h, u)| wallpaper::load(h, u, self.w, self.h)) };
+            self.pic_stamp = stamp; self.wall_idx = usize::MAX;
+        }
+        if idx == self.wall_idx && acc == self.accent_col && mark == self.mark_on { return }
+        self.wall_idx = idx; self.accent_col = acc; self.mark_on = mark;
         self.look = (WALLS[idx].1, WALLS[idx].2, WALLS[idx].3);
-        let (login, big, tint) = scene(self.w, self.h, self.look, self.login_rect());
+        set_look(acc, self.look.1);
+        self.push_config();   // the apps' strips follow
+        let (login, big, tint) = scene(self.w, self.h, self.look, self.login_rect(), self.pic.as_deref(), self.mark_on);
         self.wall_login = login; self.wall_big = big; self.tint = tint; self.full_redraw = true;
     }
 
@@ -506,15 +679,15 @@ fn spawn_shell(uid: Option<u32>, cols: usize, rows: usize) -> io::Result<(i32, i
 }
 
 /// The wallpapers of one preset: the small wordmark above the login box (`login` is its rectangle), the big wordmark, muted so the gaps between panes look calm (a desktop), and the big one under the pane colour (what a plain shell pane shows).
-fn scene(w: usize, h: usize, look: (u32, u32, u32), login: Rect) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+fn scene(w: usize, h: usize, look: (u32, u32, u32), login: Rect, pic: Option<&[u32]>, mark_on: bool) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let flat = vec![look.0; w * h];
     let cell = wall::cell_for(w);
-    let mut big = flat.clone();
-    wall::wordmark(&mut big, w, (w as i32 - wall::MARK_COLS * cell) / 2, h as i32 / 2 + 10 * (cell / 20).max(1) - wall::MARK_ROWS * cell / 2, cell, wall::blend(MARK, look.0, MARK_ALPHA));
+    let mut big = pic.map_or_else(|| flat.clone(), |p| p.to_vec());   // a picture wallpaper: the picture itself in the gaps
+    if mark_on { wall::wordmark(&mut big, w, (w as i32 - wall::MARK_COLS * cell) / 2, h as i32 / 2 + 10 * (cell / 20).max(1) - wall::MARK_ROWS * cell / 2, cell, wall::blend(accent(), look.0, MARK_ALPHA)); }
     let mut lg = flat;
     let c2 = (cell / 2).max(4);
-    wall::wordmark(&mut lg, w, (w as i32 - wall::MARK_COLS * c2) / 2, login.y - 6 * c2 - wall::MARK_ROWS * c2, c2, MARK);
-    let tint = big.iter().map(|&p| wall::blend(look.1, p, PANEL_ALPHA)).collect();
+    wall::wordmark(&mut lg, w, (w as i32 - wall::MARK_COLS * c2) / 2, login.y - 6 * c2 - wall::MARK_ROWS * c2, c2, accent());
+    let tint = if pic.is_some() { wallpaper::tint(&big, look.1) } else { big.iter().map(|&p| wall::blend(look.1, p, PANEL_ALPHA)).collect() };
     (lg, big, tint)
 }
 
@@ -542,8 +715,9 @@ fn main() {
     let font = Font::parse(&read_all(if sc == 2 { "/share/font32.psf" } else { "/share/font16.psf" })).unwrap_or_else(|e| { eprintln!("den: font: {e}"); exit(1) });
     let (w, h) = (fb.w, fb.h);
     let area = Rect { x: m.gap, y: m.bar + m.gap, w: w as i32 - 2 * m.gap, h: h as i32 - m.bar - 2 * m.gap };
-    let mut den = Den { fb, font, m, w, h, back: vec![0; w * h], wall_login: vec![], wall_big: vec![], tint: vec![], look: (WALLS[0].1, WALLS[0].2, WALLS[0].3), vol: None, ai: Ai::On, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], ptrs: vec![], ptr: Pointer::new(w, h), cursor_on: false, cur_screen: None, listener: listen(), mic: Broker::new(), mic_dev: None, t0: std::time::Instant::now(), bar_dirty: false, uid: None, home: None, wall_idx: 0, sc };
-    let (a, b, c) = scene(w, h, den.look, den.login_rect()); den.wall_login = a; den.wall_big = b; den.tint = c;
+    let mut den = Den { fb, font, m, w, h, back: vec![0; w * h], wall_login: vec![], wall_big: vec![], tint: vec![], look: (WALLS[0].1, WALLS[0].2, WALLS[0].3), vol: None, ai: Ai::On, panes: vec![], layout: Layout::new(0), next_id: 0, area, full_redraw: true, dirty_y: (usize::MAX, 0), keys: Keys::default(), inputs: vec![], zombies: vec![], ptrs: vec![], ptr: Pointer::new(w, h), cursor_on: false, cur_screen: None, listener: listen(), first_boot: user::load().map_or(true, |v| v.is_empty()), clip: String::new(), click: None, grab: None, cam: Broker::new(), cam_dev: None, cam_buf: None, cam_last: 0, cam_slot: 0, cam_err: None, mic: Broker::new(), mic_dev: None, mic_last: 0, mic_xruns: 0, t0: std::time::Instant::now(), bar_dirty: false, uid: None, home: None, wall_idx: 0, accent_col: ACCENT, pic: None, pic_stamp: String::new(), mark_on: true, sc };
+    let _ = fs::write("/run/den/screen", format!("{w},{h}\n"));   // the screen size, for Settings (it makes a picture wallpaper of exactly this size)
+    let (a, b, c) = scene(w, h, den.look, den.login_rect(), None, true); den.wall_login = a; den.wall_big = b; den.tint = c;
     let first = den.new_pane(); den.layout = Layout::new(first);
     den.relayout(); den.scan_inputs(); den.render(true);
 
@@ -551,11 +725,11 @@ fn main() {
     loop {
         let sids: Vec<usize> = den.panes.iter().filter(|p| p.surface.is_some()).map(|p| p.id).collect();
         let mut fds: Vec<libc::pollfd> = den.inputs.iter().map(|i| i.1).chain(den.ptrs.iter().map(|p| p.fd)).chain([den.listener])
-            .chain(den.panes.iter().filter_map(|p| p.surface.as_ref().map(|s| s.raw()))).chain(den.panes.iter().map(|p| p.master)).chain(den.mic_dev.iter().map(|f| f.as_raw_fd()))   // the capture fd is last: only the zips below stop short of it
+            .chain(den.panes.iter().filter_map(|p| p.surface.as_ref().map(|s| s.raw()))).chain(den.panes.iter().map(|p| p.master)).chain(den.mic_dev.iter().map(|f| f.as_raw_fd())).chain(den.cam_dev.iter().map(|c| c.raw()))   // the capture fds are last: only the zips below stop short of them
             .map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
         let ids: Vec<usize> = den.panes.iter().map(|p| p.id).collect();
         let (ni, np, ns) = (den.inputs.len(), den.ptrs.len(), sids.len());
-        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 1000) } < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) { sleep(Duration::from_millis(100)); }
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, if den.panes.iter().any(|p| !p.outq.is_empty()) { 10 } else { 1000 }) } < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) { sleep(Duration::from_millis(100)); }
 
         let mut gone = vec![];
         for (k, f) in fds[..ni].iter().enumerate() {
@@ -568,11 +742,11 @@ fn main() {
                     if u16::from_le_bytes([ev[16], ev[17]]) != 1 { continue }   // EV_KEY only; never log or print the keys
                     let (code, val) = (u16::from_le_bytes([ev[18], ev[19]]), i32::from_le_bytes([ev[20], ev[21], ev[22], ev[23]]));
                     let key = den.keys.event(code, val);
-                    if den.mic_consumes(code, val) { continue }
+                    if den.mic_consumes(code, val) || den.cam_consumes(code, val) { continue }
                     if let Some(Key::Act(a)) = key { den.act(a); continue }
                     if den.app_key(code, val) { continue }   // an app in the pane takes keys and releases itself
                     match key {
-                        Some(Key::Bytes(b)) => if let Some(p) = den.panes.iter().find(|p| p.id == den.layout.focus) { unsafe { libc::write(p.master, b.as_ptr() as *const _, b.len()); } },
+                        Some(Key::Bytes(b)) => if let Some(i) = den.focus_idx() { den.pane_write(i, &b); },
                         _ => {}
                     }
                 }
@@ -612,7 +786,9 @@ fn main() {
             }
         }
 
-        den.mic_pump();
+        for p in den.panes.iter_mut().filter(|p| !p.outq.is_empty()) { Den::flush_out(p); }
+        den.mic_pump(); den.cam_pump();
+        let a = den.cam.tick(den.now_ms()); den.cam_run(a);
         let a = den.mic.tick(den.now_ms()); den.mic_run(a);
         let tick = last_tick.elapsed() >= Duration::from_secs(1);
         if tick {
@@ -620,7 +796,7 @@ fn main() {
             den.scan_inputs();
             if den.uid.is_none() { den.check_login(); }
             den.sync_user();
-            if den.uid.is_none() { let a = den.mic.stop(None); den.mic_run(a); }   // nobody logged in: the microphone is never open
+            if den.uid.is_none() { let a = den.mic.stop(None); den.mic_run(a); let a = den.cam.stop(None); den.cam_run(a); }   // nobody logged in: the microphone is never open
             den.zombies.retain(|&p| p > 0 && unsafe { libc::waitpid(p, std::ptr::null_mut(), libc::WNOHANG) } == 0);
         }
         let bar = tick | std::mem::take(&mut den.bar_dirty) | den.panes.iter_mut().fold(false, |a, p| std::mem::take(&mut p.term.title_changed) | a);

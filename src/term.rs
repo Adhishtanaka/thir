@@ -112,7 +112,7 @@ pub fn read_line(ed: &mut Editor, prompt: &str, complete: &dyn Fn(&str, &str) ->
         let mut l = String::new();
         return match io::stdin().lock().read_line(&mut l) { Ok(0) | Err(_) => None, Ok(_) => Some(l) };
     };
-    ed.cols = size().0; put(&ed.redraw(p));
+    ed.cols = size().0; put(b"\x1b[?2004h"); put(&ed.redraw(p));   // bracketed paste: a paste arrives as one Key::Paste and runs nothing
     let r = 'read: loop {
         let mut buf = [0u8; 256];
         let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut _, buf.len()) };
@@ -125,6 +125,6 @@ pub fn read_line(ed: &mut Editor, prompt: &str, complete: &dyn Fn(&str, &str) ->
             match a { Act::Submit(l) => break 'read Some(l), Act::Eof => break 'read None, Act::None => {} }
         }
     };
-    raw_off(&old);
+    put(b"\x1b[?2004l"); raw_off(&old);
     r
 }

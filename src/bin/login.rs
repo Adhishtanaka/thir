@@ -55,8 +55,29 @@ fn load_or_die() -> Vec<User> {
 fn secret(prompt: &str) -> String { user::read_secret(&format!("\x1b[90m{prompt}\x1b[0m")).unwrap_or_else(|_| exit(1)) }
 fn line(prompt: &str) -> String { user::read_line(&format!("\x1b[90m{prompt}\x1b[0m")).unwrap_or_else(|_| exit(1)) }
 
+/// The first thing a new owner sees: what thir is, in a few plain lines (40 columns, it also fits the small login box). Enter goes on to the account.
+fn welcome() {
+    use thir::tui::{hints, head, ACC, FG, R};
+    let t = [
+        "thir is a tiny Linux system with a",
+        "Rust userspace of its own.",
+        "",
+        "Panes tile the screen. There are apps",
+        "for the web, music, video and photos.",
+        "AI is optional and asks before it acts.",
+        "Private by default: files stay here.",
+    ];
+    println!("{}\n", head("welcome", &format!("thir {}", env!("CARGO_PKG_VERSION")), 40));
+    println!(" {ACC}Hello.{R}\n");
+    for l in t { println!(" {FG}{l}{R}"); }
+    println!("\n{}", hints(&[("enter", "create your account")]));
+    let _ = user::read_line("");
+    print!("\x1b[2J\x1b[H");   // a clean page for the account questions
+}
+
 /// First boot: make the first user. None = another console did it first.
 fn setup() -> Option<(User, Option<i32>)> {
+    welcome();
     println!("{}\n", thir::tui::head("first boot", &format!("thir {}", env!("CARGO_PKG_VERSION")), 40));
     println!("thir: first boot: create the first user");
     loop {

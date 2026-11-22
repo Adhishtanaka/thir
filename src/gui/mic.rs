@@ -16,6 +16,10 @@ pub enum Do { Tell(usize, u32, u32), Open, Close }
 
 pub struct Broker { pub state: State }
 
+/// A recording that gets no samples for this long, or overruns this many times, is over: the device is dead and den must never spin on it.
+pub const STALL_MS: u64 = 3000; pub const MAX_XRUNS: u32 = 20;
+pub fn dead(last_data: u64, now: u64, xruns: u32) -> bool { now.saturating_sub(last_data) >= STALL_MS || xruns > MAX_XRUNS }
+
 /// Keys that are only modifiers: pressing one is not an answer.
 fn modifier(code: u16) -> bool { matches!(code, 29 | 42 | 54 | 56 | 58 | 97 | 100 | 125 | 126) }
 
@@ -149,6 +153,9 @@ mod tests {
         let real = d.join("realrec"); std::fs::write(&real, "y").unwrap();   // the real layout: /bin/rec is a file of its own
         assert!(exe_ok(&real, &real, me)); assert!(!exe_ok(&tools, &real, me)); assert!(!exe_ok(&copy, &real, me));   // /bin/tools (and a copy of it named rec) no longer qualify
         std::fs::remove_dir_all(&d).unwrap();
+    }
+    #[test] fn a_silent_or_failing_device_is_given_up_on() {
+        assert!(!dead(1000, 1000 + STALL_MS - 1, 0)); assert!(dead(1000, 1000 + STALL_MS, 0)); assert!(!dead(0, 10, MAX_XRUNS)); assert!(dead(0, 10, MAX_XRUNS + 1));
     }
     #[test] fn clock_format() { assert_eq!(clock(72), "1:12"); assert_eq!(clock(0), "0:00"); assert_eq!(clock(3725), "62:05"); }
 }

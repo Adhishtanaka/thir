@@ -1,3 +1,5 @@
+pub mod cam;
+pub mod clip;
 pub mod draw;
 pub mod fb;
 pub mod font;
@@ -9,3 +11,4 @@ pub mod surface;
 pub mod theme;
 pub mod vt;
 pub mod wall;
+pub mod wallpaper;

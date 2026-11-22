@@ -1,6 +1,6 @@
 //! nsh's line editor, pure: bytes -> keys, key -> new state + the bytes to write to the terminal.
 #[derive(Debug, PartialEq, Clone)]
-pub enum Key { Char(char), Enter, Tab, Backspace, Delete, Left, Right, Home, End, Up, Down, PgUp, PgDn, Ctrl(u8) }
+pub enum Key { Char(char), Enter, Tab, Backspace, Delete, Left, Right, Home, End, Up, Down, PgUp, PgDn, Ctrl(u8), Paste(String) }
 #[derive(Debug, PartialEq)]
 pub enum Act { None, Submit(String), Eof }
 
@@ -41,10 +41,11 @@ pub fn common_prefix(words: &[String]) -> String {
 }
 
 /// Bytes from a terminal -> keys; escapes and UTF-8 may span reads.
-pub struct Decoder { esc: Vec<u8>, utf8: Vec<u8> }
+pub struct Decoder { esc: Vec<u8>, utf8: Vec<u8>, paste: Option<Vec<u8>>, tail: Vec<u8> }   // paste: the bytes between ESC[200~ and ESC[201~ (the most that is kept: PASTE_MAX)
+const PASTE_MAX: usize = 65536; const PASTE_END: &[u8] = b"\x1b[201~";
 
 impl Decoder {
-    pub fn new() -> Decoder { Decoder { esc: vec![], utf8: vec![] } }
+    pub fn new() -> Decoder { Decoder { esc: vec![], utf8: vec![], paste: None, tail: vec![] } }
 
     fn plain(&mut self, b: u8, out: &mut Vec<Key>) {
         match b {
@@ -71,6 +72,12 @@ impl Decoder {
     pub fn decode(&mut self, bytes: &[u8]) -> Vec<Key> {
         let mut out = vec![];
         for &b in bytes {
+            if let Some(p) = self.paste.as_mut() {   // inside a bracketed paste: everything is text until the end marker
+                if p.len() < PASTE_MAX { p.push(b); }
+                self.tail.push(b); if self.tail.len() > PASTE_END.len() { self.tail.remove(0); }
+                if self.tail == PASTE_END { let mut t = self.paste.take().unwrap_or_default(); if t.ends_with(PASTE_END) { t.truncate(t.len() - PASTE_END.len()); } out.push(Key::Paste(String::from_utf8_lossy(&t).into_owned())); self.tail.clear(); }
+                continue;
+            }
             if self.esc.is_empty() {
                 if b == 0x1b { self.esc.push(b); self.utf8.clear(); } else if b < 0x80 && !self.utf8.is_empty() { self.utf8.clear(); self.plain(b, &mut out) } else { self.plain(b, &mut out) }
                 continue;
@@ -86,6 +93,7 @@ impl Decoder {
                 b"[A" => Some(Key::Up), b"[B" => Some(Key::Down), b"[C" => Some(Key::Right), b"[D" => Some(Key::Left),
                 b"[H" | b"[1~" | b"[7~" | b"OH" => Some(Key::Home), b"[F" | b"[4~" | b"[8~" | b"OF" => Some(Key::End),
                 b"[1;5C" | b"[1;3C" => Some(Key::Ctrl(b'f')),   // Ctrl/Alt-Right: accept one word of the suggestion
+                b"[200~" => { self.paste = Some(vec![]); self.tail.clear(); None }
                 b"[3~" => Some(Key::Delete), b"[5~" => Some(Key::PgUp), b"[6~" => Some(Key::PgDn), _ => None,
             };
             out.extend(k); self.esc.clear();
@@ -169,6 +177,10 @@ impl Editor {
                 self.set(t);
             },
             Key::Enter => { act = Act::Submit(s(&self.buf)); self.buf.clear(); self.cur = 0; self.hpos = self.hist.len(); out = b"\r\n".to_vec(); redraw = false; }
+            Key::Paste(t) => {   // lines of a paste are joined with a space: nothing runs until the user presses Enter
+                let t: Vec<char> = crate::gui::clip::line_of(&t).chars().collect();
+                self.buf.splice(self.cur..self.cur, t.iter().copied()); self.cur += t.len();
+            }
             Key::Tab | Key::PgUp | Key::PgDn | Key::Ctrl(_) => redraw = false,
         }
         if redraw { out.extend(self.redraw(prompt)); }
@@ -224,6 +236,16 @@ impl Editor {
 mod tests {
     #[test] fn prefix_never_ends_in_lone_backslash() { assert_eq!(super::common_prefix(&["a\\ b".into(), "a\\>c".into()]), "a"); }
     use super::*;
+    #[test] fn bracketed_paste_is_one_key_and_runs_nothing() {
+        let mut d = Decoder::new();
+        assert_eq!(d.decode(b"a\x1b[200~ls\npwd\n\x1b[201~b"), vec![Key::Char('a'), Key::Paste("ls\npwd\n".into()), Key::Char('b')]);   // newlines inside are text, not Enter
+        assert!(d.decode(b"\x1b[200~par").is_empty()); assert_eq!(d.decode(b"t one\x1b[20"), vec![]); assert_eq!(d.decode(b"1~"), vec![Key::Paste("part one".into())]);   // split over reads
+        assert_eq!(d.decode(b"\x1b[200~\x1b[201~"), vec![Key::Paste(String::new())]);
+        let big = [vec![b'x'; 100_000], PASTE_END.to_vec()].concat(); let k = d.decode(&[&b"\x1b[200~"[..], &big].concat());
+        assert!(matches!(&k[..], [Key::Paste(t)] if t.len() == 65536), "capped, and the end marker is still found");
+        let mut e = Editor::new(vec![]); let (a, _) = e.key(Key::Paste("echo a\nrm b\n".into()), "$ ");
+        assert_eq!(a, Act::None); assert_eq!(e.key(Key::Enter, "$ ").0, Act::Submit("echo a rm b".into()));   // one line, only Enter submits
+    }
     #[test] fn lone_esc_is_a_bare_esc_key() {
         let mut d = Decoder::new();
         assert!(d.decode(b"\x1b").is_empty()); assert!(d.waiting_esc());

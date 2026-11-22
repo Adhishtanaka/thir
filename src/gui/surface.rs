@@ -10,12 +10,12 @@ const MAX_BYTES: u64 = 256 << 20;   // a surface never needs more (a 4096x4096 B
 /// A damaged rectangle in surface pixels: x, y, w, h.
 pub type R16 = (u16, u16, u16, u16);
 
-/// App to den. MicStart and MicStop are for `rec` only: den checks the program (see mic.rs) and asks the user.
+/// App to den. MicStart and MicStop are for `rec` only, CamStart and CamStop for `camera` only: den checks the program (see mic.rs) and asks the user. ClipSet: the app copied this text (at most clip::MAX bytes).
 #[derive(Debug, PartialEq, Clone)]
-pub enum Up { Hello(u32), Buffer { w: u32, h: u32, stride: u32 }, Commit(Vec<R16>), MicStart, MicStop }
+pub enum Up { Hello(u32), Buffer { w: u32, h: u32, stride: u32 }, Commit(Vec<R16>), MicStart, MicStop, ClipSet(String), CamStart, CamStop }
 /// Den to app. `Key.value`: 0 release, 1 press, 2 repeat; `code` is the evdev key code. Pointer coordinates are surface pixels (may lie outside while dragging). Scroll: dy > 0 = up.
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Down { Configure { w: u32, h: u32, scale: u32, focused: bool }, Key { code: u32, value: u32, mods: u32 }, Pointer { x: i32, y: i32 }, Button { code: u32, pressed: bool }, Scroll { dx: i32, dy: i32 }, Done, Mic { state: u32, rate: u32 } }
+pub enum Down { Configure { w: u32, h: u32, scale: u32, focused: bool, accent: u32, panel: u32 }, Key { code: u32, value: u32, mods: u32 }, Pointer { x: i32, y: i32 }, Button { code: u32, pressed: bool }, Scroll { dx: i32, dy: i32 }, Done, Mic { state: u32, rate: u32 }, Cam { state: u32, w: u32, h: u32, fmt: u32 }, CamFrame { slot: u32, len: u32 } }
 pub const MOD_SHIFT: u32 = 1; pub const MOD_CTRL: u32 = 2; pub const MOD_CAPS: u32 = 8;
 
 fn word(b: &[u8], i: usize) -> Option<u32> { Some(u32::from_le_bytes(b.get(i * 4..i * 4 + 4)?.try_into().ok()?)) }
@@ -33,7 +33,8 @@ impl Up {
                 let h = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
                 Up::Commit((0..c).map(|i| { let o = 8 + 8 * i; (h(o), h(o + 2), h(o + 4), h(o + 6)) }).collect())
             }
-            (4, 4) => Up::MicStart, (5, 4) => Up::MicStop,
+            (4, 4) => Up::MicStart, (5, 4) => Up::MicStop, (7, 4) => Up::CamStart, (8, 4) => Up::CamStop,
+            (6, n) if (4..=4 + super::clip::MAX).contains(&n) => Up::ClipSet(String::from_utf8(b[4..].to_vec()).ok()?),
             _ => return None,
         })
     }
@@ -41,7 +42,8 @@ impl Up {
         match self {
             Up::Hello(v) => words(1, &[*v]), Up::Buffer { w, h, stride } => words(2, &[*w, *h, *stride]),
             Up::Commit(r) => { let mut v = words(3, &[r.len() as u32]); for q in r { for x in [q.0, q.1, q.2, q.3] { v.extend(x.to_le_bytes()); } } v }
-            Up::MicStart => words(4, &[]), Up::MicStop => words(5, &[]),
+            Up::MicStart => words(4, &[]), Up::MicStop => words(5, &[]), Up::CamStart => words(7, &[]), Up::CamStop => words(8, &[]),
+            Up::ClipSet(t) => [&6u32.to_le_bytes()[..], super::clip::cap(t).as_bytes()].concat(),
         }
     }
 }
@@ -49,21 +51,24 @@ impl Down {
     pub fn parse(b: &[u8]) -> Option<Down> {
         let w = |i| word(b, i);
         Some(match (w(0)?, b.len()) {
-            (0x101, 20) => Down::Configure { w: w(1)?, h: w(2)?, scale: w(3)?, focused: w(4)? != 0 },
+            (0x101, 28) => Down::Configure { w: w(1)?, h: w(2)?, scale: w(3)?, focused: w(4)? != 0, accent: w(5)?, panel: w(6)? },
             (0x102, 16) => Down::Key { code: w(1)?, value: w(2)?, mods: w(3)? },
             (0x103, 12) => Down::Pointer { x: w(1)? as i32, y: w(2)? as i32 },
             (0x104, 12) => Down::Button { code: w(1)?, pressed: w(2)? != 0 },
             (0x105, 12) => Down::Scroll { dx: w(1)? as i32, dy: w(2)? as i32 },
             (0x106, 4) => Down::Done,
             (0x107, 12) => Down::Mic { state: w(1)?, rate: w(2)? },
+            (0x10a, 20) => Down::Cam { state: w(1)?, w: w(2)?, h: w(3)?, fmt: w(4)? },
+            (0x10b, 12) => Down::CamFrame { slot: w(1)?, len: w(2)? },
             _ => return None,
         })
     }
     pub fn encode(&self) -> Vec<u8> {
         match *self {
-            Down::Configure { w, h, scale, focused } => words(0x101, &[w, h, scale, focused as u32]), Down::Key { code, value, mods } => words(0x102, &[code, value, mods]),
+            Down::Configure { w, h, scale, focused, accent, panel } => words(0x101, &[w, h, scale, focused as u32, accent, panel]), Down::Key { code, value, mods } => words(0x102, &[code, value, mods]),
             Down::Pointer { x, y } => words(0x103, &[x as u32, y as u32]), Down::Button { code, pressed } => words(0x104, &[code, pressed as u32]),
             Down::Scroll { dx, dy } => words(0x105, &[dx as u32, dy as u32]), Down::Done => words(0x106, &[]), Down::Mic { state, rate } => words(0x107, &[state, rate]),
+            Down::Cam { state, w, h, fmt } => words(0x10a, &[state, w, h, fmt]), Down::CamFrame { slot, len } => words(0x10b, &[slot, len]),
         }
     }
 }
@@ -72,6 +77,9 @@ impl Down {
 pub const PCM_MAX: usize = 4096;
 /// den to rec: microphone samples (stereo S16_LE), at most PCM_MAX bytes. A different shape from `Down`: a variable length.
 pub fn pcm_msg(data: &[u8]) -> Vec<u8> { [&0x108u32.to_le_bytes()[..], &data[..data.len().min(PCM_MAX)]].concat() }
+
+/// den to the focused app: the clipboard text, sent just before the paste key it pressed (0x109). A variable length like the samples; the app reads it through `poll_ev`.
+pub fn clip_msg(text: &str) -> Vec<u8> { [&0x109u32.to_le_bytes()[..], super::clip::cap(text).as_bytes()].concat() }
 
 /// The rect cut to a w x h surface as (x, y, w, h); None if nothing is left.
 pub fn clamp(r: R16, w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
@@ -121,10 +129,10 @@ impl Drop for Buf { fn drop(&mut self) { unsafe { libc::munmap(self.map as *mut 
 
 /// What den should do after a valid message.
 #[derive(Debug, PartialEq)]
-pub enum Got { Nothing, Hello, Attached, Damage(Vec<(usize, usize, usize, usize)>), MicStart, MicStop }
+pub enum Got { Nothing, Hello, Attached, Damage(Vec<(usize, usize, usize, usize)>), MicStart, MicStop, ClipSet(String), CamStart, CamStop }
 
 /// den's end of one app connection.
-pub struct Surface { fd: OwnedFd, hello: bool, pub buf: Option<Buf>, pub sent: Option<(u32, u32, bool)>, pub mic: bool }   // mic: the app is rec (it asked for the microphone): a text app, it keeps the keyboard
+pub struct Surface { fd: OwnedFd, hello: bool, pub buf: Option<Buf>, pub sent: Option<(u32, u32, bool, u32, u32)>, pub mic: bool }   // mic: the app is rec or camera (it asked for a device): a text app, it keeps the keyboard
 impl Surface {
     pub fn new(fd: OwnedFd) -> Surface { Surface { fd, hello: false, buf: None, sent: None, mic: false } }
     pub fn raw(&self) -> RawFd { self.fd.as_raw_fd() }
@@ -144,7 +152,7 @@ impl Surface {
                 self.buf = Some(Buf::attach(fd, w, h, stride, want)?); Ok(Got::Attached)
             }
             Up::Commit(r) => Ok(match &self.buf { None => Got::Nothing, Some(b) => Got::Damage(r.into_iter().filter_map(|q| clamp(q, b.w, b.h)).collect()) }),   // no buffer: a commit raced a resize, ignore
-            Up::MicStart => Ok(Got::MicStart), Up::MicStop => Ok(Got::MicStop),
+            Up::MicStart => Ok(Got::MicStart), Up::MicStop => Ok(Got::MicStop), Up::CamStart => Ok(Got::CamStart), Up::CamStop => Ok(Got::CamStop), Up::ClipSet(t) => Ok(Got::ClipSet(t)),
         }
     }
 }
@@ -231,10 +239,10 @@ pub fn peer_exe(sock: RawFd) -> Result<std::path::PathBuf, &'static str> {
 }
 
 /// What `poll_ev` returns.
-pub enum Ev { Down(Down), Pcm(Vec<u8>) }
+pub enum Ev { Down(Down), Pcm(Vec<u8>), Clip(String) }
 
 /// The app side: connect to den, share a sealed memfd, commit damage, read events.
-pub struct Client { sock: OwnedFd, pub w: u32, pub h: u32, pub scale: u32, pub focused: bool, map: *mut u32, map_len: usize }
+pub struct Client { sock: OwnedFd, pub fds: Vec<OwnedFd>, pub w: u32, pub h: u32, pub scale: u32, pub focused: bool, map: *mut u32, map_len: usize }
 impl Client {
     pub fn connect() -> io::Result<Client> {
         let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
@@ -244,7 +252,7 @@ impl Client {
         a.sun_family = libc::AF_UNIX as _;
         for (d, b) in a.sun_path.iter_mut().zip(SOCK.bytes()) { *d = b as _; }
         if unsafe { libc::connect(s, &a as *const _ as *const _, std::mem::size_of::<libc::sockaddr_un>() as _) } != 0 { return Err(io::Error::last_os_error()) }
-        let mut c = Client { sock, w: 0, h: 0, scale: 1, focused: false, map: std::ptr::null_mut(), map_len: 0 };
+        let mut c = Client { sock, fds: vec![], w: 0, h: 0, scale: 1, focused: false, map: std::ptr::null_mut(), map_len: 0 };
         send_msg(s, &Up::Hello(VER).encode(), None, false)?;
         loop {   // den answers with CONFIGURE, or closes the socket when it does not trust us
             match c.poll(3000)? { Some(Down::Configure { .. }) => return Ok(c), Some(_) => {}, None => return Err(io::Error::new(io::ErrorKind::TimedOut, "den did not answer")) }
@@ -256,12 +264,14 @@ impl Client {
     pub fn poll_ev(&mut self, ms: i32) -> io::Result<Option<Ev>> {
         let mut p = libc::pollfd { fd: self.sock.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         if unsafe { libc::poll(&mut p, 1, ms) } <= 0 { return Ok(None) }
-        let mut b = [0u8; 4 + PCM_MAX + 64];
-        let (n, _, bad) = recv_msg(self.sock.as_raw_fd(), &mut b, true)?;
+        let mut b = vec![0u8; 4 + super::clip::MAX + 64];
+        let (n, fds, bad) = recv_msg(self.sock.as_raw_fd(), &mut b, true)?;
         if n == 0 || bad { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "den closed the connection")) }
         if word(&b[..n], 0) == Some(0x108) { return Ok(Some(Ev::Pcm(b[4..n].to_vec()))) }
+        if word(&b[..n], 0) == Some(0x109) { return Ok(Some(Ev::Clip(String::from_utf8_lossy(&b[4..n]).into_owned()))) }
+        self.fds.extend(fds);
         let m = Down::parse(&b[..n]).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad message from den"))?;
-        if let Down::Configure { w, h, scale, focused } = m { (self.w, self.h, self.scale, self.focused) = (w, h, scale, focused); }
+        if let Down::Configure { w, h, scale, focused, accent, panel } = m { (self.w, self.h, self.scale, self.focused) = (w, h, scale, focused); super::theme::set_look(accent, panel); }
         Ok(Some(Ev::Down(m)))
     }
     /// The socket, for a main loop to watch (read events with `poll`).
@@ -294,8 +304,8 @@ mod tests {
     use super::*;
     fn rng(seed: &mut u64) -> u64 { *seed ^= *seed << 13; *seed ^= *seed >> 7; *seed ^= *seed << 17; *seed }
     #[test] fn messages_round_trip() {
-        for m in [Up::Hello(1), Up::Buffer { w: 3, h: 4, stride: 12 }, Up::Commit(vec![]), Up::Commit(vec![(1, 2, 3, 4); 32]), Up::MicStart, Up::MicStop] { assert_eq!(Up::parse(&m.encode()), Some(m.clone())); }
-        for m in [Down::Configure { w: 1, h: 2, scale: 2, focused: true }, Down::Key { code: 30, value: 0, mods: 3 }, Down::Pointer { x: -5, y: 7 }, Down::Button { code: 0x110, pressed: true }, Down::Scroll { dx: 0, dy: -2 }, Down::Done, Down::Mic { state: 1, rate: 48000 }] { assert_eq!(Down::parse(&m.encode()), Some(m)); }
+        for m in [Up::Hello(1), Up::Buffer { w: 3, h: 4, stride: 12 }, Up::Commit(vec![]), Up::Commit(vec![(1, 2, 3, 4); 32]), Up::MicStart, Up::MicStop, Up::CamStart, Up::CamStop, Up::ClipSet(String::new()), Up::ClipSet("héllo\nworld".into())] { assert_eq!(Up::parse(&m.encode()), Some(m.clone())); }
+        for m in [Down::Configure { w: 1, h: 2, scale: 2, focused: true, accent: 0x7fb2f0, panel: 0x191a1d }, Down::Key { code: 30, value: 0, mods: 3 }, Down::Pointer { x: -5, y: 7 }, Down::Button { code: 0x110, pressed: true }, Down::Scroll { dx: 0, dy: -2 }, Down::Done, Down::Mic { state: 1, rate: 48000 }, Down::Cam { state: 1, w: 640, h: 480, fmt: 1 }, Down::CamFrame { slot: 1, len: 614400 }] { assert_eq!(Down::parse(&m.encode()), Some(m)); }
     }
     #[test] fn bad_messages_are_rejected() {
         let c = Up::Commit(vec![(0, 0, 1, 1); 2]).encode();
@@ -307,6 +317,13 @@ mod tests {
         assert_eq!(Up::parse(&words(1, &[1, 2])), None);                                   // hello with extra payload
         assert_eq!(Down::parse(&words(0x106, &[1])), None); assert_eq!(Down::parse(&words(0x107, &[1])), None);
     }
+    #[test] fn clipboard_messages_are_capped_and_text() {
+        let big = "a".repeat(super::super::clip::MAX + 10);
+        assert_eq!(Up::ClipSet(big.clone()).encode().len(), 4 + super::super::clip::MAX);   // the sender cuts it
+        assert_eq!(Up::parse(&[&6u32.to_le_bytes()[..], big.as_bytes()].concat()), None);    // den refuses a longer one
+        assert_eq!(Up::parse(&[&6u32.to_le_bytes()[..], &[0xff, 0xfe]].concat()), None);     // not UTF-8
+        assert_eq!(&clip_msg("hi")[..4], &0x109u32.to_le_bytes()); assert_eq!(&clip_msg("hi")[4..], b"hi"); assert_eq!(Down::parse(&clip_msg("hi")), None);
+    }
     #[test] fn pcm_messages_are_capped() {
         let m = pcm_msg(&[7u8; 5000]); assert_eq!(m.len(), 4 + PCM_MAX); assert_eq!(&m[..4], &0x108u32.to_le_bytes()); assert_eq!(pcm_msg(&[1, 2, 3, 4]), [8, 1, 0, 0, 1, 2, 3, 4]);
         assert_eq!(Down::parse(&m), None);   // not a fixed-size message: only rec reads it, through poll_ev
@@ -316,7 +333,7 @@ mod tests {
         for i in 0..20000 {
             let n = (rng(&mut s) % 300) as usize;
             let mut b: Vec<u8> = (0..n).map(|_| rng(&mut s) as u8).collect();
-            if i % 2 == 0 && n >= 4 { let t = [1u32, 2, 3, 4, 5, 0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x107][(rng(&mut s) % 12) as usize]; b[..4].copy_from_slice(&t.to_le_bytes()); }   // a real type: reach the payload checks
+            if i % 2 == 0 && n >= 4 { let t = [1u32, 2, 3, 4, 5, 6, 7, 8, 0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x107, 0x10a, 0x10b][(rng(&mut s) % 17) as usize]; b[..4].copy_from_slice(&t.to_le_bytes()); }   // a real type: reach the payload checks
             if i % 4 == 0 && n >= 8 { b[4..8].copy_from_slice(&((rng(&mut s) % 40) as u32).to_le_bytes()); }
             let _ = Up::parse(&b); let _ = Down::parse(&b); let _ = tty_nr(&String::from_utf8_lossy(&b));
         }
