@@ -26,6 +26,7 @@ rm -f "$O/initramfs.cpio.gz"
 cat > "$LIST" <<EOL
 dir /dev 0755 0 0
 nod /dev/console 0600 0 0 c 5 1
+nod /dev/null 0666 0 0 c 1 3
 dir /proc 0755 0 0
 dir /sys 0755 0 0
 dir /tmp 01777 0 0

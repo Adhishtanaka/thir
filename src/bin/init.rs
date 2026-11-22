@@ -129,9 +129,11 @@ fn main() {
     // at once, but never sooner than 1 s after its previous start (guards against a respawn storm).
     let mut svc = [Svc { pid: 0, started: None }, Svc { pid: 0, started: None }];
     let (mut have_fb, mut fb_checked) = (false, false);
+    let has_console = console_tty().is_some();   // no console device (a VirtualBox ARM VM without a serial port): a login on /dev/null would end at once, restart every second and take the sound card from the user each time (grant(None))
     loop {
+        if !has_console && !fb_checked { have_fb = wait_for("/dev/fb0", 5000); fb_checked = true; }   // normally checked right after the session starts
         for i in 0..2 {
-            if svc[i].pid != 0 || (i == 1 && !have_fb) { continue }
+            if svc[i].pid != 0 || (i == 1 && !have_fb) || (i == 0 && !has_console) { continue }
             if let Some(t) = svc[i].started { sleep(Duration::from_secs(1).saturating_sub(t.elapsed())); }
             svc[i].started = Some(Instant::now());
             let r = if i == 0 { session().spawn() } else { den().spawn() };
