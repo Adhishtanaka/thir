@@ -21,7 +21,7 @@ KMAKE=(make -C "$SRC" O="$OBJ" ARCH="$KARCH" CROSS_COMPILE="$CROSS_COMPILE")
 mkdir -p "$OBJ" "$O"
 
 cd /work && cargo build --release --target "$RUST_TARGET"
-for b in init nsh dhcp den login passwd edit find top fetch curl tools rec; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
+for b in init nsh dhcp den login passwd edit find top fetch curl tools rec camera; do cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/$b" "$O/"; done
 rm -f "$O/initramfs.cpio.gz"
 cat > "$LIST" <<EOL
 dir /dev 0755 0 0
@@ -49,6 +49,7 @@ file /bin/curl $O/curl 0755 0 0
 slink /bin/agent /bin/curl 0777 0 0
 file /bin/tools $O/tools 0755 0 0
 file /bin/rec $O/rec 0755 0 0
+file /bin/camera $O/camera 0755 0 0
 $(for a in clock calendar calc contacts notes settings help beep bell view play; do echo "slink /bin/$a /bin/tools 0777 0 0"; done)
 slink /lib /web/lib 0777 0 0
 slink /usr /web/usr 0777 0 0
@@ -67,7 +68,8 @@ EOL
 frag() {
   { cat /work/kernel/common.config
     if [ -n "$THIR_FLAVOR" ]; then grep -v '^CONFIG_CMDLINE=' "/work/kernel/$THIR_ARCH.config"; cat "/work/kernel/$THIR_ARCH-$THIR_FLAVOR.config"
-    else cat "/work/kernel/$THIR_ARCH.config"; fi; } | sed -E "s/video=Virtual-1:[0-9]+x[0-9]+/video=Virtual-1:${VM_RES:-2560x1600}/"
+    else cat "/work/kernel/$THIR_ARCH.config"; fi
+    [ -z "${THIR_VIVID:-}" ] || cat /work/kernel/vivid.config; }  | sed -E "s/video=Virtual-1:[0-9]+x[0-9]+/video=Virtual-1:${VM_RES:-2560x1600}/"
 }
 frag >> "$OBJ/.config"
 "${KMAKE[@]}" olddefconfig
@@ -84,7 +86,7 @@ done
 cp "$OBJ/$KIMAGE" "$O/Image"
 
 mkimg() {   # GPT: p1 ESP (FAT32, the kernel as the default EFI app), p2 ext4 "thirdata". Plain files only: no loop devices in Docker.
-  local img=$O/thir${THIR_WEB:+-web}.img esp=/build/esp-$THIR_ARCH.img dsz=190 isz=256
+  local img=$O/thir.img esp=/build/esp-$THIR_ARCH.img dsz=190 isz=256
   [ -z "$THIR_WEB" ] || { dsz=1280; isz=1400; }   # the add-on needs room
   rm -f "$img" "$esp"; truncate -s ${isz}M "$img"; truncate -s 64M "$esp"
   printf 'label: gpt\nstart=2048, size=64MiB, type=uefi, name=thiresp\nstart=133120, size=%sMiB, type=linux, name=thirdata\n' $dsz | sfdisk -q "$img"

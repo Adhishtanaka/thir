@@ -39,13 +39,21 @@ ROUTES = {"please open the calculator": "RUN calc", "make me a weather app": "BU
           "open ../../bin/sh": "RUN ../../bin/sh", "run a shell for me": "RUN echo a; echo b", "move notes into docs": "RUN mv notes.txt docs/", "delete everything": "RUN rm -r docs", "forget my city": "FORGET city",
           "open wikipedia sri lanka": "RUN web https://en.wikipedia.org/wiki/Sri_Lanka", "play my music": "RUN play ~/Music", "show my photos": "RUN view ~/Pictures", "record a voice note": "RUN rec",
           "open the file etc passwd in the browser": "RUN web file:///etc/passwd"}
-def route(msg):   # the shell's picks, by the user's line (the text after ===LINE===)
+def route(msg, prior=()):   # the shell's picks, by the user's line (the text after ===LINE===); prior: the earlier messages of the conversation
     line = msg.split("===LINE===\n")[-1].strip()
+    if line == "remind me to call mum": return "ANSWER\nWhat time?"
+    if line == "5pm" and any("call mum" in m for m in prior): return "REMIND 17:00 call mum"
+    if line == "and tomorrow?": return "ANSWER\nmock: " + str(len(prior)) + " earlier messages, first: " + prior[0] if prior else "ANSWER\nmock: no history"
+    if line == "first question": return "ANSWER\nmock: one"
     if line == "what apps do I have": return "ANSWER\nmock: you have calc" if "===SYSTEM===" in msg and "- calc v1" in msg else "ANSWER\nmock: no system summary"
     if line in APP_ROUTES: return APP_ROUTES[line]
     if line == "add dentist to my calendar today at 14:30": return "EVENT_ADD %s | 14:30 | Dentist | 15m" % today(msg)
     if line == "what is on my calendar today": return "CALENDAR " + today(msg)
     return ROUTES.get(line, "ANSWER\nmock: unknown line")
+
+FX = os.environ.get("THIR_FX", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out", "aarch64", "media-fixtures"))
+SLOW_SIZE, SLOW_CHUNK, SLOW_DELAY = 1500000, 30000, float(os.environ.get("THIR_MOCK_DL_DELAY", "0.3"))   # 1.5 MB in 50 pieces: about 15 s
+def slow_bytes(pos, n): return bytes((i * 7 + i // 251) % 256 for i in range(pos, pos + n))   # the test rebuilds the same bytes
 
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -79,10 +87,30 @@ class H(BaseHTTPRequestHandler):
         elif p.startswith("/apps/") and "/" not in p[6:] and not p[6:].startswith(".") and os.path.isfile(os.path.join(APPS, p[6:])): self.send(200, open(os.path.join(APPS, p[6:]), "rb").read())
         elif p == "/people.json": self.send(403 if (self.headers.get("authorization") or self.headers.get("x-api-key")) else 200, PEOPLE, "application/json")
         elif p == "/dl.bin": self.send(200, bytes(range(256)) * 12, "application/octet-stream", [("Content-Disposition", 'attachment; filename="../thir test.bin"')])   # web: the download prompt
-        elif p.startswith("/web/") and p[5:] in ("js.html", "btn.html", "input.html", "tall.html", "tz.html", "blank.html", "dialog.html", "find.html", "upload.html", "lang.html", "dpr.html"): self.send(200, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", p[5:]), "rb").read(), "text/html; charset=utf-8")   # web: the page fixtures
+        elif p.startswith("/web/") and p[5:] in ("js.html", "btn.html", "input.html", "tall.html", "tz.html", "blank.html", "dialog.html", "find.html", "upload.html", "lang.html", "dpr.html", "form.html", "select.html", "video.html"): self.send(200, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", p[5:]), "rb").read(), "text/html; charset=utf-8")   # web: the page fixtures
+        elif p in ("/web/clip.mp4", "/web/clip.webm"): self.ranged(open(os.path.join(FX, p[5:].replace("clip", "quad")), "rb").read(), "video/mp4" if p.endswith("mp4") else "video/webm")   # web: HTML5 video (GStreamer asks for ranges)
+        elif p == "/dl/slow.bin": self.slow_file()   # web: a big slow download that supports Range, for progress, pause and resume
         elif p == "/web/big.html": self.send(200, BIG, "text/html; charset=utf-8")   # web: a heavy-ish page for measuring memory
         elif p == "/downgrade": self.redirect("http://10.0.2.2:18080/hello")
         else: self.send(404, b"not found\n")
+    def ranged(self, data, ctype):   # a file with Range support, as every real web server has
+        r = re.match(r"bytes=(\d+)-(\d*)$", self.headers.get("Range") or ""); n = len(data); extra = [("Accept-Ranges", "bytes")]
+        if r and int(r.group(1)) < n:
+            a = int(r.group(1)); b = min(int(r.group(2)) if r.group(2) else n - 1, n - 1); self.send(206, data[a:b + 1], ctype, extra + [("Content-Range", "bytes %d-%d/%d" % (a, b, n))])
+        else: self.send(200, data, ctype, extra)
+    def slow_file(self):
+        total = SLOW_SIZE; a, b = 0, total - 1; code = 200; extra = [("Accept-Ranges", "bytes"), ("Content-Disposition", 'attachment; filename="slow.bin"')]
+        r = re.match(r"bytes=(\d+)-(\d*)$", self.headers.get("Range") or "")
+        if r and int(r.group(1)) < total: a = int(r.group(1)); b = int(r.group(2)) if r.group(2) else total - 1; code = 206; extra.append(("Content-Range", "bytes %d-%d/%d" % (a, b, total)))
+        self.send_response(code); self.send_header("Content-Type", "application/octet-stream"); self.send_header("Content-Length", str(b - a + 1))
+        for k, v in extra: self.send_header(k, v)
+        self.end_headers()
+        if self.command == "HEAD": return
+        try:
+            pos = a
+            while pos <= b:
+                n = min(SLOW_CHUNK, b - pos + 1); self.wfile.write(slow_bytes(pos, n)); self.wfile.flush(); pos += n; time.sleep(SLOW_DELAY)
+        except (BrokenPipeError, ConnectionResetError): pass
     do_HEAD = do_GET
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0)); body = self.rfile.read(n); p = self.path
@@ -111,7 +139,7 @@ class H(BaseHTTPRequestHandler):
         elif any(k in j for k in ("temperature", "top_p", "top_k", "thinking")): why = "sampling or thinking field"
         elif not j.get("messages") or j["messages"][-1].get("role") != "user": why = "last role"
         if why: return self.send(400, err(why)[1], "application/json")
-        if j.get("system", "").startswith("You are the shell of thir"): return self.text_reply(route(j["messages"][-1]["content"]))   # the AI shell (!ask)
+        if j.get("system", "").startswith("You are the shell of thir"): return self.text_reply(route(j["messages"][-1]["content"], [m["content"] for m in j["messages"][:-1]]))   # the AI shell (!ask)
         if j.get("system", "").startswith("You answer a question about the user's own data"):   # an app read: the reply shows exactly what the model was sent
             m = j["messages"][-1]["content"]; return self.text_reply("mock saw: " + " ; ".join(l[2:] for l in m.split("\n") if l.startswith("- ")))
         d = lambda o: "event: %s\ndata: %s\n\n" % (o["type"], json.dumps(o, ensure_ascii=False))

@@ -66,20 +66,227 @@ pub fn download_name(suggested: &str, exists: impl Fn(&str) -> bool) -> String {
 /// The question in the strip.
 pub fn download_prompt(name: &str, size: Option<u64>) -> String { format!("save {} ({}) to ~/Downloads? y/n", printable(name), size_text(size)) }
 
-/// The address line while it is edited (Ctrl-L): characters and a cursor, nothing else.
+/// A line being edited (address, find, prompt): characters, a cursor, and an optional selection (`sel` = the anchor, the cursor is the other end).
 #[derive(Default, Debug, PartialEq)]
-pub struct Line { pub text: Vec<char>, pub at: usize }
+pub struct Line { pub text: Vec<char>, pub at: usize, pub sel: Option<usize> }
 impl Line {
-    pub fn new(s: &str) -> Line { let text: Vec<char> = s.chars().collect(); Line { at: text.len(), text } }
-    pub fn insert(&mut self, c: char) { if !c.is_control() && self.text.len() < MAX_URL { self.text.insert(self.at, c); self.at += 1; } }
-    pub fn backspace(&mut self) { if self.at > 0 { self.at -= 1; self.text.remove(self.at); } }
-    pub fn delete(&mut self) { if self.at < self.text.len() { self.text.remove(self.at); } }
-    pub fn left(&mut self) { self.at = self.at.saturating_sub(1); }
-    pub fn right(&mut self) { self.at = (self.at + 1).min(self.text.len()); }
-    pub fn home(&mut self) { self.at = 0; }
-    pub fn end(&mut self) { self.at = self.text.len(); }
-    pub fn kill(&mut self) { self.text.clear(); self.at = 0; }
+    pub fn new(s: &str) -> Line { let text: Vec<char> = s.chars().collect(); Line { at: text.len(), text, sel: None } }
+    /// The selected range (start, end), None when nothing is selected.
+    pub fn selection(&self) -> Option<(usize, usize)> { self.sel.filter(|&a| a != self.at).map(|a| (a.min(self.at), a.max(self.at))) }
+    pub fn selected(&self) -> String { self.selection().map_or(String::new(), |(a, b)| self.text[a..b].iter().collect()) }
+    /// Removes the selection (the cursor goes to its start); false when there was none.
+    pub fn delete_selection(&mut self) -> bool {
+        let r = self.selection(); self.sel = None;
+        let Some((a, b)) = r else { return false };
+        self.text.drain(a..b); self.at = a; true
+    }
+    pub fn select_all(&mut self) { self.sel = Some(0); self.at = self.text.len(); }
+    /// Typing replaces the selection.
+    pub fn insert(&mut self, c: char) { if c.is_control() { return } self.delete_selection(); if self.text.len() < MAX_URL { self.text.insert(self.at, c); self.at += 1; } }
+    /// Paste: the text with newlines and tabs as spaces and other control characters dropped; replaces the selection.
+    pub fn paste(&mut self, s: &str) { self.delete_selection(); for c in s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }) { self.insert(c) } }
+    /// Cut: the selected text (removed); empty when nothing was selected.
+    pub fn cut(&mut self) -> String { let t = self.selected(); self.delete_selection(); t }
+    pub fn backspace(&mut self) { if self.delete_selection() { return } if self.at > 0 { self.at -= 1; self.text.remove(self.at); } }
+    pub fn delete(&mut self) { if self.delete_selection() { return } if self.at < self.text.len() { self.text.remove(self.at); } }
+    /// The cursor moves to `pos`; `extend` (Shift) keeps or starts a selection, otherwise it ends.
+    pub fn go(&mut self, pos: usize, extend: bool) { if extend { if self.sel.is_none() { self.sel = Some(self.at) } } else { self.sel = None } self.at = pos.min(self.text.len()); }
+    /// Left and right with a selection and no Shift: the cursor goes to that edge of the selection.
+    pub fn left(&mut self, extend: bool) { match (self.selection(), extend) { (Some((a, _)), false) => { self.sel = None; self.at = a } _ => self.go(self.at.saturating_sub(1), extend) } }
+    pub fn right(&mut self, extend: bool) { match (self.selection(), extend) { (Some((_, b)), false) => { self.sel = None; self.at = b } _ => self.go(self.at + 1, extend) } }
+    pub fn home(&mut self, extend: bool) { self.go(0, extend) }
+    pub fn end(&mut self, extend: bool) { self.go(self.text.len(), extend) }
+    /// Ctrl+Left: to the start of the word before the cursor (a word = letters and digits).
+    pub fn word_left(&mut self, extend: bool) {
+        let w = |c: &char| c.is_alphanumeric(); let mut i = self.at;
+        while i > 0 && !w(&self.text[i - 1]) { i -= 1 }
+        while i > 0 && w(&self.text[i - 1]) { i -= 1 }
+        self.go(i, extend)
+    }
+    /// Ctrl+Right: to the end of the word after the cursor.
+    pub fn word_right(&mut self, extend: bool) {
+        let w = |c: &char| c.is_alphanumeric(); let mut i = self.at; let n = self.text.len();
+        while i < n && !w(&self.text[i]) { i += 1 }
+        while i < n && w(&self.text[i]) { i += 1 }
+        self.go(i, extend)
+    }
+    pub fn kill(&mut self) { self.text.clear(); self.at = 0; self.sel = None; }
     pub fn as_string(&self) -> String { self.text.iter().collect() }
+}
+
+/// What a key does in a line editor, with its own clipboard text (`clip`): the keys every line (address, find, prompt) shares. `code` is an evdev code; returns true when the key was a line key.
+/// Ctrl+A select all, Ctrl+C copy, Ctrl+X cut, Ctrl+V paste (`paste` = the clipboard), Ctrl+U clear, Ctrl+E end, Home, End, Left, Right, Ctrl+Left/Right by word, Backspace, Delete; Shift extends the selection.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LineKey { Back, Del, Left, Right, Home, End, All, Copy, Cut, Paste, Kill, EndEmacs, HomeEmacs }
+pub fn line_key(code: u32, ctrl: bool) -> Option<LineKey> {
+    use LineKey::*;
+    Some(match (code, ctrl) {
+        (14, _) => Back, (111, _) => Del, (105, _) => Left, (106, _) => Right, (102, _) => Home, (107, _) => End,
+        (30, true) => All, (46, true) => Copy, (45, true) => Cut, (47, true) => Paste, (22, true) => Kill, (18, true) => EndEmacs,
+        _ => return None,
+    })
+}
+/// Applies a line key. `clip` is the shared clipboard (read for Paste, written by Copy and Cut). Returns true when the text changed.
+pub fn line_apply(l: &mut Line, k: LineKey, ctrl: bool, shift: bool, clip: &mut String) -> bool {
+    use LineKey::*;
+    let was = l.as_string();
+    match k {
+        Back => l.backspace(), Del => l.delete(),
+        Left => if ctrl { l.word_left(shift) } else { l.left(shift) }, Right => if ctrl { l.word_right(shift) } else { l.right(shift) },
+        Home | HomeEmacs => l.home(shift), End | EndEmacs => l.end(shift),
+        All => l.select_all(), Copy => { let t = l.selected(); if !t.is_empty() { *clip = t } }
+        Cut => { let t = l.cut(); if !t.is_empty() { *clip = t } } Paste => { let c = clip.clone(); l.paste(&c) } Kill => l.kill(),
+    }
+    l.as_string() != was
+}
+
+// ---- history ----
+/// One visited page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Visit { pub t: i64, pub url: String, pub title: String }
+/// The history: unique addresses, the newest last. Stored as `time TAB url TAB title` lines in ~/.local/share/thir-web/history (0600).
+#[derive(Default, Debug)]
+pub struct History { pub items: Vec<Visit> }
+pub const MAX_HISTORY: usize = 1000;
+impl History {
+    pub fn parse(s: &str) -> History {
+        let mut h = History::default();
+        for l in s.lines() {
+            let mut p = l.splitn(3, '\t');
+            if let (Some(t), Some(u), title) = (p.next().and_then(|t| t.parse().ok()), p.next(), p.next().unwrap_or("")) { if url_ok(u) { h.items.push(Visit { t, url: u.into(), title: printable(title) }) } }
+        }
+        let n = h.items.len(); if n > MAX_HISTORY { h.items.drain(..n - MAX_HISTORY); }
+        h
+    }
+    pub fn serialize(&self) -> String { self.items.iter().map(|v| format!("{}\t{}\t{}\n", v.t, v.url, v.title)).collect() }
+    /// A page was shown: it moves to the end (once per address) with the newest title. Only http(s) pages count; the list stays within MAX_HISTORY.
+    pub fn visit(&mut self, url: &str, title: &str, t: i64) {
+        if !url_ok(url) { return }
+        let title: String = printable(title).chars().take(200).collect();
+        let old = self.items.iter().position(|v| v.url == url).map(|i| self.items.remove(i));
+        let title = if title.is_empty() { old.map_or(String::new(), |o| o.title) } else { title };
+        self.items.push(Visit { t, url: url.into(), title });
+        let n = self.items.len(); if n > MAX_HISTORY { self.items.drain(..n - MAX_HISTORY); }
+    }
+    /// The title arrived after the visit: it belongs to the newest entry with this address.
+    pub fn set_title(&mut self, url: &str, title: &str) { if let Some(v) = self.items.iter_mut().rev().find(|v| v.url == url) { v.title = printable(title).chars().take(200).collect() } }
+    pub fn remove(&mut self, url: &str) -> bool { let n = self.items.len(); self.items.retain(|v| v.url != url); self.items.len() != n }
+    pub fn clear(&mut self) { self.items.clear() }
+    /// The entries matching every word of `q` (in the address or the title), newest first. No query: all.
+    pub fn search(&self, q: &str) -> Vec<&Visit> {
+        let words: Vec<String> = q.split_whitespace().map(|w| w.to_lowercase()).collect();
+        self.items.iter().rev().filter(|v| { let hay = format!("{} {}", v.url, v.title).to_lowercase(); words.iter().all(|w| hay.contains(w.as_str())) }).collect()
+    }
+    /// The grey completion of what is typed in the address line: the rest of the newest address that starts with it (the scheme and `www.` may be left out). None when nothing fits or nothing is typed.
+    pub fn suggest(&self, typed: &str) -> Option<String> {
+        let t = typed.trim_start();
+        if t.len() < 2 || t.contains(' ') { return None }
+        let t_ = t.to_lowercase();
+        for v in self.items.iter().rev() {
+            let u = v.url.to_lowercase();
+            for skip in [0, u.find("://").map_or(0, |i| i + 3)].into_iter().chain(u.find("://").and_then(|i| u[i + 3..].starts_with("www.").then_some(i + 7))) {
+                if u.len() > skip + t_.len() && u[skip..].starts_with(&t_) { return Some(v.url[skip + t_.len()..].to_string()) }
+            }
+        }
+        None
+    }
+}
+/// "14:02" for today, "Thu 14:02" within a week, else "21 Nov" (`off` = minutes east of UTC).
+pub fn visit_time(t: i64, now: i64, off: i32) -> String {
+    let (a, n) = (crate::clock::local(t, off), crate::clock::local(now, off));
+    let days = (now + off as i64 * 60).div_euclid(86400) - (t + off as i64 * 60).div_euclid(86400);
+    if days == 0 { format!("{:02}:{:02}", a.hour, a.min) } else if (1..7).contains(&days) { format!("{} {:02}:{:02}", crate::clock::WDAY[a.wday as usize], a.hour, a.min) }
+    else { let _ = n; format!("{} {}", a.day, crate::clock::MONTH[a.month as usize - 1]) }
+}
+
+// ---- downloads ----
+/// How a download stands. Pausing and Resuming are the short times between asking and WebKit answering.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DlState { Running, Pausing, Paused, Resuming, Done, Failed(String), Cancelled }
+/// Bytes per second over the last few seconds.
+#[derive(Default, Debug)]
+pub struct Speed { s: std::collections::VecDeque<(u64, u64)> }
+impl Speed {
+    pub fn push(&mut self, ms: u64, bytes: u64) { self.s.push_back((ms, bytes)); while self.s.len() > 2 && ms.saturating_sub(self.s[1].0) >= 4000 { self.s.pop_front(); } }
+    pub fn rate(&self) -> u64 {
+        let (Some(a), Some(b)) = (self.s.front(), self.s.back()) else { return 0 };
+        if b.0 <= a.0 { 0 } else { b.1.saturating_sub(a.1) * 1000 / (b.0 - a.0) }
+    }
+    pub fn reset(&mut self) { self.s.clear() }
+}
+/// The Range header that continues a file of `done` bytes.
+pub fn range_header(done: u64) -> String { format!("bytes={done}-") }
+/// Is the answer to a Range request the continuation we asked for? A 206 whose Content-Range starts at `done` (and, when the total is known, ends at it).
+pub fn resume_ok(done: u64, status: u32, content_range: Option<&str>, total: Option<u64>) -> bool {
+    if status != 206 { return false }
+    let Some(r) = content_range.and_then(|r| r.trim().strip_prefix("bytes ")) else { return false };
+    let Some((span, all)) = r.split_once('/') else { return false };
+    let Some((a, b)) = span.split_once('-') else { return false };
+    a.trim().parse::<u64>() == Ok(done) && b.trim().parse::<u64>().is_ok_and(|b| b >= done)
+        && (all.trim() == "*" || all.trim().parse::<u64>().is_ok_and(|n| total.is_none_or(|t| t == n)))
+}
+/// One download in the manager. `done`: bytes already in the .part file; `seg`: bytes WebKit has written in the current piece.
+#[derive(Debug)]
+pub struct Dl { pub id: u32, pub name: String, pub url: String, pub total: Option<u64>, pub done: u64, pub seg: u64, pub state: DlState, pub ranges: bool, pub speed: Speed }
+impl Dl {
+    pub fn new(id: u32, name: &str, url: &str, total: Option<u64>) -> Dl { Dl { id, name: name.into(), url: url.into(), total, done: 0, seg: 0, state: DlState::Running, ranges: false, speed: Speed::default() } }
+    pub fn got(&self) -> u64 { self.done + self.seg }
+    pub fn active(&self) -> bool { matches!(self.state, DlState::Running | DlState::Pausing | DlState::Resuming) }
+    /// Pause = cancel now, continue later with a Range request: only for a server that said it can, with a known size.
+    pub fn pause(&mut self) -> Result<(), &'static str> {
+        match self.state {
+            DlState::Running if !self.ranges || self.total.is_none() => Err("cannot pause: this server does not allow resuming"),
+            DlState::Running => { self.state = DlState::Pausing; Ok(()) }
+            _ => Err("not running"),
+        }
+    }
+    /// WebKit stopped the piece: `seg_bytes` are on disk and now belong to the .part file.
+    pub fn stopped(&mut self, seg_bytes: u64) { if self.state == DlState::Pausing { self.done += seg_bytes; self.seg = 0; self.state = DlState::Paused; self.speed.reset(); } }
+    /// Resume: the Range header to send, None when this download is not paused.
+    pub fn resume(&mut self) -> Option<String> { if self.state != DlState::Paused { return None } self.state = DlState::Resuming; Some(range_header(self.done)) }
+    /// The first answer of a resumed piece.
+    pub fn answered(&mut self, status: u32, content_range: Option<&str>) -> Result<(), &'static str> {
+        if self.state != DlState::Resuming { return Ok(()) }
+        if resume_ok(self.done, status, content_range, self.total) { self.state = DlState::Running; Ok(()) } else { self.state = DlState::Failed("the server did not continue the file".into()); Err("the server did not continue the file") }
+    }
+    pub fn progress(&mut self, seg_bytes: u64, ms: u64) { if matches!(self.state, DlState::Running | DlState::Pausing) { self.seg = seg_bytes; let g = self.got(); self.speed.push(ms, g) } }
+    pub fn finish(&mut self) { if let Some(t) = self.total { self.done = t; } else { self.done += self.seg; } self.seg = 0; self.state = DlState::Done }
+    pub fn fail(&mut self, why: &str) { if self.active() { self.state = DlState::Failed(printable(why)) } }
+    pub fn cancel(&mut self) { if !matches!(self.state, DlState::Done) { self.state = DlState::Cancelled } }
+    /// 0-100 when the size is known.
+    pub fn percent(&self) -> Option<u8> { self.total.filter(|&t| t > 0).map(|t| (self.got().min(t) * 100 / t) as u8) }
+    pub fn status_text(&self) -> String {
+        match &self.state {
+            DlState::Running => { let r = self.speed.rate(); if r > 0 { format!("{}/s", size_text(Some(r))) } else { "starting".into() } }
+            DlState::Pausing => "pausing".into(), DlState::Paused => "paused".into(), DlState::Resuming => "resuming".into(),
+            DlState::Done => "done".into(), DlState::Failed(w) => format!("failed: {w}"), DlState::Cancelled => "cancelled".into(),
+        }
+    }
+}
+/// A progress bar of `w` cells: `(filled, w)`.
+pub fn bar_cells(percent: Option<u8>, w: usize) -> usize { percent.map_or(0, |p| (p.min(100) as usize * w + 50) / 100) }
+
+// ---- the <select> popup ----
+/// The options of a page's <select>: label, enabled, is a group heading. The choice skips headings and disabled items.
+#[derive(Debug, Default)]
+pub struct Menu { pub items: Vec<(String, bool, bool)>, pub at: usize }
+impl Menu {
+    fn ok(&self, i: usize) -> bool { self.items.get(i).is_some_and(|x| x.1 && !x.2) }
+    /// Starts on `selected` (or the first choosable item).
+    pub fn new(items: Vec<(String, bool, bool)>, selected: Option<usize>) -> Menu {
+        let mut m = Menu { items, at: 0 };
+        let first = selected.filter(|&i| m.ok(i)).or_else(|| (0..m.items.len()).find(|&i| m.ok(i)));
+        m.at = first.unwrap_or(0); m
+    }
+    pub fn up(&mut self) { if let Some(i) = (0..self.at).rev().find(|&i| self.ok(i)) { self.at = i } }
+    pub fn down(&mut self) { if let Some(i) = (self.at + 1..self.items.len()).find(|&i| self.ok(i)) { self.at = i } }
+    pub fn first(&mut self) { if let Some(i) = (0..self.items.len()).find(|&i| self.ok(i)) { self.at = i } }
+    pub fn last(&mut self) { if let Some(i) = (0..self.items.len()).rev().find(|&i| self.ok(i)) { self.at = i } }
+    /// Typing a letter jumps to the next choosable item that starts with it.
+    pub fn jump(&mut self, c: char) { let n = self.items.len(); let c = c.to_lowercase().next().unwrap_or(c); if let Some(i) = (1..=n).map(|k| (self.at + k) % n).find(|&i| self.ok(i) && self.items[i].0.to_lowercase().starts_with(c)) { self.at = i } }
+    pub fn chosen(&self) -> Option<usize> { self.ok(self.at).then_some(self.at) }
+    /// The rows to draw (at most `max`): the first index and the count, keeping `at` in view.
+    pub fn window(&self, max: usize) -> (usize, usize) { let n = self.items.len().min(max.max(1)); let first = (self.at + 1).saturating_sub(n).min(self.items.len() - n); (first, n) }
 }
 
 /// `s` cut to `cols` characters with a trailing '~' when it was longer.
@@ -225,15 +432,16 @@ pub fn dirs(home: &Path) -> [PathBuf; 3] { [home.join(".local/share/thir-web"), 
 pub fn profile(p: Proc, home: &Path) -> Spec {
     let [data, cache, dl] = dirs(home);
     let p_ = |s: &str| PathBuf::from(s);
-    let mut s = Spec { rx: vec![p_("/web"), p_("/etc"), p_("/sys/devices/system/cpu")], r: vec![p_("/dev/urandom")], rw_files: vec![p_("/dev/null"), p_("/dev/zero")], seccomp: true, ..Spec::default() };
+    let mut s = Spec { rx: vec![p_("/web"), p_("/etc"), p_("/sys/devices/system/cpu")], r: vec![p_("/dev/urandom"), p_("/sys/firmware/acpi/pm_profile")], rw_files: vec![p_("/dev/null"), p_("/dev/zero")], seccomp: true, ..Spec::default() };
     // /proc: the UI process opens all of it (it is the ceiling for its children); a child sees only its own entry and the system-wide files WebKit and Mesa read
     if p == Proc::Ui { s.rx.push(p_("/proc")); } else {
         s.rx.extend([p_("/proc/self"), p_("/proc/thread-self"), p_("/proc/sys")]);
         s.r.extend(["meminfo", "cpuinfo", "stat", "loadavg", "uptime", "version"].map(|f| PathBuf::from("/proc").join(f)));
     }
     match p {
-        Proc::Ui => { s.rw = vec![data, cache, dl, p_("/dev/shm")]; }
-        Proc::Web => { s.deny_tcp = true; s.scope = true; s.rx.push(p_("/dev/shm")); }
+        Proc::Ui => { s.rw = vec![data, cache, dl, p_("/dev/shm")]; s.rw_files.extend([p_("/dev/snd/pcmC0D0p"), p_("/dev/snd/controlC0")]); }   // the ceiling for the web process
+        // the web process plays the page's sound (GStreamer, in this process; there is no GPU process): the playback device and its own registry folder, nothing else; TCP stays denied
+        Proc::Web => { s.deny_tcp = true; s.scope = true; s.rx.push(p_("/dev/shm")); s.rw = vec![cache.join("gstreamer")]; s.rw_files.extend([p_("/dev/snd/pcmC0D0p"), p_("/dev/snd/controlC0")]); s.rx.push(p_("/proc/asound")); }
         Proc::Network => { s.scope = true; s.rw = vec![data, cache, dl, p_("/dev/shm")]; }
     }
     s
@@ -273,8 +481,85 @@ mod tests {
         assert_eq!(download_prompt("a\x1bb.zip", Some(2048)), "save a?b.zip (2.0 KB) to ~/Downloads? y/n");
     }
     #[test] fn line_editor() {
-        let mut l = Line::new("ab"); l.insert('c'); l.left(); l.left(); l.insert('X'); assert_eq!(l.as_string(), "aXbc"); l.backspace(); l.delete(); assert_eq!(l.as_string(), "ac"); l.end(); l.backspace(); l.backspace(); l.backspace(); assert_eq!(l.as_string(), "");
-        l.insert('\n'); assert!(l.text.is_empty()); l.insert('\u{e9}'); l.home(); l.delete(); assert_eq!(l, Line::default()); let mut k = Line::new("xyz"); k.kill(); assert_eq!(k.as_string(), ""); k.left(); k.right(); k.end();
+        let mut l = Line::new("ab"); l.insert('c'); l.left(false); l.left(false); l.insert('X'); assert_eq!(l.as_string(), "aXbc"); l.backspace(); l.delete(); assert_eq!(l.as_string(), "ac"); l.end(false); l.backspace(); l.backspace(); l.backspace(); assert_eq!(l.as_string(), "");
+        l.insert('\n'); assert!(l.text.is_empty()); l.insert('\u{e9}'); l.home(false); l.delete(); assert_eq!(l, Line::default()); let mut k = Line::new("xyz"); k.kill(); assert_eq!(k.as_string(), ""); k.left(false); k.right(false); k.end(false);
+    }
+    #[test] fn line_selection_editing() {
+        let mut l = Line::new("hello world"); l.select_all(); assert_eq!(l.selection(), Some((0, 11))); assert_eq!(l.selected(), "hello world");
+        l.insert('x'); assert_eq!(l.as_string(), "x", "typing replaces the selection");
+        let mut l = Line::new("abc"); l.select_all(); l.backspace(); assert_eq!(l.as_string(), ""); let mut l = Line::new("abc"); l.select_all(); l.delete(); assert_eq!((l.as_string(), l.at), (String::new(), 0));
+        let mut l = Line::new("abcdef"); l.home(false); l.right(true); l.right(true); assert_eq!(l.selected(), "ab"); l.left(true); assert_eq!(l.selected(), "a"); l.left(true); assert_eq!(l.selection(), None, "anchor = cursor: nothing selected");
+        l.right(true); l.right(true); l.right(false); assert_eq!((l.sel, l.at), (None, 2), "Right with a selection goes to its end"); l.left(true); l.left(true); l.left(false); assert_eq!(l.at, 0);
+        let mut l = Line::new("abc"); l.select_all(); assert_eq!(l.cut(), "abc"); assert_eq!(l.as_string(), ""); assert_eq!(l.cut(), "");
+        let mut l = Line::new("ab"); l.left(false); l.paste("X\nY\tZ\x1b"); assert_eq!(l.as_string(), "aX Y Zb"); l.select_all(); l.paste("new"); assert_eq!(l.as_string(), "new");
+        let mut l = Line::new("one two  three"); l.word_left(false); assert_eq!(l.at, 9); l.word_left(false); assert_eq!(l.at, 4); l.word_left(false); assert_eq!(l.at, 0); l.word_left(false); assert_eq!(l.at, 0);
+        l.word_right(false); assert_eq!(l.at, 3); l.word_right(false); assert_eq!(l.at, 7); l.word_right(true); assert_eq!(l.selected(), "  three"); l.word_right(false); assert_eq!(l.at, 14);
+        let mut l = Line::new("ab cd"); l.home(false); l.end(true); assert_eq!(l.selected(), "ab cd"); l.home(false); assert_eq!(l.selection(), None);
+        let mut l = Line::new("é ü"); l.select_all(); assert_eq!(l.selected(), "é ü");
+    }
+    #[test] fn line_keys_and_clipboard() {
+        let mut clip = String::new(); let mut l = Line::new("hello world");
+        let k = |code, ctrl| line_key(code, ctrl).unwrap();
+        assert!(line_apply(&mut l, k(30, true), true, false, &mut clip) == false); assert_eq!(l.selected(), "hello world");   // Ctrl+A
+        line_apply(&mut l, k(46, true), true, false, &mut clip); assert_eq!(clip, "hello world", "Ctrl+C copies");
+        assert!(line_apply(&mut l, k(45, true), true, false, &mut clip)); assert_eq!(l.as_string(), "", "Ctrl+X cuts");
+        assert!(line_apply(&mut l, k(47, true), true, false, &mut clip)); assert_eq!(l.as_string(), "hello world", "Ctrl+V pastes");
+        l.home(false); line_apply(&mut l, k(106, true), true, true, &mut clip); assert_eq!(l.selected(), "hello", "Ctrl+Shift+Right selects a word");
+        line_apply(&mut l, k(46, true), true, false, &mut clip); assert_eq!(clip, "hello"); l.end(false); line_apply(&mut l, k(47, true), true, false, &mut clip); assert_eq!(l.as_string(), "hello worldhello");
+        let mut e = Line::new("x"); line_apply(&mut e, k(46, true), true, false, &mut clip); assert_eq!(clip, "hello", "copy with nothing selected keeps the clipboard");
+        for c in [14, 111, 105, 106, 102, 107] { assert!(line_key(c, false).is_some()); } assert!(line_key(30, false).is_none() && line_key(46, false).is_none());
+    }
+    #[test] fn history_store() {
+        let mut h = History::default();
+        h.visit("https://a.example/", "A page", 100); h.visit("https://b.example/x", "", 200); h.visit("file:///etc/passwd", "no", 300); h.visit("https://a.example/", "", 400);
+        assert_eq!(h.items.len(), 2, "one entry per address, file: refused"); assert_eq!(h.items[1], Visit { t: 400, url: "https://a.example/".into(), title: "A page".into() }, "a revisit moves to the end and keeps the title");
+        h.set_title("https://b.example/x", "B\x1b[2J page"); assert_eq!(h.items[0].title, "B?[2J page");
+        let back = History::parse(&h.serialize()); assert_eq!(back.items, h.items);
+        let junk = History::parse("x\ty\tz\n100\tjavascript:alert(1)\tbad\n100\thttps://ok.example/\tOK\n\n300"); assert_eq!(junk.items.len(), 1);
+        assert_eq!(h.search("page").len(), 2); assert_eq!(h.search("b.example PAGE")[0].url, "https://b.example/x"); assert_eq!(h.search("zzz").len(), 0); assert_eq!(h.search("")[0].t, 400, "newest first");
+        assert!(h.remove("https://b.example/x") && !h.remove("https://b.example/x")); h.clear(); assert!(h.items.is_empty());
+        let mut big = History::default(); for i in 0..MAX_HISTORY + 50 { big.visit(&format!("https://h{i}.example/"), "t", i as i64); } assert_eq!(big.items.len(), MAX_HISTORY); assert_eq!(big.items[0].url, "https://h50.example/");
+        big.visit("https://x.example/", &"t".repeat(900), 1); assert_eq!(big.items.last().unwrap().title.len(), 200);
+    }
+    #[test] fn history_suggestions_and_times() {
+        let mut h = History::default(); h.visit("https://en.wikipedia.org/wiki/Sri_Lanka", "Sri Lanka", 1); h.visit("https://www.example.com/docs", "Docs", 2); h.visit("https://example.org/", "Org", 3);
+        assert_eq!(h.suggest("en.wiki").as_deref(), Some("pedia.org/wiki/Sri_Lanka")); assert_eq!(h.suggest("https://en.w").as_deref(), Some("ikipedia.org/wiki/Sri_Lanka"));
+        assert_eq!(h.suggest("example.c").as_deref(), Some("om/docs"), "www. may be left out"); assert_eq!(h.suggest("EXAMPLE.").as_deref(), Some("org/"), "newest first, case-insensitive");
+        assert_eq!(h.suggest("e"), None, "one letter is too little"); assert_eq!(h.suggest("example.org/"), None, "nothing left to add"); assert_eq!(h.suggest("two words"), None); assert_eq!(h.suggest("zzz"), None);
+        let now = 1_700_000_000; assert_eq!(visit_time(now - 60, now, 0).len(), 5); assert!(visit_time(now - 86400 * 2, now, 0).contains(' ') && visit_time(now - 86400 * 20, now, 0).split(' ').count() == 2);
+        assert_eq!(visit_time(1_700_000_000, 1_700_000_100, 330), "03:43"); assert_eq!(visit_time(1_700_000_000 - 86400 * 30, 1_700_000_000, 0), "15 Oct");
+    }
+    #[test] fn range_resume_math() {
+        assert_eq!(range_header(0), "bytes=0-"); assert_eq!(range_header(1048576), "bytes=1048576-");
+        assert!(resume_ok(1000, 206, Some("bytes 1000-1999/2000"), Some(2000))); assert!(resume_ok(1000, 206, Some("bytes 1000-1999/*"), Some(2000))); assert!(resume_ok(5, 206, Some("bytes 5-9/10"), None));
+        assert!(!resume_ok(1000, 200, None, Some(2000)), "a 200 starts over"); assert!(!resume_ok(1000, 206, Some("bytes 0-1999/2000"), Some(2000)), "wrong start"); assert!(!resume_ok(1000, 206, None, None));
+        assert!(!resume_ok(1000, 206, Some("bytes 1000-1999/3000"), Some(2000)), "the file changed size"); assert!(!resume_ok(1000, 206, Some("bytes 1000-x/2000"), None)); assert!(!resume_ok(1000, 206, Some("items 1000-1999/2000"), None));
+        assert!(!resume_ok(1000, 206, Some("bytes 1000-999/2000"), None));
+    }
+    #[test] fn download_state_machine() {
+        let mut d = Dl::new(1, "f.bin", "http://h/f.bin", Some(1000)); assert!(d.active()); assert_eq!(d.pause(), Err("cannot pause: this server does not allow resuming"));
+        d.ranges = true; d.progress(300, 1000); assert_eq!((d.got(), d.percent()), (300, Some(30))); assert_eq!(d.pause(), Ok(())); assert_eq!(d.state, DlState::Pausing); assert!(d.pause().is_err());
+        d.progress(320, 1100); d.stopped(320); assert_eq!((d.state.clone(), d.done, d.seg, d.got()), (DlState::Paused, 320, 0, 320)); assert!(!d.active());
+        assert_eq!(d.resume(), Some("bytes=320-".into())); assert_eq!(d.state, DlState::Resuming); assert_eq!(d.resume(), None);
+        assert!(d.answered(200, None).is_err()); assert!(matches!(d.state, DlState::Failed(_)));
+        let mut d = Dl::new(2, "g", "http://h/g", Some(1000)); d.ranges = true; d.done = 400; d.state = DlState::Resuming;
+        assert!(d.answered(206, Some("bytes 400-999/1000")).is_ok()); assert_eq!(d.state, DlState::Running); d.progress(600, 5000); assert_eq!((d.got(), d.percent()), (1000, Some(100))); d.finish(); assert_eq!((d.done, d.state.clone()), (1000, DlState::Done));
+        d.fail("late"); assert_eq!(d.state, DlState::Done, "a finished download cannot fail"); d.cancel(); assert_eq!(d.state, DlState::Done);
+        let mut u = Dl::new(3, "u", "http://h/u", None); u.progress(50, 0); u.finish(); assert_eq!(u.done, 50); assert_eq!(Dl::new(4, "x", "u", None).percent(), None);
+        let mut f = Dl::new(5, "x", "u", Some(10)); f.fail("disk \x1b full"); assert_eq!(f.status_text(), "failed: disk ?[ full".replace("?[ ", "? ").replace("disk ? full", "disk ? full")); let mut c = Dl::new(6, "x", "u", None); c.cancel(); assert_eq!(c.status_text(), "cancelled");
+    }
+    #[test] fn speed_and_bars() {
+        let mut s = Speed::default(); assert_eq!(s.rate(), 0); s.push(0, 0); assert_eq!(s.rate(), 0); s.push(1000, 100_000); assert_eq!(s.rate(), 100_000); s.push(2000, 300_000); assert_eq!(s.rate(), 150_000);
+        for i in 3..20 { s.push(i * 1000, i * 200_000); } assert_eq!(s.rate(), 200_000, "old samples drop out"); s.reset(); assert_eq!(s.rate(), 0);
+        assert_eq!((bar_cells(None, 10), bar_cells(Some(0), 10), bar_cells(Some(50), 10), bar_cells(Some(100), 10), bar_cells(Some(250), 10)), (0, 0, 5, 10, 10));
+    }
+    #[test] fn option_menu_choice() {
+        let it = |l: &str, e: bool, g: bool| (l.to_string(), e, g);
+        let mut m = Menu::new(vec![it("Fruit", true, true), it("Apple", true, false), it("Pear", false, false), it("Plum", true, false), it("Veg", true, true), it("Leek", true, false)], None);
+        assert_eq!(m.chosen(), Some(1), "starts on the first choosable item"); m.down(); assert_eq!(m.at, 3, "skips the disabled one"); m.down(); assert_eq!(m.at, 5, "and the heading"); m.down(); assert_eq!(m.at, 5); m.up(); assert_eq!(m.at, 3);
+        m.first(); assert_eq!(m.at, 1); m.last(); assert_eq!(m.at, 5); m.jump('p'); assert_eq!(m.at, 3); m.jump('A'); assert_eq!(m.at, 1); m.jump('z'); assert_eq!(m.at, 1);
+        let m = Menu::new(vec![it("a", true, false), it("b", true, false)], Some(1)); assert_eq!(m.chosen(), Some(1)); let m = Menu::new(vec![it("a", false, false)], Some(0)); assert_eq!(m.chosen(), None); assert!(Menu::default().chosen().is_none());
+        let m = Menu { items: (0..20).map(|i| it(&i.to_string(), true, false)).collect(), at: 15 }; assert_eq!(m.window(8), (8, 8)); let m = Menu { at: 2, ..m }; assert_eq!(m.window(8), (0, 8)); assert_eq!(Menu::default().window(5), (0, 0));
     }
     #[test] fn strip_fits_the_width() {
         let (u, t, r) = strip("https://example.com/", "Example Domain", Some(64), 80); assert_eq!((u.as_str(), t.as_str(), r.as_str()), ("https://example.com/", "Example Domain", "64%"));
@@ -292,7 +577,8 @@ mod tests {
         }
         let (u, w, n) = (profile(Proc::Ui, h), profile(Proc::Web, h), profile(Proc::Network, h));
         assert!(w.deny_tcp && w.scope && !n.deny_tcp && !u.deny_tcp);
-        assert!(!w.rw.iter().any(|d| d.starts_with(h)), "the web process writes nothing in the home folder");
+        assert!(w.rw == [h.join(".cache/thir-web/gstreamer")], "the web process writes only its GStreamer registry folder in the home folder");
+        assert!(w.rw_files.contains(&PathBuf::from("/dev/snd/pcmC0D0p")) && !n.rw_files.iter().any(|f| f.starts_with("/dev/snd")), "the network process cannot play sound");
         assert!(n.rw.contains(&h.join("Downloads")) && n.rw.contains(&h.join(".local/share/thir-web")) && n.rw.contains(&h.join(".cache/thir-web")));
         assert!(u.rw.contains(&h.join("Downloads")));
         assert_eq!(proc_of("/usr/libexec/wpe-webkit-2.0/WPEWebProcess"), Some(Proc::Web)); assert_eq!(proc_of("WPENetworkProcess"), Some(Proc::Network)); assert_eq!(proc_of("sh"), None); assert_eq!(proc_of(""), None);

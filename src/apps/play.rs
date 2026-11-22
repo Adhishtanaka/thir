@@ -1,4 +1,4 @@
-//! play: music and video from the web add-on's ffmpeg (a sandboxed child: reads only the file and /web, writes nothing, no network).
+//! play: music and video from the browser and media apps's ffmpeg (a sandboxed child: reads only the file and /web, writes nothing, no network).
 //! `play FILE|DIR [-s]`. Music (no picture) is a text screen that also works on the serial console; a DIR plays its audio files by name, -s shuffles.
 //! Video is a den surface: ffmpeg sends BGRA frames on fd 3 and PCM on fd 4; the sound card is the clock (frames written minus the card's delay), so the picture follows the sound.
 //! Keys: space pause, left/right 10 s, n/p next/previous track, + - volume, q quit. Clicking the progress line in the video window seeks.
@@ -131,7 +131,7 @@ impl Run {
         let (vw, aw) = (vwr.as_ref().map_or(-1, |p| p.as_raw_fd()), awr.as_ref().map_or(-1, |p| p.as_raw_fd()));
         let rules = sandbox::rules(&[Path::new("/web")], &[file]);
         let mut c = Command::new(FFMPEG);
-        c.args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        c.args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(std::env::var_os("HOME").and_then(|h| crate::logfile::open(Path::new(&h))).map_or_else(Stdio::null, Stdio::from));   // ffmpeg's own words go to the log, never the pane
         // SAFETY: only prctl, landlock and dup2 run between fork and exec.
         unsafe { c.pre_exec(move || { if vw >= 0 { libc::dup2(vw, 3); } if aw >= 0 { libc::dup2(aw, 4); } rules.enforce().map(|_| ()) }); }
         let child = c.spawn()?;
@@ -269,13 +269,13 @@ fn paint_strip(c: &mut Client, font: &Font, p: &Player, vol: Option<u32>, note: 
     let y0 = h.saturating_sub(sh);
     let px = c.pixels();
     if px.len() < w * h { return (0, 0, 0, 0) }
-    fill(px, w, Rect { x: 0, y: y0 as i32, w: w as i32, h: sh as i32 }, PANEL);
+    fill(px, w, Rect { x: 0, y: y0 as i32, w: w as i32, h: sh as i32 }, panel());
     let frac = if p.info.dur > 0.0 { (p.now() / p.info.dur).clamp(0.0, 1.0) } else { 0.0 };
     fill(px, w, Rect { x: 0, y: y0 as i32, w: w as i32, h: 3 * sc as i32 }, BORDER_DIM);
-    fill(px, w, Rect { x: 0, y: y0 as i32, w: (frac * w as f64) as i32, h: 3 * sc as i32 }, ACCENT);
+    fill(px, w, Rect { x: 0, y: y0 as i32, w: (frac * w as f64) as i32, h: 3 * sc as i32 }, accent());
     let y = (y0 + 6 * sc) as i32;
     let mut x = font.w as i32;
-    x += text(px, w, font, x, y, if p.playing() { "\u{25cf} " } else { "\u{25cb} " }, if p.playing() { ACCENT } else { DIM });
+    x += text(px, w, font, x, y, if p.playing() { "\u{25cf} " } else { "\u{25cb} " }, if p.playing() { accent() } else { DIM });
     let room = (w / font.w).saturating_sub(4);
     x += text(px, w, font, x, y, &p.name().chars().take(room.min(40)).collect::<String>(), FG) + 2 * font.w as i32;
     let times = format!("{} / {}{}", clock(p.now()), if p.info.dur > 0.0 { clock(p.info.dur) } else { "?:??".into() }, vol.map_or(String::new(), |v| format!("   vol {v}")));
@@ -310,7 +310,7 @@ fn video(file: PathBuf, info: Info) -> i32 {
             let seek_by = |p: &mut Player, c: &Client, to: f64, hold: &mut bool| { let still = !p.playing(); begin(p, c, to, still); *hold = still; };
             match e {
                 Down::Done => waiting = false,
-                Down::Configure { .. } => if (c.w, c.h) != attached {
+                Down::Configure { .. } => if (c.w, c.h) == attached { dirty = true } else {
                     if c.attach().is_err() { return 1 }
                     attached = (c.w, c.h);
                     let to = seek_to(p.now(), 0.0, dur); seek_by(&mut p, &c, to, &mut hold); dirty = true;
@@ -389,7 +389,7 @@ fn check(file: &Path) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     let shuffle = args.iter().any(|a| a == "-s");
     let rest: Vec<&String> = args.iter().filter(|a| *a != "-s").collect();
-    if !Path::new(FFMPEG).exists() { eprintln!("play needs the web add-on"); return 1 }
+    if !Path::new(FFMPEG).exists() { eprintln!("play is not in this small thir (no media apps)"); return 1 }
     match rest[..] {
         [f, a] if f == "--check" => check(Path::new(a)),
         [a] if !a.starts_with('-') => {

@@ -20,12 +20,14 @@ pub fn downmix(stereo: &[u8]) -> Vec<i16> {
 /// "rec-2026-11-20-143205.wav" from a local time.
 pub fn file_name(l: &clock::Local) -> String { format!("rec-{:04}-{:02}-{:02}-{:02}{:02}{:02}", l.year, l.month, l.day, l.hour, l.min, l.sec) }
 /// A new file `base`.wav in `dir`, or `base`-2.wav and so on: created exclusively (0600), so an existing recording is never touched.
-pub fn create_new(dir: &Path, base: &str) -> std::io::Result<(File, PathBuf)> {
+pub fn create_new(dir: &Path, base: &str) -> std::io::Result<(File, PathBuf)> { create_new_ext(dir, base, "wav") }
+/// The same for any extension (the camera's photos use it).
+pub fn create_new_ext(dir: &Path, base: &str, ext: &str) -> std::io::Result<(File, PathBuf)> {
     for n in 1..100 {
-        let p = dir.join(if n == 1 { format!("{base}.wav") } else { format!("{base}-{n}.wav") });
+        let p = dir.join(if n == 1 { format!("{base}.{ext}") } else { format!("{base}-{n}.{ext}") });
         match OpenOptions::new().write(true).create_new(true).mode(0o600).open(&p) { Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue, r => return r.map(|f| (f, p)) }
     }
-    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "too many recordings with this name"))
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "too many files with this name"))
 }
 /// ~/Recordings, made 0700 when missing. A link or a folder of someone else is refused.
 fn recordings_dir() -> Result<PathBuf, String> {

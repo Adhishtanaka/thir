@@ -15,8 +15,8 @@ const PREPARE: libc::c_ulong = 0x4140; const START: libc::c_ulong = 0x4142; cons
 const DELAY: libc::c_ulong = 0x8000_0000 | (std::mem::size_of::<libc::c_long>() as libc::c_ulong) << 16 | 0x4121;
 
 fn bit(m: &mut [u32; 8], n: usize) { *m = [0; 8]; m[n / 32] = 1 << (n % 32); }
-/// `ivs` slots: 2 = channels, 3 = rate, 8 = buffer time (us); `buf_us` 0 = any buffer.
-fn params(rate: u32, buf_us: u32) -> HwParams {
+/// `ivs` slots: 2 = channels, 3 = rate, 4 = period time (us), 8 = buffer time (us); 0 = any. The kernel picks the smallest period it may when none is asked for: a few frames, an interrupt every millisecond or less, which a virtual HDA (VirtualBox) cannot keep up with.
+fn params(rate: u32, buf_us: u32, per_us: u32) -> HwParams {
     let mut p: HwParams = unsafe { std::mem::zeroed() };
     for m in &mut p.masks { *m = [u32::MAX; 8]; }
     for i in &mut p.ivs { *i = Iv { min: 0, max: u32::MAX, flags: 0 }; }
@@ -25,6 +25,7 @@ fn params(rate: u32, buf_us: u32) -> HwParams {
     bit(&mut p.masks[2], 0);   // subformat: standard
     p.ivs[2] = Iv { min: 2, max: 2, flags: 0 }; p.ivs[3] = Iv { min: rate, max: rate, flags: 0 };
     if buf_us > 0 { p.ivs[8].min = buf_us; }
+    if per_us > 0 { p.ivs[4].min = per_us; }
     p.rmask = u32::MAX; p
 }
 
@@ -55,9 +56,9 @@ pub fn unmute() {
 }
 
 /// Who owns a /dev/snd node and its mode while `user` (a uid, or None = nobody logged in) is logged in. Only the playback stream goes to the user, mode 0600;
-/// capture (the microphone), the mixer controls and the timer stay root 0600 always.
+/// the mixer control node goes with it (alsa-lib, which the browser's GStreamer uses, opens it to play: it moves levels, it carries no audio); capture (the microphone) and the timer stay root 0600 always.
 pub fn node_policy(name: &str, user: Option<u32>) -> (u32, u32) {
-    if name.starts_with("pcm") && name.ends_with('p') { (user.unwrap_or(0), 0o600) } else { (0, 0o600) }
+    if (name.starts_with("pcm") && name.ends_with('p')) || name.starts_with("control") { (user.unwrap_or(0), 0o600) } else { (0, 0o600) }
 }
 /// Where login records who holds the playback stream (a uid), so root can re-apply it when the card appears late. No file = nobody.
 const STATE: &str = "/run/snd-user";
@@ -109,20 +110,22 @@ fn resample(pcm: &[i16], to: u32) -> Vec<i16> {
 /// Err keeps the OS error: EBUSY = another program is playing (one substream only).
 pub fn open() -> io::Result<(File, u32)> { open_buffered(0) }
 /// Like `open`, with a buffer of at least `buf_ms` where the card allows it (a player that streams from another process wants room against underruns; the chimes keep the card's default).
-pub fn open_buffered(buf_ms: u32) -> io::Result<(File, u32)> { open_dev(OpenOptions::new().write(true), DEV, buf_ms) }
+pub fn open_buffered(buf_ms: u32) -> io::Result<(File, u32)> { open_dev(OpenOptions::new().write(true), DEV, buf_ms, 0) }
 /// Opens the capture stream (root only: den): stereo S16_LE at the first of RATES the card takes, started, non-blocking. The rate is returned.
 pub fn open_capture() -> io::Result<(File, u32)> {
-    let (f, rate) = open_dev(OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK), CAP, 0)?;
+    let (f, rate) = open_dev(OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK), CAP, CAP_BUF_MS, CAP_PERIOD_MS)?;
     unsafe { libc::ioctl(f.as_raw_fd(), START as _); }
     Ok((f, rate))
 }
+/// Capture buffer and period: a wake-up every 20 ms is 50 a second, however the card is made.
+const CAP_BUF_MS: u32 = 200; const CAP_PERIOD_MS: u32 = 20;
 /// After an overrun (EPIPE from read): start the capture again.
 pub fn capture_restart(f: &File) { restart(f); unsafe { libc::ioctl(f.as_raw_fd(), START as _); } }
-fn open_dev(o: &mut OpenOptions, path: &str, buf_ms: u32) -> io::Result<(File, u32)> {
+fn open_dev(o: &mut OpenOptions, path: &str, buf_ms: u32, per_ms: u32) -> io::Result<(File, u32)> {
     let f = o.open(path)?;
     let fd = f.as_raw_fd();
     let bad = |what: &str| io::Error::new(io::ErrorKind::Other, format!("{what}: {}", io::Error::last_os_error()));
-    let rate = RATES.iter().flat_map(|&r| [(r, buf_ms * 1000), (r, 0)]).find(|&(r, b)| { let mut p = params(r, b); unsafe { libc::ioctl(fd, HW_PARAMS as _, &mut p) == 0 } }).map(|(r, _)| r);
+    let rate = RATES.iter().flat_map(|&r| [(r, buf_ms * 1000, per_ms * 1000), (r, 0, per_ms * 1000), (r, 0, 0)]).find(|&(r, b, q)| { let mut p = params(r, b, q); unsafe { libc::ioctl(fd, HW_PARAMS as _, &mut p) == 0 } }).map(|(r, _, _)| r);
     let Some(rate) = rate else { return Err(bad("hw_params")) };
     if unsafe { libc::ioctl(fd, PREPARE as _) } < 0 { return Err(bad("prepare")); }
     Ok((f, rate))
@@ -178,14 +181,15 @@ mod tests {
     use super::*;
     #[test] fn only_playback_goes_to_the_user() {
         assert_eq!(node_policy("pcmC0D0p", Some(1000)), (1000, 0o600)); assert_eq!(node_policy("pcmC0D0p", None), (0, 0o600));
-        for n in ["pcmC0D0c", "controlC0", "timer", "seq", "pcmC0D1c"] { assert_eq!(node_policy(n, Some(1000)), (0, 0o600), "{n}"); }
+        assert_eq!(node_policy("controlC0", Some(1000)), (1000, 0o600)); assert_eq!(node_policy("controlC0", None), (0, 0o600));
+        for n in ["pcmC0D0c", "timer", "seq", "pcmC0D1c"] { assert_eq!(node_policy(n, Some(1000)), (0, 0o600), "{n}"); }
     }
     #[test] fn holder_is_a_plain_uid() { assert_eq!(holder("1000\n"), Some(1000)); for b in ["", "0", "-1", "x", "1000 5"] { assert_eq!(holder(b), None, "{b:?}"); } }
     #[test] fn a_late_card_gets_fixed_and_capture_never_moves() {
         assert_eq!(drift("pcmC0D0p", Some(1000), 0, 0, 0o20620), (true, true));      // appeared after the login: root-owned, mode from devtmpfs
         assert_eq!(drift("pcmC0D0p", Some(1000), 1000, 1000, 0o20600), (false, false));
         assert_eq!(drift("pcmC0D0p", None, 1000, 1000, 0o20600), (true, false));    // logout: back to root
-        for n in ["pcmC0D0c", "controlC0"] { assert_eq!(drift(n, Some(1000), 0, 0, 0o20600), (false, false), "{n}"); assert_eq!(drift(n, Some(1000), 1000, 1000, 0o20666), (true, true), "{n}"); }   // anything else is pulled back to root 0600
+        for n in ["pcmC0D0c"] { assert_eq!(drift(n, Some(1000), 0, 0, 0o20600), (false, false), "{n}"); assert_eq!(drift(n, Some(1000), 1000, 1000, 0o20666), (true, true), "{n}"); }   // anything else is pulled back to root 0600
     }
     #[test] fn busy_is_retried_for_a_while_and_other_errors_are_not() {
         let mut n = 0;
@@ -197,7 +201,9 @@ mod tests {
         assert!(retry_busy(|| -> io::Result<()> { n += 1; Err(io::Error::from_raw_os_error(libc::EBUSY)) }, Duration::from_millis(20), Duration::from_millis(5)).is_err()); assert!(n >= 2);   // gives up after `wait`
     }
     #[test] fn buffer_time_is_asked_for_only_when_wanted() {
-        assert_eq!(params(44100, 0).ivs[8].min, 0); assert_eq!(params(44100, 200_000).ivs[8].min, 200_000); assert_eq!(params(44100, 200_000).ivs[3].min, 44100);
+        assert_eq!(params(44100, 0, 0).ivs[8].min, 0); assert_eq!(params(44100, 200_000, 0).ivs[8].min, 200_000); assert_eq!(params(44100, 200_000, 0).ivs[3].min, 44100);
+        assert_eq!(params(44100, 0, 0).ivs[4].min, 0); assert_eq!(params(44100, 200_000, 20_000).ivs[4].min, 20_000);   // capture asks for a 20 ms period: never the smallest one
+        assert!(CAP_PERIOD_MS >= 10 && CAP_BUF_MS >= 4 * CAP_PERIOD_MS);
         if cfg!(target_pointer_width = "64") { assert_eq!(DELAY, 0x8008_4121); }
     }
     #[test] fn struct_matches_the_kernel_abi() { assert_eq!(std::mem::size_of::<HwParams>(), if cfg!(target_pointer_width = "64") { 608 } else { 600 }); assert_eq!(HW_PARAMS & 0xffff, 0x4111); }

@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>video</title>
+<body style="margin:0;background:rgb(10,20,200)">
+<video id=v src="/web/clip.mp4" autoplay loop playsinline style="position:absolute;left:0;top:0;width:640px;height:480px;background:#000"></video>
+<div id=m style="position:absolute;left:660px;top:0;width:100px;height:100px;background:rgb(200,30,60)"></div>
+<script>
+var v=document.getElementById('v'),m=document.getElementById('m');
+v.addEventListener('timeupdate',function(){ if(v.currentTime>0.6&&v.videoWidth==160){m.style.background='rgb(30,160,40)';document.title='video-ok-'+v.videoWidth+'x'+v.videoHeight} });
+v.addEventListener('error',function(){document.title='video-error-'+(v.error?v.error.code:'?')});
+</script>

@@ -2,7 +2,7 @@
 //! In the add-on those two names are this program. It picks the rules from its own name (thir::web::profile), locks itself in (no_new_privs, Landlock, seccomp) and then runs the
 //! real program (`<name>.real`) with the same arguments and open files. If the lock cannot be set the real program is never started.
 //! `NAME --thir-check` is the self-test behind `web --check`: it locks itself in the same way and then tries things the sandbox must stop.
-use std::{os::unix::process::CommandExt, path::{Path, PathBuf}, process::{exit, Command}};
+use std::{os::unix::{fs::OpenOptionsExt, process::CommandExt}, path::{Path, PathBuf}, process::{exit, Command}};
 use thir::{sandbox, web::{self, Proc}};
 
 fn errno_of<T>(r: std::io::Result<T>) -> Option<i32> { r.err().and_then(|e| e.raw_os_error()) }
@@ -29,6 +29,14 @@ fn probe(kind: Proc, home: &Path) -> Vec<(String, bool)> {
     let bpf = unsafe { libc::syscall(libc::SYS_bpf, 0, 0, 0) }; let e = std::io::Error::last_os_error().raw_os_error();
     v.push(("seccomp stops bpf()".into(), bpf == -1 && e == Some(libc::EPERM)));
     v.push(("/web can be read".into(), std::fs::read_dir("/web").is_ok()));
+    if kind == Proc::Web && std::path::Path::new("/dev/snd/pcmC0D0p").exists() {   // the page's sound: the playback node opens, the mixer and the microphone do not
+        let open = |p: &str| std::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NONBLOCK).open(p);
+        let e = errno_of(open("/dev/snd/pcmC0D0p")); v.push((format!("web process: the playback device opens (errno {e:?})"), e.is_none() || e == Some(libc::EBUSY)));
+        if let Ok(f) = open("/dev/snd/pcmC0D0p") { use std::os::fd::AsRawFd; let mut ver: libc::c_int = 0; let r = unsafe { libc::ioctl(f.as_raw_fd(), 0x8004_4100u32 as _, &mut ver) };   // SNDRV_PCM_IOCTL_PVERSION
+            v.push((format!("web process: ioctl on the playback device (returns {r}, version {ver:#x}, errno {})", std::io::Error::last_os_error().raw_os_error().unwrap_or(0)), r == 0)); }
+        v.push((format!("web process: the sound control opens (errno {:?})", errno_of(open("/dev/snd/controlC0"))), errno_of(open("/dev/snd/controlC0")).is_none()));
+        v.push(("web process: the microphone device is refused".into(), errno_of(open("/dev/snd/pcmC0D0c")).is_some()));
+    }
     v
 }
 

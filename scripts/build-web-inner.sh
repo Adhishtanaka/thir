@@ -3,6 +3,7 @@
 set -eu
 cd /build
 webkit() {
+  apk add -q gstreamer-dev gst-plugins-base-dev gst-plugins-bad-dev   # GStreamer headers (the image is not rebuilt for them)
   [ -f wpewebkit-$WPE_VER.tar.xz ] || curl -fLo wpewebkit-$WPE_VER.tar.xz https://wpewebkit.org/releases/wpewebkit-$WPE_VER.tar.xz
   echo "$WPE_SHA  wpewebkit-$WPE_VER.tar.xz" | sha256sum -c -
   [ -d wpewebkit-$WPE_VER ] || tar -xf wpewebkit-$WPE_VER.tar.xz
@@ -10,7 +11,7 @@ webkit() {
   grep -q "libdrm/drm_fourcc.h" wpewebkit-$WPE_VER/Source/WebKit/UIProcess/wpe/AcceleratedBackingStore.cpp || perl -pi -e 's{^(#include <wpe/wpe-platform.h>)}{$1\n#include <libdrm/drm_fourcc.h>}' wpewebkit-$WPE_VER/Source/WebKit/UIProcess/wpe/AcceleratedBackingStore.cpp
   cmake -S wpewebkit-$WPE_VER -B wk -G Ninja -DPORT=WPE -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib \
     -DUSE_LD_LLD=ON -DCMAKE_CXX_STANDARD_LIBRARIES=-lintl -DCMAKE_C_STANDARD_LIBRARIES=-lintl -DUSE_SKIA=ON -DENABLE_WPE_PLATFORM=ON -DENABLE_WPE_PLATFORM_HEADLESS=ON -DENABLE_WPE_PLATFORM_DRM=OFF -DENABLE_WPE_PLATFORM_WAYLAND=OFF \
-    -DENABLE_WPE_LEGACY_API=OFF -DUSE_GSTREAMER=OFF -DENABLE_VIDEO=OFF -DENABLE_MEDIA_RECORDER=OFF -DENABLE_WEB_CODECS=OFF -DENABLE_WEB_AUDIO=OFF -DENABLE_MEDIA_STREAM=OFF -DENABLE_WEB_RTC=OFF -DENABLE_WEBGL=OFF \
+    -DENABLE_WPE_LEGACY_API=OFF -DUSE_GSTREAMER=ON -DENABLE_VIDEO=ON -DENABLE_MEDIA_SOURCE=ON -DENABLE_MEDIA_RECORDER=OFF -DENABLE_WEB_CODECS=OFF -DENABLE_WEB_AUDIO=ON -DUSE_GSTREAMER_GL=OFF -DUSE_GSTREAMER_TRANSCODER=OFF -DUSE_GSTREAMER_WEBRTC=OFF -DENABLE_ENCRYPTED_MEDIA=OFF -DENABLE_THUNDER=OFF -DENABLE_MEDIA_STREAM=OFF -DENABLE_WEB_RTC=OFF -DENABLE_WEBGL=OFF \
     -DENABLE_BUBBLEWRAP_SANDBOX=OFF -DUSE_ATK=OFF -DENABLE_INTROSPECTION=OFF -DENABLE_DOCUMENTATION=OFF -DENABLE_WEBDRIVER=OFF \
     -DENABLE_SPEECH_SYNTHESIS=OFF -DENABLE_GAMEPAD=OFF -DENABLE_JOURNALD_LOG=OFF -DUSE_LIBBACKTRACE=OFF -DUSE_SYSPROF_CAPTURE=OFF \
     -DUSE_AVIF=OFF -DUSE_JPEGXL=OFF -DUSE_LCMS=OFF -DUSE_LIBHYPHEN=OFF -DUSE_GBM=OFF -DUSE_LIBDRM=OFF -DENABLE_WPE_QT_API=OFF \
@@ -32,9 +33,21 @@ ffmpeg() {
   make -j"$JOBS"
   make DESTDIR=/build/ff-dest install
 }
+# gst-libav (LGPL) built against OUR ffmpeg, the same version as Alpine's GStreamer. Needs the ffmpeg dev files in /usr (this container is thrown away).
+gstlibav() {
+  apk add -q gstreamer-dev gst-plugins-base-dev meson
+  V=$(pkg-config --modversion gstreamer-1.0)
+  [ -f gst-libav-$V.tar.xz ] || curl -fLo gst-libav-$V.tar.xz https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-$V.tar.xz
+  [ -d gst-libav-$V ] || tar -xf gst-libav-$V.tar.xz
+  cp -a /build/ff-dest/usr/. /usr/
+  rm -rf gl; meson setup gl gst-libav-$V --prefix=/usr --libdir=lib --buildtype=release -Ddoc=disabled -Dtests=disabled
+  ninja -C gl -j"$JOBS"
+  rm -rf gl-dest; DESTDIR=/build/gl-dest ninja -C gl install
+}
 # The browser program (web/, needs WebKit's headers and libraries in /usr) and the sandbox shim (web/shim/, static), built from the repo mounted at /work. Not stamped: cargo does its own caching.
 thirweb() {
-  export CARGO_HOME=/build/cargo-home-web CFLAGS=-D_FILE_OFFSET_BITS=32 CC_aarch64_unknown_linux_musl=gcc   # CFLAGS: Lua's C source asks for fopen64 otherwise
+  export CARGO_HOME=/build/cargo-home-web CFLAGS=-D_FILE_OFFSET_BITS=32 CC_aarch64_unknown_linux_musl=gcc CC_x86_64_unknown_linux_musl=gcc   # CFLAGS: Lua's C source asks for fopen64 otherwise
+  apk add -q gstreamer gst-plugins-base   # libWPEWebKit needs the GStreamer libraries to link against
   cp -a /build/wk-dest/usr/. /usr/   # the staged WebKit where the compiler looks (this container is thrown away)
   D=/build/thirweb-dest; rm -rf $D; mkdir -p $D/usr/bin $D/usr/libexec/wpe-webkit-2.0
   (cd /work/web && CARGO_TARGET_DIR=/build/thirweb-target cargo build --release)
@@ -49,5 +62,6 @@ cur() { [ -z "${FORCE:-}" ] && [ "$(cat "/build/.stamp-$1" 2>/dev/null)" = "$(st
 done_() { stamp "$2" "$1" > "/build/.stamp-$1"; }
 if [ "$1" = all ]; then
   if cur ffmpeg $FFMPEG_VER; then echo "ffmpeg build is current"; else (ffmpeg); done_ ffmpeg $FFMPEG_VER; fi
+  if cur gstlibav $FFMPEG_VER; then echo "gst-libav build is current"; else (gstlibav); done_ gstlibav $FFMPEG_VER; fi
   if cur webkit $WPE_VER; then echo "webkit build is current"; else (webkit); done_ webkit $WPE_VER; fi
 else "$1"; fi

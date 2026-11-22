@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# THIR_WEB=1 media test (aarch64, 1024 MB, 2 vCPUs): `play` on every format. Build the add-on image first: THIR_WEB=1 ./build.sh. Usage: test/media.sh [outdir for the PNGs]
+# media test (aarch64, 1024 MB, 2 vCPUs): `play` on every format. Build the add-on image first: ./build.sh. Usage: test/media.sh [outdir for the PNGs]
 # Fixtures (2 s clips: 160x120 colour-quadrant H.264+AAC mp4, VP9+Opus webm, GIF, and a 440 Hz tone as mp3, ogg, flac, wav) are made once in the Alpine container with the full ffmpeg.
 # Part A (serial console): `play --check` per format, the music screen and its keys, the guest audio captured by QEMU (440 Hz energy).
 # Part B (den, 1280x800): video pixels (quadrant colours), pause, seek, a video next to a text pane, the music screen, the mouse cursor; screendumps become PNGs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export THIR_WEB=1 DATA_IMG=out/aarch64/media-data.img QEMU_MEM=1024 QEMU_SMP=2 GUI_RES=1280x800
+export DATA_IMG=out/aarch64/media-data.img QEMU_MEM=1024 QEMU_SMP=2 GUI_RES=1280x800
 FX=out/aarch64/media-fixtures
 source ./env.sh
-[ -f out/aarch64/web.sqsh ] || { echo "no out/aarch64/web.sqsh: run THIR_WEB=1 ./build.sh first"; exit 1; }
+[ -f out/aarch64/web.sqsh ] || { echo "no out/aarch64/web.sqsh: run ./build.sh first"; exit 1; }
 PW='correct-horse-1'; SECRETS=("$PW"); STEP=${MEDIA_STEP_TIMEOUT:-60}
 source test/lib.sh
 OUTD=${1:-$d/png}; mkdir -p "$OUTD" "$FX"
@@ -53,7 +53,7 @@ AUDIODEV="wav,path=$PWD/out/aarch64/media-a.wav"; source ./env.sh
 mkdisk
 boot boota "${QEMU[@]}"
 wait_for '^thir: mounted /web$' 60
-wait_for 'first boot: create the first user'
+wait_for 'enter +create your account'; send ''; wait_for 'first boot: create the first user'
 wait_for 'username: '; send alice; wait_for 'password: '; send "$PW"; wait_for 'repeat password: '; send "$PW"
 wait_for 'utc offset'; send '+05:30'; wait_for 'user alice created'
 ai_offline; wait_for '\$ $'
@@ -114,6 +114,7 @@ RED=ff0000; GREEN=00ff00; BLUE=0000ff; YELLOW=ffff00; ACCENT=f0b27f
 
 wait_log '^thir: mounted /web$' 60; wait_log "den: ${W}x${H} 32bpp$" 30; wait_log '^thir: init ready$' 10
 sleep 4
+keys ret; sleep 2   # the welcome page: Enter goes on to the account
 type_str alice; keys ret; sleep 1; type_str $PW; keys ret; sleep 1; type_str $PW; keys ret; sleep 1
 keys shift-equal 0 5 shift-semicolon 3 0 ret; sleep 3
 sleep 2; keys 0 ret; sleep 3

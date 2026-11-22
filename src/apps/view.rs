@@ -1,4 +1,4 @@
-//! view: an image viewer for a den pane. ffmpeg (from the web add-on, run in a sandbox) decodes the picture to BGRA; view fits, zooms and pans it and steps through a folder.
+//! view: an image viewer for a den pane. ffmpeg (from the browser and media apps, run in a sandbox) decodes the picture to BGRA; view fits, zooms and pans it and steps through a folder.
 //! An animated GIF or WebP shows its first frame here; `play FILE` plays it.
 //! Keys: n/p next and previous, s slideshow (5 s), r rotate, f fit, 1 actual size, + - or the wheel zoom, arrows or a drag pan, q quit.
 use crate::{gui::{draw::{fill, hint_cols, hints, text}, font::Font, layout::Rect, surface::{Client, Down}, theme::*}, sandbox};
@@ -65,6 +65,16 @@ pub fn decode(file: &Path, rot: u8) -> Result<Img, String> {
     Ok(Img { w: ow, h: oh, px: o.stdout.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect() })
 }
 
+/// The ffmpeg -vf chain that fills a w x h screen with a picture ("cover": scaled up to cover it, the overflow cropped in the middle).
+pub fn cover_filter(w: usize, h: usize) -> String { format!("scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}") }
+/// A picture as raw BGRA bytes exactly w*h*4 long, covering a w x h screen. Same sandbox as `decode`: reads only that file, writes nothing, no network.
+pub fn wallpaper(file: &Path, w: usize, h: usize) -> Result<Vec<u8>, String> {
+    let vf = cover_filter(w, h);
+    let o = ffmpeg(file, &["-loglevel", "error", "-frames:v", "1", "-vf", &vf, "-pix_fmt", "bgra", "-f", "rawvideo", "pipe:1"])?;
+    if !o.status.success() || o.stdout.len() != w * h * 4 { return Err("not a picture ffmpeg can read".into()) }
+    Ok(o.stdout)
+}
+
 /// Zoom and position. `zoom` None = fit the window; (cx, cy) = the picture point at the middle of the window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cam { pub zoom: Option<f32>, pub cx: f32, pub cy: f32 }
@@ -88,24 +98,24 @@ impl Cam {
     }
 }
 
-/// Paints the picture into the top `ah` rows of `px` (`w` per row) at scale `s` around (cx, cy); the rest of the area is PANEL. Shrinking averages up to 4x4 samples per pixel.
+/// Paints the picture into the top `ah` rows of `px` (`w` per row) at scale `s` around (cx, cy); the rest of the area is panel(). Shrinking averages up to 4x4 samples per pixel.
 pub fn draw_image(px: &mut [u32], w: usize, ah: usize, img: &Img, s: f32, cx: f32, cy: f32) {
     let n = if s < 1.0 { (1.0 / s).ceil().min(4.0) as usize } else { 1 };
     let (lx, ly) = (w as f32 / 2.0 - cx * s, ah as f32 / 2.0 - cy * s);
     let (rx, ry) = (lx + img.w as f32 * s, ly + img.h as f32 * s);
     for dy in 0..ah {
         let row = &mut px[dy * w..(dy + 1) * w];
-        if (dy as f32) < ly - 1.0 || dy as f32 > ry + 1.0 { row.fill(PANEL); continue }
+        if (dy as f32) < ly - 1.0 || dy as f32 > ry + 1.0 { row.fill(panel()); continue }
         for (dx, out) in row.iter_mut().enumerate() {
-            if (dx as f32) < lx - 1.0 || dx as f32 > rx + 1.0 { *out = PANEL; continue }
+            if (dx as f32) < lx - 1.0 || dx as f32 > rx + 1.0 { *out = panel(); continue }
             let mut sum = [0u32; 3];
             for j in 0..n { for i in 0..n {
                 let sx = cx + (dx as f32 + (i as f32 + 0.5) / n as f32 - w as f32 / 2.0) / s;
                 let sy = cy + (dy as f32 + (j as f32 + 0.5) / n as f32 - ah as f32 / 2.0) / s;
                 let c = if sx >= 0.0 && sy >= 0.0 && (sx as usize) < img.w && (sy as usize) < img.h {
                     let p = img.px[sy as usize * img.w + sx as usize];
-                    if p >> 24 == 255 { p } else { crate::gui::wall::blend(p & 0xFF_FFFF, PANEL, p >> 24) }   // transparent parts show the pane colour
-                } else { PANEL };
+                    if p >> 24 == 255 { p } else { crate::gui::wall::blend(p & 0xFF_FFFF, panel(), p >> 24) }   // transparent parts show the pane colour
+                } else { panel() };
                 sum[0] += c >> 16 & 255; sum[1] += c >> 8 & 255; sum[2] += c & 255;
             } }
             let d = (n * n) as u32;
@@ -147,9 +157,9 @@ impl View {
         if px.len() < w * h { return }
         match &self.img {
             Some(i) => { self.cam.clamp(i.w, i.h, w, ah); let s = self.cam.scale(i.w, i.h, w, ah); draw_image(px, w, ah, i, s, self.cam.cx, self.cam.cy); }
-            None => fill(px, w, Rect { x: 0, y: 0, w: w as i32, h: ah as i32 }, PANEL),
+            None => fill(px, w, Rect { x: 0, y: 0, w: w as i32, h: ah as i32 }, panel()),
         }
-        fill(px, w, Rect { x: 0, y: ah as i32, w: w as i32, h: bar as i32 }, PANEL);
+        fill(px, w, Rect { x: 0, y: ah as i32, w: w as i32, h: bar as i32 }, panel());
         fill(px, w, Rect { x: 0, y: ah as i32, w: w as i32, h: 1 }, BORDER_DIM);
         let (info, bad) = match (&self.img, busy) {
             (_, true) => ("\u{25d0} loading picture".to_string(), false),
@@ -162,7 +172,7 @@ impl View {
         x += text(px, w, font, x, y, &self.name().chars().take(room / 3).collect::<String>(), FG) + 2 * font.w as i32;
         x += text(px, w, font, x, y, &format!("{}/{}", self.idx + 1, self.files.len()), DIM) + 2 * font.w as i32;
         let rest: String = format!("{info}{}", if self.slide.is_some() { "  slideshow" } else { "" }).chars().take(room.saturating_sub(x as usize / font.w + 2)).collect();
-        let lw = x as usize + text(px, w, font, x, y, &rest, if bad { ERR } else if busy { ACCENT } else { DIM }) as usize;
+        let lw = x as usize + text(px, w, font, x, y, &rest, if bad { ERR } else if busy { accent() } else { DIM }) as usize;
         let help = [("n/p", "next"), ("s", "slide"), ("r", "rotate"), ("f", "fit"), ("1", "1:1"), ("q", "quit")];
         let hw = hint_cols(&help) * font.w;
         if lw + hw + 6 * font.w < w { hints(px, w, font, (w - hw - font.w) as i32, y, &help); }
@@ -203,7 +213,7 @@ pub fn run(args: &[String]) -> i32 {
     let [arg] = args else { eprintln!("usage: view FILE|DIR"); return 2 };
     let (files, idx) = list(Path::new(arg));
     if files.is_empty() { eprintln!("view: no pictures in {arg}"); return 1 }
-    if !Path::new(FFMPEG).exists() { eprintln!("view needs the web add-on"); return 1 }
+    if !Path::new(FFMPEG).exists() { eprintln!("view is not in this small thir (no media apps)"); return 1 }
     let mut c = match Client::connect() {
         Ok(c) => c,
         Err(e) => { eprintln!("view needs the desktop: run it in a den pane ({e})"); return 1 }
@@ -259,6 +269,7 @@ pub fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn cover_chain() { assert_eq!(cover_filter(1280, 800), "scale=1280:800:force_original_aspect_ratio=increase,crop=1280:800"); }
     #[test] fn dims_from_ffmpeg_text() {
         assert_eq!(parse_dims("Input #0, png_pipe\n  Stream #0:0: Video: png, rgba(pc), 400x300, 25 fps"), Some((400, 300)));
         assert_eq!(parse_dims("Stream #0:0[0x1]: Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 25 fps"), Some((1920, 1080)));
@@ -302,14 +313,14 @@ mod tests {
         let img = Img { w: 4, h: 2, px: vec![0xFFFF0000, 0xFF00FF00, 0xFF0000FF, 0xFFFFFF00, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF] };
         let mut px = vec![0u32; 8 * 4];   // 8x4 window, picture centred at 1:1: it covers x 2..6, y 1..3
         draw_image(&mut px, 8, 4, &img, 1.0, 2.0, 1.0);
-        assert_eq!((px[8 + 2], px[8 + 3], px[8 + 5], px[2 * 8 + 4]), (0xFF0000, 0x00FF00, 0xFFFF00, 0xFFFFFF)); assert_eq!((px[0], px[8 + 1], px[8 + 6]), (PANEL, PANEL, PANEL));
+        assert_eq!((px[8 + 2], px[8 + 3], px[8 + 5], px[2 * 8 + 4]), (0xFF0000, 0x00FF00, 0xFFFF00, 0xFFFFFF)); assert_eq!((px[0], px[8 + 1], px[8 + 6]), (panel(), panel(), panel()));
         let mut px = vec![0u32; 2 * 1];   // all 4x2 shrunk into one 2x1 window: each pixel averages a 2x2 block of picture
         draw_image(&mut px, 2, 1, &img, 0.5, 2.0, 1.0);
         assert_eq!(px[0], (255 / 4) << 16 | (255 / 4) << 8 | 0);   // (red + green + black + black) / 4 per channel
     }
     #[test] fn alpha_shows_the_pane_colour() {
         let img = Img { w: 1, h: 1, px: vec![0x00FFFFFF] };   // fully transparent white
-        let mut px = vec![0u32; 1]; draw_image(&mut px, 1, 1, &img, 1.0, 0.5, 0.5); assert_eq!(px[0], PANEL);
+        let mut px = vec![0u32; 1]; draw_image(&mut px, 1, 1, &img, 1.0, 0.5, 0.5); assert_eq!(px[0], panel());
     }
     #[test] fn keys() {
         assert_eq!(command(16), Some(Cmd::Quit)); assert_eq!(command(49), Some(Cmd::Next)); assert_eq!(command(25), Some(Cmd::Prev)); assert_eq!(command(19), Some(Cmd::Rotate));

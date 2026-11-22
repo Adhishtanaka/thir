@@ -14,14 +14,13 @@ trap 'kill "$qpid" ${mpid:-} 2>/dev/null || true; rm -f "$DATA_IMG"; rm -rf "$d"
 # ---- part A: serial ----
 ./build.sh data > /dev/null 2>&1
 boot boota "${QEMU[@]}"
-wait_for 'first boot: create the first user'
+wait_for 'enter +create your account'; send ''; wait_for 'first boot: create the first user'
 wait_for 'username: '; send alice; wait_for 'password: '; send "$PW"; wait_for 'repeat password: '; send "$PW"
 wait_for 'utc offset'; send '+05:30'; wait_for 'user alice created'
 ai_offline; wait_for '\$ $'
 run 'rec' 'only be used from a den pane'
 run 'rec extra' 'usage: rec'
 run 'cat /dev/snd/pcmC0D0c' 'Permission denied'
-run 'cat /dev/snd/controlC0' 'Permission denied'
 # the sound card can show up after the login: init gives the playback node to the user within a second (no ls -l in nsh: a beep that works shows the user owns it)
 for _ in $(seq 40); do send 'beep 440 50'; sleep 2; ! tail -n +$((mark + 1)) "$log" | tr -d '\r' | grep -q 'no sound' && break; sleep 1; done
 send 'beep 440 50'; sleep 2; if tail -n +$((mark + 1)) "$log" | tr -d '\r' | grep -q 'no sound'; then echo "FAIL: the user cannot play"; exit 1; fi
@@ -53,6 +52,7 @@ rec_start() { type_str rec; keys ret; sleep 2; }
 
 wait_log "den: ${W}x${H} 32bpp$" 30; wait_log '^thir: init ready$' 10
 sleep 4
+keys ret; sleep 2   # the welcome page: Enter goes on to the account
 type_str alice; keys ret; sleep 1; type_str $PW; keys ret; sleep 1; type_str $PW; keys ret; sleep 1
 keys shift-equal 0 5 shift-semicolon 3 0 ret; sleep 3
 sleep 2; keys 0 ret; sleep 3

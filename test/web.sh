@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# The browser (aarch64, THIR_WEB=1 image, 1280x800, -m 1024 -smp 2). Build first: THIR_WEB=1 ./build.sh. Usage: test/web.sh [outdir for the PNGs]
+# The browser (aarch64, image, 1280x800, -m 1024 -smp 2). Build first: ./build.sh. Usage: test/web.sh [outdir for the PNGs]
 # Part A (serial, no den): `web --dump-title` prints the title JavaScript computed; an HTTPS page signed by an untrusted CA fails; `web --check` (sandbox); only http(s) URLs open.
 # Part B (den, QMP tablet + sendkey + screendump): JS colours the page (exact pixels); a click; typing into an autofocus input; the wheel; the download prompt and the saved files (0600, never
 # overwritten); a TLS error; a page next to a text pane; quit. The mock server (test/mock.py) serves the pages in test/web/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export THIR_WEB=1 DATA_IMG=out/aarch64/web-data.img QEMU_MEM=1024 QEMU_SMP=2 GUI_RES=1280x800
-source ./env.sh
-[ -f out/aarch64/web.sqsh ] || { echo "no out/aarch64/web.sqsh: run THIR_WEB=1 ./build.sh first"; exit 1; }
+export DATA_IMG=out/aarch64/web-data.img QEMU_MEM=1024 QEMU_SMP=2 GUI_RES=1280x800
+AUDIO_WAV=$PWD/out/aarch64/web-a.wav; AUDIODEV="wav,path=$AUDIO_WAV"; source ./env.sh
+[ -f out/aarch64/web.sqsh ] || { echo "no out/aarch64/web.sqsh: run ./build.sh first"; exit 1; }
 PW='correct-horse-1'; SECRETS=("$PW"); STEP=${WEB_STEP_TIMEOUT:-150}
 source test/lib.sh
 OUTD=${1:-$d/png}; mkdir -p "$OUTD"
@@ -19,7 +19,7 @@ BASE=http://10.0.2.2:18080/web
 # ---- part A: serial ----
 ./build.sh data > /dev/null 2>&1
 boot boota "${QEMU[@]}"
-wait_for 'first boot: create the first user'
+wait_for 'enter +create your account'; send ''; wait_for 'first boot: create the first user'
 wait_for 'username: '; send alice; wait_for 'password: '; send "$PW"; wait_for 'repeat password: '; send "$PW"
 wait_for 'utc offset'; send '+05:30'; wait_for 'user alice created'
 ai_offline; wait_for '\$ $'
@@ -41,14 +41,14 @@ echo "ok: an HTTPS page signed by an unknown CA fails (no 'proceed anyway')"
 run "web --dump-title $BASE/tz.html" '^tz:-330:Asia/(Kolkata|Calcutta):17:30:00 GMT\+0530$' 150
 echo "ok: JavaScript dates follow ~/.tz (+05:30): getTimezoneOffset -330, Date.toString GMT+0530"
 # the AI is the mock (turned on in settings once the network is up): it picks the browser and media commands of prompts/route.txt; nothing in a page or a file goes to it
-send settings; wait_for 'setting +value'; sendk $'\e[B\e[B\e[B\e[B\e[B'; sendk $'\r'; wait_for 'choice \[0\]: '
+send settings; wait_for 'setting +value'; sendk $'\e[B\e[B\e[B\e[B\e[B\e[B\e[B'; sendk $'\r'; wait_for 'choice \[0\]: '
 send 6; wait_for 'name \[mine\]: '; send mock; wait_for 'protocol'; send anthropic; wait_for 'URL: '; send 'http://10.0.2.2:18080/anthropic/v1'
 wait_for 'model \[claude-opus-5-5\]: '; send ''; wait_for 'mock answered'; wait_for 'agent will use mock'; sendk q; wait_for '\$ $'
-send '! open wikipedia sri lanka'; wait_for '→ web https://en\.wikipedia\.org/wiki/Sri_Lanka +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; wait_for '\$ $'
-send '! play my music'; wait_for '→ play ~/Music +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; wait_for '\$ $'
-send '! show my photos'; wait_for '→ view ~/Pictures +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; wait_for '\$ $'
-send '! record a voice note'; wait_for '! this turns on the microphone'; wait_for '→ rec +run\? +\[y\] run'; send ''; wait_for 'nothing done'; wait_for '\$ $'
-send '! open the file etc passwd in the browser'; wait_for '→ web file:///etc/passwd +run\? +\[y\] run \(default\)'; send y; wait_for 'web: only http and https addresses'; wait_for '\$ $'
+send '! open wikipedia sri lanka'; wait_for '→ web https://en\.wikipedia\.org/wiki/Sri_Lanka +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; bye
+send '! play my music'; wait_for '→ play ~/Music +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; bye
+send '! show my photos'; wait_for '→ view ~/Pictures +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; bye
+send '! record a voice note'; wait_for '! this turns on the microphone'; wait_for '→ rec +run\? +\[y\] run'; send ''; wait_for 'nothing done'; bye
+send '! open the file etc passwd in the browser'; wait_for '→ web file:///etc/passwd +run\? +\[y\] run \(default\)'; send y; wait_for 'web: only http and https addresses'; bye
 echo "ok: the AI proposes web/play/view/rec; rec asks with default no; an AI web file:// address is refused by web"
 off
 rm -f "$DATA_IMG"
@@ -76,6 +76,7 @@ click() { move "$1" "$2"
 wheel() { local i; for ((i = 0; i < $1; i++)); do
   qmp '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":true,"button":"wheel-down"}},{"type":"btn","data":{"down":false,"button":"wheel-down"}}]}}'; sleep 0.1; done; }
 share() { magick "$tmp/$1.ppm" -crop "$2" +repage -fuzz 8% -fill black +opaque "$3" -fill white -opaque "$3" -format '%[fx:mean]' info:; }
+share1() { magick "$tmp/$1.ppm" -crop "$2" +repage -fuzz 1% -fill black +opaque "$3" -fill white -opaque "$3" -format '%[fx:mean]' info:; }   # like share, but only that colour
 STRIP=1254x41+13+49; STRIP2=1254x16+13+70; YELLOW='#ecc87c'; RED='#f2808b'
 goto() { keys ctrl-l ctrl-u; type_str "$1"; keys ret; }   # the address line: Ctrl-L, clear, type, Enter
 # the page starts under the strip: pane inside (13,49) 1254x738, strip 41 rows (tabs, then address), hint row 24 rows at the bottom, so page (x,y) is screen (13+x, 90+y)
@@ -86,6 +87,7 @@ den_login() {
   wait_log "den: ${W}x${H} 32bpp$" 30
   wait_log 'thir: init ready' 10
   sleep 4
+  keys ret; sleep 2   # the welcome page: Enter goes on to the account
   type_str alice; keys ret; sleep 1; type_str $PW; keys ret; sleep 1; type_str $PW; keys ret; sleep 1
   keys shift-equal 0 5 shift-semicolon 3 0 ret; sleep 3
   sleep 2; keys 0 ret; sleep 3
@@ -222,6 +224,87 @@ echo "ok: the upload picker listed ~/Downloads and the page got the file"
 
 # 6k. fonts: Hindi, Arabic, Hebrew, Thai, CJK, Sinhala and Tamil text (the picture is looked at, there is no pixel check for letters)
 goto "10.0.2.2:18080/web/lang.html"; sleep 10; shot l0; cp "$tmp/l0.ppm" "$tmp/web-lang.ppm"
+# 6l. the text caret in an input field blinks: dark pixels at the left of the empty input show up in some shots and not in others
+goto "10.0.2.2:18080/web/input.html"; until_px k0 900 500 $BTN_BG 60
+dark() { magick "$tmp/$1.ppm" -crop 12x24+15+98 +repage -colorspace Gray -threshold 25% -negate -format '%[fx:mean]' info:; }   # share of dark pixels in the caret column
+on=0; off=0; for i in $(seq 14); do sleep 0.$((RANDOM % 9)); shot k1; d=$(dark k1); [ "$(echo "$d > 0.04" | bc -l)" = 1 ] && { on=$((on + 1)); [ -f "$tmp/caret-on.ppm" ] || cp "$tmp/k1.ppm" "$tmp/caret-on.ppm"; }; [ "$(echo "$d < 0.005" | bc -l)" = 1 ] && off=$((off + 1)); done
+[ "$on" -ge 1 ] && [ "$off" -ge 1 ] || { cp "$tmp/k1.ppm" "$OUTD/fail-caret.ppm"; fail "the caret does not blink in the input (on $on, off $off of 14 shots)"; }
+cp "$tmp/caret-on.ppm" "$tmp/web-caret.ppm" 2> /dev/null || true
+echo "ok: the text caret is drawn and blinks in a page input (on in $on shots, off in $off)"
+
+# 6m. the address line: Ctrl-A selects all (accent fill), typing replaces it; Ctrl-C copies, Ctrl-X cuts, Ctrl-V pastes (also into a new tab)
+goto "10.0.2.2:18080/web/btn.html"; until_px y0 900 500 $BTN_BG 60
+keys ctrl-l; sleep 1; shot y1; b1=$(share y1 $STRIP2 '#f0b27f'); keys ctrl-a; sleep 1; shot y2; b2=$(share y2 $STRIP2 '#f0b27f')
+[ "$(echo "$b2 > $b1 * 4 && $b2 > 0.03" | bc -l)" = 1 ] || { cp "$tmp/y2.ppm" "$OUTD/fail-y2.ppm"; fail "Ctrl-A does not show a selection in the address line ($b1 -> $b2)"; }
+cp "$tmp/y2.ppm" "$tmp/web-addr-select.ppm"
+keys ctrl-c; sleep 1; type_str "10.0.2.2:18080/web/js.html"; keys ret; until_px y3 900 500 $JS 60
+echo "ok: Ctrl-A selected the whole address (strip drew the selection) and typing replaced it"
+keys ctrl-t; sleep 1; keys ctrl-v; sleep 1; keys ret; until_px y4 900 500 $BTN_BG 60
+echo "ok: Ctrl-C in the address line and Ctrl-V in another tab's address line: the pasted address opened the page"
+keys ctrl-w; until_px y5 900 500 $JS 30
+keys ctrl-l; keys ctrl-a ctrl-x; sleep 1; shot y6; [ "$(echo "$(share y6 $STRIP2 '#d4dcec') < 0.005" | bc -l)" = 1 ] || fail "Ctrl-X did not clear the address line"
+keys ctrl-v; sleep 1; shot y7; [ "$(echo "$(share y7 $STRIP2 '#d4dcec') > 0.01" | bc -l)" = 1 ] || fail "Ctrl-V did not paste back what Ctrl-X cut"; keys esc
+echo "ok: Ctrl-X cut the address and Ctrl-V pasted it back"
+
+# 6n. copy and paste in a page form: field one holds "hello world"; Ctrl-A, Ctrl-C there, Tab to field two, Ctrl-V: the page turns green when field two reads "hello world"
+goto "10.0.2.2:18080/web/form.html"; until_px r0 900 500 $BTN_BG 60
+sleep 1; keys ctrl-a ctrl-c; sleep 1; keys tab; sleep 1; keys ctrl-v; until_px r1 900 500 $IN_ON 30
+cp "$tmp/r1.ppm" "$tmp/web-form.ppm"
+echo "ok: Ctrl-A, Ctrl-C and Ctrl-V in a page form (copy in one field, paste in the next)"
+keys ctrl-l; keys ctrl-u; keys ctrl-v; sleep 1; shot r2; [ "$(echo "$(share r2 $STRIP2 '#d4dcec') > 0.004" | bc -l)" = 1 ] || fail "the text copied in the page did not reach the address line"; keys esc
+echo "ok: the clipboard is shared: text copied in the page pastes into the address line"
+
+# 6o. <select>: the page's drop-down is shown by the browser (a list over the page); down, down, Enter picks Plum (the page turns green); a click on an item does the same
+goto "10.0.2.2:18080/web/select.html"; until_px q1 900 500 $BTN_BG 60
+click 133 130; sleep 2; shot q2; cp "$tmp/q2.ppm" "$tmp/web-select.ppm"
+[ "$(echo "$(share q2 $STRIP2 $YELLOW) > 0.008" | bc -l)" = 1 ] || { cp "$tmp/q2.ppm" "$OUTD/fail-q2.ppm"; fail "no <select> popup (the strip does not say 'choose')"; }
+keys down down ret; until_px q3 900 500 $IN_ON 30
+goto "10.0.2.2:18080/web/select.html"; until_px q4 900 500 $BTN_BG 60
+click 133 130; sleep 2; shot q5; click 133 205; until_px q6 900 500 $IN_ON 30
+echo "ok: <select> popup: keys and a mouse click choose the option"
+
+# 6p. downloads: a slow 1.5 MB file (the server allows Range): progress in Ctrl-J's list, pause, resume, done, and the bytes are right
+goto "10.0.2.2:18080/dl/slow.bin"
+for _ in $(seq 40); do shot w0; [ "$(echo "$(share w0 $STRIP2 $YELLOW) > 0.008" | bc -l)" = 1 ] && break; sleep 1; done
+keys y; sleep 1; keys ctrl-j; sleep 3; shot w1; cp "$tmp/w1.ppm" "$tmp/web-downloads.ppm"
+DLBODY=1254x120+13+95; acc() { share "$1" $DLBODY '#f0b27f'; }
+a1=$(acc w1); sleep 4; shot w2; a2=$(acc w2); [ "$(echo "$a2 > $a1" | bc -l)" = 1 ] || { cp "$tmp/w2.ppm" "$OUTD/fail-w2.ppm"; fail "the download bar does not grow ($a1 -> $a2)"; }
+keys p; sleep 3; shot w3; a3=$(acc w3); sleep 4; shot w4; a4=$(acc w4); [ "$a3" = "$a4" ] || fail "the download kept growing after pause ($a3 -> $a4)"
+[ "$(echo "$(share w4 $DLBODY '#ecc87c') > 0.0005" | bc -l)" = 1 ] || { cp "$tmp/w4.ppm" "$OUTD/fail-w4.ppm"; fail "no 'paused' (warn colour) in the downloads list"; }
+cp "$tmp/w4.ppm" "$tmp/web-downloads-paused.ppm"
+keys p; for _ in $(seq 60); do shot w5; [ "$(echo "$(share w5 $DLBODY '#9fd08a') > 0.01" | bc -l)" = 1 ] && break; sleep 2; done
+[ "$(echo "$(share w5 $DLBODY '#9fd08a') > 0.01" | bc -l)" = 1 ] || { cp "$tmp/w5.ppm" "$OUTD/fail-w5.ppm"; fail "the resumed download did not finish (no green bar)"; }
+cp "$tmp/w5.ppm" "$tmp/web-downloads-done.ppm"; keys esc; sleep 1
+echo "ok: downloads view: progress grew, pause stopped it, resume finished it"
+
+# 6q. history: Ctrl-H lists the pages visited (SEL row), typing filters (none for zzz), Enter opens the page
+keys ctrl-h; sleep 2; shot x1; cp "$tmp/x1.ppm" "$tmp/web-history.ppm"
+[ "$(echo "$(share1 x1 $DLBODY '#15294a') > 0.02" | bc -l)" = 1 ] || { cp "$tmp/x1.ppm" "$OUTD/fail-x1.ppm"; fail "the history list shows no row"; }
+type_str zzz; sleep 1; shot x2; [ "$(echo "$(share1 x2 $DLBODY '#15294a') < 0.001" | bc -l)" = 1 ] || fail "the history search does not filter"
+keys ctrl-u; type_str btn; sleep 1; keys ret; until_px x3 900 500 $BTN_BG 60
+echo "ok: history: listed, searched, opened with Enter"
+
+wavcheck() { python3 - "$1" "$2" <<'PY'
+import sys, array, math
+raw = open(sys.argv[1], 'rb').read(); rate = int.from_bytes(raw[24:28], 'little'); a = array.array('h', raw[44:44 + (len(raw) - 44) // 4 * 4])[0::2]
+n = rate // 2; good = 0
+for i in range(0, len(a) - n, n):
+    w = a[i:i + n]; e = sum(x * x for x in w) / n
+    if e < 1e4: continue
+    c = sum(x * math.cos(2 * math.pi * 440 * k / rate) for k, x in enumerate(w)); s = sum(x * math.sin(2 * math.pi * 440 * k / rate) for k, x in enumerate(w))
+    if 2 * (c * c + s * s) / (n * n) / e > 0.9: good += 1
+print(f"audio: {len(a) / rate:.1f} s at {rate} Hz, {good} windows of 440 Hz"); sys.exit(0 if good >= int(sys.argv[2]) else 1)
+PY
+}
+
+# 6r. HTML5 video: an mp4 (H.264 + AAC, GStreamer and gst-libav) plays in the page: the marker turns green and the quadrants show; the sound is captured by QEMU
+goto "10.0.2.2:18080/web/video.html"; until_px vv0 700 130 $IN_ON 150
+[ "$(magick "$tmp/vv0.ppm" -format '%[fx:p{150,200}.r*255>200&&p{150,200}.g*255<80?1:0]' info:)" = 1 ] || { cp "$tmp/vv0.ppm" "$OUTD/fail-vv0.ppm"; fail "the video's red quadrant is not on screen"; }
+sleep 4; shot vv1; cp "$tmp/vv1.ppm" "$tmp/web-video.ppm"
+echo "ok: an HTML5 video decoded and played in the page (currentTime advanced, 160x120 H.264, quadrants on screen)"
+cp "$AUDIO_WAV" "$tmp/a.wav"; wavcheck "$tmp/a.wav" 2 || { cp "$tmp/a.wav" "$OUTD/fail-video.wav"; fail "no 440 Hz tone from the video in QEMU's audio capture"; }
+echo "ok: the video's sound (440 Hz AAC) reached the sound card"
+
 # 7. a page next to a text pane
 goto "10.0.2.2:18080/web/js.html"; until_px p0 300 400 $JS 60
 keys alt-ret; sleep 5; type_str top; keys ret; sleep 2
@@ -229,7 +312,7 @@ until_px p1 300 400 $JS 60
 click 900 400; keys m; sleep 3; shot p2; cp "$tmp/p2.ppm" "$tmp/web-split.ppm"
 echo "ok: the page re-rendered at the new size next to a text pane"
 click 300 400; goto "10.0.2.2:18080/web/big.html"; sleep 25; click 900 400; keys m; sleep 3; shot p3; click 300 400; cp "$tmp/p3.ppm" "$tmp/web-top-big.ppm"
-for n in web-strip-edit web-js web-download web-tls web-split web-top-big web-tabs web-alert web-find web-upload web-lang; do magick "$tmp/$n.ppm" "$OUTD/$n.png"; done
+for n in web-strip-edit web-js web-download web-tls web-split web-top-big web-tabs web-alert web-find web-upload web-lang web-addr-select web-form web-select web-downloads web-downloads-paused web-downloads-done web-history web-video web-caret; do [ -f "$tmp/$n.ppm" ] || continue; magick "$tmp/$n.ppm" "$OUTD/$n.png"; done
 magick "$tmp/web-download.ppm" -crop 1254x41+13+49 +repage -filter point -resize 150% "$OUTD/web-download-strip.png"
 for n in web-tabs web-alert web-upload; do magick "$tmp/$n.ppm" -crop 1254x41+13+49 +repage -filter point -resize 150% "$OUTD/$n-strip.png"; done
 
@@ -244,10 +327,15 @@ if tr -d '\r' < "$log" | grep -q 'surface refused\|surface dropped'; then fail "
 docker run --rm -v "$PWD":/work -v "$tmp":/o thir-build sh -c "
   debugfs -R 'ls -p /home/alice/Downloads' /work/$DATA_IMG 2>/dev/null | cut -d/ -f6 | grep -v '^[.]*\$' > /o/dl-names
   debugfs -R 'ls -p /home/alice/Downloads' /work/$DATA_IMG 2>/dev/null | awk -F/ '\$6 ~ /^thir_test/ { print \$6 \" \" \$3 \" \" \$7 }' > /o/dl-stat
+  debugfs -R 'dump /home/alice/Downloads/slow.bin /o/slow.bin' /work/$DATA_IMG 2>/dev/null
   for d in Downloads .local/share/thir-web .cache/thir-web; do echo \"\$d \$(debugfs -R \"stat /home/alice/\$d\" /work/$DATA_IMG 2>/dev/null | grep -m1 -o 'Mode: *[0-7]*' | tr -d ' ')\"; done > /o/dirs"
-[ "$(sort "$tmp/dl-names" | tr '\n' ',')" = "thir_test (1).bin,thir_test.bin," ] || fail "files in ~/Downloads: $(cat "$tmp/dl-names")"
+[ "$(sort "$tmp/dl-names" | tr '\n' ',')" = "slow.bin,thir_test (1).bin,thir_test.bin," ] || fail "files in ~/Downloads: $(cat "$tmp/dl-names")"
 [ "$(grep -c ' 100600 3072$' "$tmp/dl-stat")" = 2 ] || fail "downloads are not 0600 3072 bytes: $(cat "$tmp/dl-stat")"
 [ "$(grep -c 'Mode:0700' "$tmp/dirs")" = 3 ] || fail "browser folders are not 0700: $(cat "$tmp/dirs")"
+python3 - "$tmp/slow.bin" <<'PY' || fail "the paused and resumed download is not the bytes the server sent"
+import sys; d = open(sys.argv[1], 'rb').read(); sys.exit(0 if d == bytes((i * 7 + i // 251) % 256 for i in range(1500000)) else 1)
+PY
+echo "ok: the paused and resumed 1.5 MB download is byte for byte what the server sent"
 echo "ok: files: two downloads 0600, the second not overwriting the first; ~/Downloads and the profile folders 0700"
 
 # ---- part C: scale 2 (a 2560x1664 screen, like test/gui.sh): the page renders at device scale 2 and the pointer lands where it should ----

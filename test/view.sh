@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# THIR_WEB=1 GUI test (aarch64, 1280x800): the surface protocol, the mouse and `view`. Boots the web image headless, types into den with the QEMU monitor, moves and clicks the
-# virtio-tablet with QMP input-send-event, and checks pixels of screendumps. Build the add-on image first: THIR_WEB=1 ./build.sh. Usage: test/view.sh [outdir for the PNGs]
+# GUI test (aarch64, 1280x800): the surface protocol, the mouse and `view`. Boots the image headless, types into den with the QEMU monitor, moves and clicks the
+# virtio-tablet with QMP input-send-event, and checks pixels of screendumps. Build the add-on image first: ./build.sh. Usage: test/view.sh [outdir for the PNGs]
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export THIR_WEB=1 DATA_IMG=out/aarch64/view-data.img QEMU_MEM=1024 QEMU_SMP=2 GUI_RES=1280x800; source ./env.sh
-[ -f out/aarch64/web.sqsh ] || { echo "no out/aarch64/web.sqsh: run THIR_WEB=1 ./build.sh first"; exit 1; }
+export DATA_IMG=out/aarch64/view-data.img QEMU_MEM=1024 QEMU_SMP=2 GUI_RES=1280x800; source ./env.sh
+[ -f out/aarch64/web.sqsh ] || { echo "no out/aarch64/web.sqsh: run ./build.sh first"; exit 1; }
 W=1280; H=800
 tmp=$(mktemp -d -t thir-view); log=$tmp/serial.log; sock=$tmp/mon.sock; qsock=$tmp/qmp.sock; OUTD=${1:-$tmp/png}; mkdir -p "$OUTD"
 trap 'kill "${qpid:-}" 2>/dev/null || true; rm -f "$DATA_IMG"; rm -rf "$tmp"' EXIT
@@ -39,6 +39,7 @@ wait_log '^thir: mounted /web$' 60
 wait_log "den: ${W}x${H} 32bpp$" 30
 wait_log '^thir: init ready$' 10
 sleep 4
+keys ret; sleep 2   # the welcome page: Enter goes on to the account
 type_str $USER_NAME; keys ret; sleep 1; type_str $PW; keys ret; sleep 1; type_str $PW; keys ret; sleep 1
 keys shift-equal 0 5 shift-semicolon 3 0 ret; sleep 3
 sleep 2; keys 0 ret; sleep 3

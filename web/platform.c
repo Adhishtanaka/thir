@@ -3,6 +3,7 @@
 #include "platform.h"
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
+#include <libsoup/soup.h>
 #include <xkbcommon/xkbcommon.h>
 #include <glib-unix.h>
 #include <string.h>
@@ -50,7 +51,8 @@ static void thir_display_init(ThirDisplay *d) {}
 static gboolean d_connect(WPEDisplay *d, GError **e) { return TRUE; }
 static WPEView *d_create_view(WPEDisplay *d) { return g_object_new(thir_view_get_type(), "display", d, NULL); }
 static WPEToplevel *d_create_toplevel(WPEDisplay *d, guint m) { return g_object_new(thir_toplevel_get_type(), "display", d, NULL); }
-static void thir_display_class_init(ThirDisplayClass *k) { WPEDisplayClass *c = WPE_DISPLAY_CLASS(k); c->connect = d_connect; c->create_view = d_create_view; c->create_toplevel = d_create_toplevel; }
+static WPEClipboard *d_get_clipboard(WPEDisplay *d) { static WPEClipboard *c; if (!c) c = wpe_clipboard_new(d); return c; }   // one clipboard for the strip and every page
+static void thir_display_class_init(ThirDisplayClass *k) { WPEDisplayClass *c = WPE_DISPLAY_CLASS(k); c->get_clipboard = d_get_clipboard; c->connect = d_connect; c->create_view = d_create_view; c->create_toplevel = d_create_toplevel; }
 
 /* ---- web view signals (one set per tab; the tab is the user data) ---- */
 static Tab *tab_by_id(int id) { for (guint i = 0; i < tabs->len; i++) { Tab *t = g_ptr_array_index(tabs, i); if (t->id == id) return t; } return NULL; }
@@ -102,26 +104,97 @@ static void on_nofind(WebKitFindController *fc, gpointer d) { Tab *t = d; if (cb
 static void on_close(WebKitWebView *v, gpointer d) { Tab *t = d; if (cb.closed) cb.closed(t->id, cb.ud); }   // window.close()
 static WebKitWebView *on_create(WebKitWebView *v, WebKitNavigationAction *a, gpointer d);
 
-/* ---- downloads: the host asks the user; nothing is written before the answer ---- */
+/* ---- downloads: the host asks the user; nothing is written before the answer. A paused download is cancelled; a resume is a Range request loaded in a hidden view (WebKit's download API has no headers) ---- */
+static GHashTable *dls;   // host id -> WebKitDownload
+static unsigned resume_id; static char *resume_path; static WebKitWebView *resume_view;
 static gboolean dl_destination(WebKitDownload *dl, const char *name, gpointer d) {
-    guint64 len = webkit_uri_response_get_content_length(webkit_download_get_response(dl));
+    WebKitURIResponse *r = webkit_download_get_response(dl); guint64 len = webkit_uri_response_get_content_length(r);
+    if (resume_id && resume_path) {   // the answer to a Range request: tell the host, then it goes to its file
+        SoupMessageHeaders *h = webkit_uri_response_get_http_headers(r); const char *cr = h ? soup_message_headers_get_one(h, "Content-Range") : NULL;
+        unsigned id = resume_id; char *path = resume_path; resume_id = 0; resume_path = NULL;
+        g_object_set_data(G_OBJECT(dl), "id", GUINT_TO_POINTER(id)); g_hash_table_insert(dls, GUINT_TO_POINTER(id), g_object_ref(dl));
+        if (cb.dl_event) cb.dl_event(4, id, webkit_uri_response_get_status_code(r), cr ? cr : "", cb.ud);
+        if (webkit_uri_response_get_status_code(r) == 206) { webkit_download_set_allow_overwrite(dl, TRUE); webkit_download_set_destination(dl, path); } else webkit_download_cancel(dl);
+        g_free(path); return TRUE;
+    }
     if (!cb.download) { webkit_download_cancel(dl); return TRUE; }
-    cb.download(g_object_ref(dl), name, len ? (int64_t)len : -1, cb.ud); return TRUE;
+    SoupMessageHeaders *h = webkit_uri_response_get_http_headers(r); const char *ar = h ? soup_message_headers_get_one(h, "Accept-Ranges") : NULL;
+    cb.download(g_object_ref(dl), name, len ? (int64_t)len : -1, webkit_uri_request_get_uri(webkit_download_get_request(dl)), ar && strstr(ar, "bytes") ? 1 : 0, cb.ud); return TRUE;
 }
-static void dl_done(WebKitDownload *dl, gpointer d) { if (cb.failed) cb.failed(0, "download saved", cb.ud); }
-static void dl_failed(WebKitDownload *dl, GError *e, gpointer d) { char *m = g_strdup_printf("download failed: %s", e->message); if (cb.failed) cb.failed(0, m, cb.ud); g_free(m); }
+static gboolean unref_idle(gpointer o) { g_object_unref(o); return G_SOURCE_REMOVE; }
+static unsigned dl_id(WebKitDownload *dl) { return GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(dl), "id")); }
+static void dl_forget(WebKitDownload *dl) { unsigned id = dl_id(dl); if (id) g_hash_table_remove(dls, GUINT_TO_POINTER(id)); }
+static void dl_received(WebKitDownload *dl, guint64 n, gpointer d) {
+    static gint64 last; gint64 t = g_get_monotonic_time(); unsigned id = dl_id(dl); if (!id || t - last < 250000) return; last = t;
+    if (cb.dl_event) cb.dl_event(1, id, (int64_t)webkit_download_get_received_data_length(dl), "", cb.ud);
+}
+static void dl_done(WebKitDownload *dl, gpointer d) { unsigned id = dl_id(dl); if (id && cb.dl_event) cb.dl_event(2, id, (int64_t)webkit_download_get_received_data_length(dl), "", cb.ud); dl_forget(dl); }
+static void dl_failed(WebKitDownload *dl, GError *e, gpointer d) {
+    unsigned id = dl_id(dl); int user = g_error_matches(e, WEBKIT_DOWNLOAD_ERROR, WEBKIT_DOWNLOAD_ERROR_CANCELLED_BY_USER);
+    if (id && cb.dl_event) cb.dl_event(3, id, user, e->message, cb.ud);
+    dl_forget(dl);
+}
 static void on_download(WebKitNetworkSession *s, WebKitDownload *dl, gpointer d) {
-    g_signal_connect(dl, "decide-destination", G_CALLBACK(dl_destination), NULL); g_signal_connect(dl, "finished", G_CALLBACK(dl_done), NULL); g_signal_connect(dl, "failed", G_CALLBACK(dl_failed), NULL);
+    g_signal_connect(dl, "decide-destination", G_CALLBACK(dl_destination), NULL); g_signal_connect(dl, "received-data", G_CALLBACK(dl_received), NULL);
+    g_signal_connect(dl, "finished", G_CALLBACK(dl_done), NULL); g_signal_connect(dl, "failed", G_CALLBACK(dl_failed), NULL);
+    if (resume_view) { WebKitWebView *v = resume_view; resume_view = NULL; g_idle_add(unref_idle, v); }   // the hidden view has done its work
 }
-void thirweb_download_answer(void *dl, const char *path) {
-    if (path) webkit_download_set_destination(dl, path); else webkit_download_cancel(dl);
+void thirweb_download_answer(void *dl, const char *path, unsigned id) {
+    if (path) { g_object_set_data(G_OBJECT(dl), "id", GUINT_TO_POINTER(id)); g_hash_table_insert(dls, GUINT_TO_POINTER(id), g_object_ref(dl)); webkit_download_set_allow_overwrite(dl, TRUE); webkit_download_set_destination(dl, path); }
+    else webkit_download_cancel(dl);
     g_object_unref(dl);
 }
+void thirweb_download_cancel(unsigned id) { WebKitDownload *dl = g_hash_table_lookup(dls, GUINT_TO_POINTER(id)); if (dl) webkit_download_cancel(dl); }
+static gboolean resume_policy(WebKitWebView *v, WebKitPolicyDecision *dec, WebKitPolicyDecisionType t, gpointer d) { if (t != WEBKIT_POLICY_DECISION_TYPE_RESPONSE) return FALSE; webkit_policy_decision_download(dec); return TRUE; }
+void thirweb_download_resume(unsigned id, const char *url, int64_t from, const char *path) {
+    if (resume_view) g_object_unref(resume_view);
+    resume_view = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, "network-session", nsession, NULL);
+    { WPEView *rv = webkit_web_view_get_wpe_view(resume_view); if (!wpe_view_get_toplevel(rv)) wpe_view_set_toplevel(rv, wpe_display_create_toplevel(display, 1)); wpe_view_resized(rv, 100, 100); }
+    g_signal_connect(resume_view, "decide-policy", G_CALLBACK(resume_policy), NULL);
+    g_free(resume_path); resume_id = id; resume_path = g_strdup(path);
+    WebKitURIRequest *rq = webkit_uri_request_new(url); char *r = g_strdup_printf("bytes=%" G_GINT64_FORMAT "-", from);
+    soup_message_headers_append(webkit_uri_request_get_http_headers(rq), "Range", r); g_free(r);
+    webkit_web_view_load_request(resume_view, rq); g_object_unref(rq);
+}
 
+/* ---- <select>: the page's option menu is the host's to show ---- */
+static gboolean on_option_menu(WebKitWebView *v, WebKitOptionMenu *m, WebKitRectangle *r, gpointer d) {
+    Tab *t = d; if (!cb.option_menu || t != cur) return FALSE;
+    cb.option_menu(t->id, g_object_ref(m), r->x, r->y, r->width, r->height, cb.ud); return TRUE;
+}
+int thirweb_menu_count(void *m) { return (int)webkit_option_menu_get_n_items(m); }
+void thirweb_menu_item(void *m, int i, const char **label, int *flags) {
+    WebKitOptionMenuItem *it = webkit_option_menu_get_item(m, i);
+    *label = webkit_option_menu_item_get_label(it);
+    *flags = (webkit_option_menu_item_is_enabled(it) ? 1 : 0) | (webkit_option_menu_item_is_group_label(it) ? 2 : 0) | (webkit_option_menu_item_is_selected(it) ? 4 : 0);
+}
+void thirweb_menu_answer(void *m, int index) { if (index >= 0) webkit_option_menu_activate_item(m, index); webkit_option_menu_close(m); g_object_unref(m); }
+
+/* ---- clipboard: WPE's own, in this process; text only ---- */
+void thirweb_clip_set(const char *text) {
+    WPEClipboard *c = wpe_display_get_clipboard(display); if (!c) return;
+    WPEClipboardContent *k = wpe_clipboard_content_new(); wpe_clipboard_content_set_text(k, text); wpe_clipboard_set_content(c, k); wpe_clipboard_content_unref(k);
+}
+char *thirweb_clip_get(void) {   // whatever text format is there (a page copies as text/plain;charset=utf-8, the strip as text/plain)
+    WPEClipboard *c = wpe_display_get_clipboard(display); if (!c) return NULL;
+    const char *const *f = wpe_clipboard_get_formats(c); gsize n = 0;
+    for (; f && *f; f++) if (g_str_has_prefix(*f, "text/plain")) return wpe_clipboard_read_text(c, *f, &n);
+    return NULL;
+}
+void thirweb_repaint(void) {   // WebKit paints nothing new for a view that is unchanged: a size change of one row forces a full frame
+    if (!cur) return;
+    wpe_toplevel_resize(cur->top, cur_w, cur_h > 1 ? cur_h - 1 : cur_h); wpe_view_resized(cur->view, cur_w, cur_h > 1 ? cur_h - 1 : cur_h);
+    wpe_toplevel_resize(cur->top, cur_w, cur_h); wpe_view_resized(cur->view, cur_w, cur_h);
+}
+
+static void focus_in(Tab *t) { wpe_toplevel_state_changed(t->top, WPE_TOPLEVEL_STATE_ACTIVE); wpe_view_focus_in(t->view); }   // an inactive window draws no text caret
+static void focus_out(Tab *t) { wpe_view_focus_out(t->view); wpe_toplevel_state_changed(t->top, WPE_TOPLEVEL_STATE_NONE); }
 /* ---- tabs: one WebKitWebView and one WPEView each; only the shown tab is mapped and its frames reach the host ---- */
 static Tab *tab_make(WebKitWebView *related) {
     Tab *t = g_new0(Tab, 1); t->id = next_id++;
-    t->web = related ? g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, NULL) : g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, "network-session", nsession, NULL);
+    // a video or a sound plays when the page says autoplay (YouTube, a <video autoplay>): this is a desktop with its own volume key, not a phone
+    static WebKitWebsitePolicies *pol; if (!pol) pol = webkit_website_policies_new_with_policies("autoplay", WEBKIT_AUTOPLAY_ALLOW, NULL);
+    t->web = related ? g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, "website-policies", pol, NULL) : g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, "network-session", nsession, "website-policies", pol, NULL);
     WebKitSettings *st = webkit_web_view_get_settings(t->web);
     webkit_settings_set_javascript_can_open_windows_automatically(st, FALSE); webkit_settings_set_enable_developer_extras(st, FALSE);
     t->view = webkit_web_view_get_wpe_view(t->web); g_object_set_data(G_OBJECT(t->view), "tab", t);
@@ -134,7 +207,7 @@ static Tab *tab_make(WebKitWebView *related) {
     g_signal_connect(w, "load-failed", G_CALLBACK(on_failed), t); g_signal_connect(w, "load-failed-with-tls-errors", G_CALLBACK(on_tls), t);
     g_signal_connect(w, "permission-request", G_CALLBACK(on_permission), t); g_signal_connect(w, "show-notification", G_CALLBACK(on_notify), t);
     g_signal_connect(w, "web-process-terminated", G_CALLBACK(on_term), t); g_signal_connect(w, "script-dialog", G_CALLBACK(on_dialog), t);
-    g_signal_connect(w, "run-file-chooser", G_CALLBACK(on_chooser), t); g_signal_connect(w, "close", G_CALLBACK(on_close), t); g_signal_connect(w, "create", G_CALLBACK(on_create), t);
+    g_signal_connect(w, "run-file-chooser", G_CALLBACK(on_chooser), t); g_signal_connect(w, "close", G_CALLBACK(on_close), t); g_signal_connect(w, "show-option-menu", G_CALLBACK(on_option_menu), t); g_signal_connect(w, "create", G_CALLBACK(on_create), t);
     WebKitFindController *fc = webkit_web_view_get_find_controller(w);
     g_signal_connect(fc, "found-text", G_CALLBACK(on_found), t); g_signal_connect(fc, "counted-matches", G_CALLBACK(on_found), t); g_signal_connect(fc, "failed-to-find-text", G_CALLBACK(on_nofind), t);
     g_ptr_array_add(tabs, t); return t;
@@ -146,12 +219,12 @@ static WebKitWebView *on_create(WebKitWebView *v, WebKitNavigationAction *a, gpo
 int thirweb_tab_new(const char *uri) { Tab *t = tab_make(NULL); if (uri) webkit_web_view_load_uri(t->web, uri); return t->id; }
 void thirweb_tab_show(int id) {
     Tab *t = tab_by_id(id); if (!t || t == cur) return;
-    if (cur) { thirweb_frame_done(); wpe_view_focus_out(cur->view); wpe_view_unmap(cur->view); }
+    if (cur) { thirweb_frame_done(); focus_out(cur); wpe_view_unmap(cur->view); }
     cur = t; wpe_toplevel_scale_changed(t->top, scale_f);
     // WebKit paints nothing new for a view that is only mapped again, and the pane still shows the tab before: a size change of one row forces a full frame
     wpe_toplevel_resize(t->top, cur_w, cur_h > 1 ? cur_h - 1 : cur_h); wpe_view_resized(t->view, cur_w, cur_h > 1 ? cur_h - 1 : cur_h);
     wpe_toplevel_resize(t->top, cur_w, cur_h); wpe_view_resized(t->view, cur_w, cur_h);
-    wpe_view_map(t->view); if (cur_focus) wpe_view_focus_in(t->view);
+    wpe_view_map(t->view); if (cur_focus) focus_in(t);
 }
 void thirweb_tab_close(int id) {
     Tab *t = tab_by_id(id); if (!t) return;
@@ -172,6 +245,7 @@ int thirweb_init(int w, int h, double scale, const char *data_dir, const char *c
     nsession = data_dir ? webkit_network_session_new(data_dir, cache_dir) : webkit_network_session_new_ephemeral();
     webkit_network_session_set_tls_errors_policy(nsession, WEBKIT_TLS_ERRORS_POLICY_FAIL);
     if (data_dir) { char *f = g_build_filename(data_dir, "cookies.sqlite", NULL); webkit_cookie_manager_set_persistent_storage(webkit_network_session_get_cookie_manager(nsession), f, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE); g_free(f); }
+    dls = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_object_unref);
     g_signal_connect(nsession, "download-started", G_CALLBACK(on_download), NULL);
     return 0;
 }
@@ -180,7 +254,7 @@ void thirweb_reload(void) { if (cur) webkit_web_view_reload(cur->web); }
 void thirweb_stop(void) { if (cur) webkit_web_view_stop_loading(cur->web); }
 void thirweb_back(void) { if (cur && webkit_web_view_can_go_back(cur->web)) webkit_web_view_go_back(cur->web); }
 void thirweb_forward(void) { if (cur && webkit_web_view_can_go_forward(cur->web)) webkit_web_view_go_forward(cur->web); }
-void thirweb_edit(int cmd) { if (cur) webkit_web_view_execute_editing_command(cur->web, cmd == 0 ? WEBKIT_EDITING_COMMAND_COPY : cmd == 1 ? WEBKIT_EDITING_COMMAND_CUT : WEBKIT_EDITING_COMMAND_PASTE); }
+void thirweb_edit(int cmd) { if (cur) webkit_web_view_execute_editing_command(cur->web, cmd == 0 ? WEBKIT_EDITING_COMMAND_COPY : cmd == 1 ? WEBKIT_EDITING_COMMAND_CUT : cmd == 2 ? WEBKIT_EDITING_COMMAND_PASTE : WEBKIT_EDITING_COMMAND_SELECT_ALL); }
 void thirweb_find(const char *text, int dir) {   // 0 = a new search (from the top), 1 = next, 2 = previous, 3 = close the find
     if (!cur) return;
     WebKitFindController *fc = webkit_web_view_get_find_controller(cur->web);
@@ -196,7 +270,7 @@ void thirweb_resize(int w, int h, double scale) {
         wpe_toplevel_resize(t->top, w, h); wpe_view_resized(t->view, w, h);
     }
 }
-void thirweb_focus(int on) { cur_focus = on; if (cur) { if (on) wpe_view_focus_in(cur->view); else wpe_view_focus_out(cur->view); } }
+void thirweb_focus(int on) { cur_focus = on; if (cur) { if (on) focus_in(cur); else focus_out(cur); } }
 
 /* ---- input: den's evdev events -> WPE events ---- */
 static WPEModifiers mods(void) {
