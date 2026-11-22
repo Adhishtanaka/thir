@@ -1,9 +1,33 @@
 //! camera: a webcam preview in a den pane, and photos. It never opens the camera itself: den (root) asks the user on its own bar and relays the frames through shared memory (see gui/cam.rs, gui/mic.rs).
-//! Only den panes can do that, so `camera` on the serial console says so and stops. Photos go to ~/Pictures/photo-YYYY-MM-DD-HHMMSS.png (folder 0700, file 0600, never overwritten); a camera that only speaks MJPEG saves .jpg.
-//! shortcut: photos only. Video recording is not here (it would need an encoder in the sandbox); preview needs YUYV, which every UVC camera has.
+//! Only den panes can do that, so `camera` on the serial console says so and stops. Photos go to ~/Pictures/photo-YYYY-MM-DD-HHMMSS.png (folder 0700, file 0600, never overwritten); a camera that only speaks MJPEG saves .jpg only when no decoder runs.
+//! shortcut: photos only. Video recording is not here (it would need an encoder in the sandbox). An MJPEG-only camera (VirtualBox's webcam) is previewed through ffmpeg in the sandbox, decoded to YUYV.
 //! Keys: space takes a photo, q stops. Alt+R (den) also stops it.
 use crate::{clock, gui::{cam::{SLOT, YUYV}, draw::{fill, hint_cols, hints, text}, font::Font, layout::Rect, surface::{Client, Down, Up}, theme::*}};
-use std::{fs::DirBuilder, io::Write, os::{fd::AsRawFd, unix::fs::{DirBuilderExt, MetadataExt}}, path::{Path, PathBuf}, time::{Duration, Instant}};
+use std::{fs::DirBuilder, io::{Read, Write}, os::{fd::AsRawFd, unix::{fs::{DirBuilderExt, MetadataExt}, process::CommandExt}}, path::{Path, PathBuf}, process::{Child, Command, Stdio}, sync::{mpsc, Arc, Mutex}, time::{Duration, Instant}};
+
+/// MJPEG frames in, YUYV frames out: one long-lived ffmpeg in the sandbox (reads only /web, writes nothing, no network). The newest frame wins; a busy decoder drops frames.
+struct Mjpeg { tx: Option<mpsc::SyncSender<Vec<u8>>>, out: Arc<Mutex<Option<Vec<u8>>>>, child: Child }
+impl Mjpeg {
+    fn start(w: usize, h: usize) -> Option<Mjpeg> {
+        let rules = crate::sandbox::rules(&[Path::new("/web")], &[]);
+        let size = format!("scale={w}:{h}");
+        let mut c = Command::new("/usr/bin/ffmpeg");
+        c.args(["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0", "-f", "jpeg_pipe", "-i", "pipe:0", "-vf", &size, "-pix_fmt", "yuyv422", "-f", "rawvideo", "pipe:1"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(std::env::var_os("HOME").and_then(|h| crate::logfile::open(Path::new(&h))).map_or_else(Stdio::null, Stdio::from));
+        // SAFETY: only prctl and landlock syscalls run between fork and exec.
+        unsafe { c.pre_exec(move || rules.enforce().map(|_| ())); }
+        let mut child = c.spawn().ok()?;
+        let (mut stdin, mut stdout) = (child.stdin.take()?, child.stdout.take()?);
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(1);
+        std::thread::spawn(move || { for f in rx { if stdin.write_all(&f).is_err() { break } } });
+        let out = Arc::new(Mutex::new(None)); let o = out.clone();
+        std::thread::spawn(move || { let mut b = vec![0u8; w * h * 2]; while stdout.read_exact(&mut b).is_ok() { if let Ok(mut g) = o.lock() { *g = Some(b.clone()) } } });
+        Some(Mjpeg { tx: Some(tx), out, child })
+    }
+    fn feed(&self, jpeg: &[u8]) { if let Some(t) = &self.tx { let _ = t.try_send(jpeg.to_vec()); } }
+    fn take(&self) -> Option<Vec<u8>> { self.out.lock().ok()?.take() }
+}
+impl Drop for Mjpeg { fn drop(&mut self) { self.tx = None; let _ = self.child.kill(); let _ = self.child.wait(); } }
 
 /// One limited-range BT.601 YUV sample to 0xRRGGBB.
 pub fn yuv(y: u8, u: u8, v: u8) -> u32 {
@@ -77,7 +101,7 @@ impl Slots {
 }
 impl Drop for Slots { fn drop(&mut self) { unsafe { libc::munmap(self.0 as *mut _, 2 * SLOT); } } }
 
-struct Cam { w: usize, h: usize, fmt: u32, frame: Vec<u8>, note: (String, bool, Instant), frames: u64 }   // note: text, is an error, when
+struct Cam { w: usize, h: usize, fmt: u32, frame: Vec<u8>, note: (String, bool, Instant), frames: u64, preview: Vec<u8>, dec: bool }   // note: text, is an error, when; preview: YUYV decoded from MJPEG, dec: a decoder runs
 
 fn paint(c: &mut Client, font: &Font, cam: Option<&Cam>, waiting: bool) {
     let (w, h, sc) = (c.w as usize, c.h as usize, c.scale.max(1) as i32);
@@ -85,6 +109,7 @@ fn paint(c: &mut Client, font: &Font, cam: Option<&Cam>, waiting: bool) {
     let px = c.pixels(); if px.len() < w * h { return }
     match cam {
         Some(m) if m.fmt == YUYV && !m.frame.is_empty() => draw_yuyv(px, w, w, ah, &m.frame, m.w, m.h),
+        Some(m) if !m.preview.is_empty() => draw_yuyv(px, w, w, ah, &m.preview, m.w, m.h),
         _ => fill(px, w, Rect { x: 0, y: 0, w: w as i32, h: ah as i32 }, panel()),
     }
     fill(px, w, Rect { x: 0, y: ah as i32, w: w as i32, h: bar as i32 }, panel());
@@ -99,8 +124,8 @@ fn paint(c: &mut Client, font: &Font, cam: Option<&Cam>, waiting: bool) {
         return
     }
     if let Some(m) = cam {
-        if m.fmt != YUYV { let t = "This camera only gives MJPEG: no preview, but space still takes photos."; text(px, w, font, font.w as i32, ah as i32 / 2, t, DIM); }
-        else if m.frame.is_empty() { let t = "\u{25d0} waiting for the first picture"; text(px, w, font, (w as i32 - t.chars().count() as i32 * font.w as i32) / 2, ah as i32 / 2, t, accent()); }
+        if m.fmt != YUYV && !m.dec { let t = "This camera only gives MJPEG and there is no decoder here: no preview, but space still takes photos."; text(px, w, font, font.w as i32, ah as i32 / 2, t, DIM); }
+        else if m.fmt == YUYV && m.frame.is_empty() || m.fmt != YUYV && m.preview.is_empty() { let t = "\u{25d0} waiting for the first picture"; text(px, w, font, (w as i32 - t.chars().count() as i32 * font.w as i32) / 2, ah as i32 / 2, t, accent()); }
         let (n, bad, at) = &m.note;
         let info = if !n.is_empty() && at.elapsed() < Duration::from_secs(4) { (n.clone(), *bad) } else { (format!("live  {}x{}", m.w, m.h), false) };
         x += text(px, w, font, x, y, &info.0.chars().take(room.saturating_sub(40)).collect::<String>(), if info.1 { ERR } else if !n.is_empty() && at.elapsed() < Duration::from_secs(4) { OK } else { DIM }) + 2 * font.w as i32;
@@ -126,6 +151,7 @@ pub fn run(args: &[String]) -> i32 {
     paint(&mut c, &font, None, true); if c.commit(&whole(&c)).is_err() { return 1 }
     if c.send(&Up::CamStart).is_err() { eprintln!("camera: den went away"); return 1 }
     let (mut cam, mut slots): (Option<Cam>, Option<Slots>) = (None, None);
+    let mut mj: Option<Mjpeg> = None;
     let (mut dirty, mut waiting) = (true, true);   // the first commit's DONE is still to come
     let t0 = Instant::now(); let mut said = String::new();
     'main: loop {
@@ -138,19 +164,20 @@ pub fn run(args: &[String]) -> i32 {
                 Down::Cam { state: 1, w, h, fmt } => {
                     let Some(fd) = c.fds.pop() else { said = "camera: no picture memory from den".into(); break 'main };
                     let Some(s) = Slots::map(&fd) else { said = "camera: cannot map the pictures".into(); break 'main };
-                    slots = Some(s); cam = Some(Cam { w: w as usize, h: h as usize, fmt, frame: vec![], note: (String::new(), false, Instant::now()), frames: 0 }); dirty = true;
+                    slots = Some(s); cam = Some(Cam { w: w as usize, h: h as usize, fmt, frame: vec![], note: (String::new(), false, Instant::now()), frames: 0, preview: vec![], dec: false }); dirty = true;
+                    if fmt != YUYV { mj = Mjpeg::start(w as usize, h as usize); if let Some(m) = cam.as_mut() { m.dec = mj.is_some(); } }
                 }
                 Down::Cam { state: 4, .. } => { said = "camera: no camera found. Plug one in and try again.".into(); break 'main }
                 Down::Cam { state: 5, .. } => { said = "camera: the camera would not open (it may be in use). See ~/.cache or try again.".into(); break 'main }
                 Down::Cam { state: 2 | 3, .. } => { if cam.is_none() { said = "camera: the camera was not allowed.".into() } break 'main }   // Alt+R after it ran is a normal end
                 Down::CamFrame { slot, len } => if let (Some(m), Some(s)) = (cam.as_mut(), slots.as_ref()) {
                     let f = s.frame(slot, len);
-                    if m.fmt != YUYV || f.len() >= m.w * m.h * 2 { m.frame = f; m.frames += 1; dirty = m.fmt == YUYV || m.frames == 1; }
+                    if m.fmt != YUYV || f.len() >= m.w * m.h * 2 { if let Some(d) = &mj { d.feed(&f) } m.frame = f; m.frames += 1; dirty = m.fmt == YUYV || m.frames == 1; }
                 },
                 Down::Key { code, value: 1, .. } => match code {
                     16 => break 'main,   // q
                     57 => if let Some(m) = cam.as_mut().filter(|m| !m.frame.is_empty()) {   // space: a photo of this very picture
-                        let (data, ext) = if m.fmt == YUYV { (png(m.w, m.h, &yuyv_rgb(&m.frame, m.w, m.h)), "png") } else { (m.frame.clone(), "jpg") };
+                        let (data, ext) = if m.fmt == YUYV { (png(m.w, m.h, &yuyv_rgb(&m.frame, m.w, m.h)), "png") } else if !m.preview.is_empty() { (png(m.w, m.h, &yuyv_rgb(&m.preview, m.w, m.h)), "png") } else { (m.frame.clone(), "jpg") };   // a webcam MJPEG frame is not a file every reader takes: save the decoded picture
                         let base = file_name(&clock::local(clock::now(), clock::home_tz().unwrap_or(0)));
                         m.note = match crate::apps::rec::create_new_ext(&dir, &base, ext).and_then(|(mut f, p)| f.write_all(&data).and_then(|_| f.sync_all()).map(|_| p)) {
                             Ok(p) => (format!("saved ~/Pictures/{}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), false, Instant::now()),
@@ -164,6 +191,7 @@ pub fn run(args: &[String]) -> i32 {
             }
             ev = c.poll(0).unwrap_or(None);
         }
+        if let (Some(d), Some(m)) = (&mj, cam.as_mut()) { if let Some(p) = d.take() { m.preview = p; dirty = true; } }
         if dirty && !waiting {
             paint(&mut c, &font, cam.as_ref(), cam.is_none());
             if c.commit(&whole(&c)).is_err() { break }
