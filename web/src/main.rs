@@ -320,7 +320,19 @@ impl App {
             1 => self.dls[i].0.progress(a.max(0) as u64, ms),
             2 => {
                 let (d, f) = &mut self.dls[i]; d.seg = a.max(0) as u64; let n = Self::dl_join(f);
-                if n > 0 || d.total == Some(0) { let _ = std::fs::rename(&f.part, &f.fin); d.finish(); d.done = n; self.note = Some(format!("download saved: {}", printable(&d.name))); }
+                if n > 0 || d.total == Some(0) {
+                    // never replace a file: link to the final name (fails if it exists, even one made since the start), else to the next free name
+                    let dir = f.fin.parent().map(PathBuf::from).unwrap_or_default();
+                    let mut fin = f.fin.clone();
+                    let linked = loop {
+                        match std::fs::hard_link(&f.part, &fin) {
+                            Ok(()) => break true,
+                            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => { let name = web::download_name(&d.name, |n| dir.join(n).symlink_metadata().is_ok()); fin = dir.join(&name); d.name = name; }
+                            Err(_) => break false,
+                        }
+                    };
+                    if linked { let _ = std::fs::remove_file(&f.part); f.fin = fin; }
+                    d.finish(); d.done = n; self.note = Some(format!("download saved: {}", printable(&d.name))); }
                 else { d.fail("nothing was received") }
             }
             3 => {

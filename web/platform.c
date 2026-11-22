@@ -109,7 +109,7 @@ static GHashTable *dls;   // host id -> WebKitDownload
 static unsigned resume_id; static char *resume_path; static WebKitWebView *resume_view;
 static gboolean dl_destination(WebKitDownload *dl, const char *name, gpointer d) {
     WebKitURIResponse *r = webkit_download_get_response(dl); guint64 len = webkit_uri_response_get_content_length(r);
-    if (resume_id && resume_path) {   // the answer to a Range request: tell the host, then it goes to its file
+    if (g_object_get_data(G_OBJECT(dl), "resume") && resume_id && resume_path) {   // the answer to our own Range request (marked in on_download): tell the host, then it goes to its file
         SoupMessageHeaders *h = webkit_uri_response_get_http_headers(r); const char *cr = h ? soup_message_headers_get_one(h, "Content-Range") : NULL;
         unsigned id = resume_id; char *path = resume_path; resume_id = 0; resume_path = NULL;
         g_object_set_data(G_OBJECT(dl), "id", GUINT_TO_POINTER(id)); g_hash_table_insert(dls, GUINT_TO_POINTER(id), g_object_ref(dl));
@@ -137,7 +137,9 @@ static void dl_failed(WebKitDownload *dl, GError *e, gpointer d) {
 static void on_download(WebKitNetworkSession *s, WebKitDownload *dl, gpointer d) {
     g_signal_connect(dl, "decide-destination", G_CALLBACK(dl_destination), NULL); g_signal_connect(dl, "received-data", G_CALLBACK(dl_received), NULL);
     g_signal_connect(dl, "finished", G_CALLBACK(dl_done), NULL); g_signal_connect(dl, "failed", G_CALLBACK(dl_failed), NULL);
-    if (resume_view) { WebKitWebView *v = resume_view; resume_view = NULL; g_idle_add(unref_idle, v); }   // the hidden view has done its work
+    if (resume_view && webkit_download_get_web_view(dl) == resume_view) {   // only the hidden view's download is the resume; any other goes through the host's question
+        g_object_set_data(G_OBJECT(dl), "resume", GINT_TO_POINTER(1)); WebKitWebView *v = resume_view; resume_view = NULL; g_idle_add(unref_idle, v);
+    }
 }
 void thirweb_download_answer(void *dl, const char *path, unsigned id) {
     if (path) { g_object_set_data(G_OBJECT(dl), "id", GUINT_TO_POINTER(id)); g_hash_table_insert(dls, GUINT_TO_POINTER(id), g_object_ref(dl)); webkit_download_set_allow_overwrite(dl, TRUE); webkit_download_set_destination(dl, path); }

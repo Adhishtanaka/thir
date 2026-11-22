@@ -11,13 +11,13 @@ pub fn cap(s: &str) -> &str {
     &s[..n]
 }
 
-/// The bytes a paste writes into a pane. Control characters are dropped, except tab and newline. Not bracketed: a newline is Enter (`\r`), as when typed.
+/// The bytes a paste writes into a pane. Control characters are dropped, except tab and newline. Not bracketed: a newline becomes a space, so a pasted text never runs anything before the user presses Enter.
 /// Bracketed (the app asked for `?2004`): the text sits between ESC[200~ and ESC[201~, newlines stay `\n`, and the ESC that would end it early is gone with the other controls.
 pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     let text = cap(text).replace("\r\n", "\n").replace('\r', "\n");
     let body: String = text.chars().filter(|&c| c == '\t' || c == '\n' || !(c.is_control())).collect();
     if bracketed { return [&b"\x1b[200~"[..], body.as_bytes(), b"\x1b[201~"].concat() }
-    body.replace('\n', "\r").into_bytes()
+    body.replace('\n', " ").into_bytes()
 }
 
 /// A paste for a one-line editor: control characters dropped, every run of line breaks (and the tabs) turned into one space, the ends trimmed. Nothing in it can run before the user presses Enter.
@@ -69,8 +69,8 @@ mod tests {
         let s = "é".repeat(MAX); assert!(cap(&s).len() <= MAX && cap(&s).len() >= MAX - 1 && cap(&s).chars().all(|c| c == 'é'));
         assert_eq!(cap(&"a".repeat(MAX + 5)).len(), MAX);
     }
-    #[test] fn plain_paste_drops_controls_and_types_enter() {
-        assert_eq!(paste_bytes("ls\x1b[31m\x07 -l\nwho\tx\r\ny", false), b"ls[31m -l\rwho\tx\ry".to_vec());
+    #[test] fn plain_paste_drops_controls_and_never_types_enter() {
+        assert_eq!(paste_bytes("ls\x1b[31m\x07 -l\nwho\tx\r\ny", false), b"ls[31m -l who\tx y".to_vec());
         assert_eq!(paste_bytes("a\x00b\x7fc", false), b"abc".to_vec());
     }
     #[test] fn bracketed_paste_is_wrapped_and_cannot_end_early() {
