@@ -20,19 +20,20 @@ The AI is optional. Type `!` and say what you want, like `! move notes into docs
 block-beta
   columns 6
   l0["Your apps"] built["apps the AI built for you (optional)"]:5
-  l1["Apps"] edit["edit"] find["find"] top["top"] web["web, play, view, rec, camera"] agent["the AI (optional)"]
-  l2["Shell"] shell["nsh: commands, Tab, history, ! lines"]:5
-  l3["Session"] login["login"]:2 den["den: desktop"]:2 dhcp["dhcp"]
-  l4["Startup"] init["init: starts and watches everything"]:5
-  l5["Kernel"] kernel["Linux 6.12"]:4 disk[("your files")]
-  l6["Hardware"] hw["UEFI: VirtualBox, QEMU or a real PC"]:5
+  l1["Programs"] edit["edit"] find["find"] top["top"] web["web (browser)"] agent["the AI (optional)"]
+  l2["Shell"] shell["nsh: commands, Tab, history, ! lines, built-in apps (notes, calendar, contacts, clock, calc, settings, play, view)"]:5
+  l3["Session"] login["login, one in each pane"]:5
+  l4["Desktop"] den["den: panes, mouse, clipboard, asks before the mic and camera (rec, camera)"]:4 dhcp["dhcp"]
+  l5["Startup"] init["init: starts and watches den and dhcp"]:5
+  l6["Kernel"] kernel["Linux 6.12"]:4 disk[("your files")]
+  l7["Hardware"] hw["UEFI: VirtualBox, QEMU or a real PC"]:5
 
   classDef label fill:transparent,stroke:transparent,color:#8fa3c2
   classDef user fill:#1d3557,stroke:#8b9bb4,color:#e8eefa
   classDef opt fill:#1d3557,stroke:#8b9bb4,color:#e8eefa,stroke-dasharray:5 4
   classDef sys fill:#142744,stroke:#6f86ad,color:#e8eefa
   classDef core fill:#0a1424,stroke:#4a5f85,color:#e8eefa
-  class l0,l1,l2,l3,l4,l5,l6 label
+  class l0,l1,l2,l3,l4,l5,l6,l7 label
   class edit,find,top,web,shell user
   class built,agent opt
   class login,den,dhcp,init sys
