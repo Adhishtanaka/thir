@@ -22,7 +22,7 @@ wait_for '^thir: mounted /data$' 5
 wait_for '^thir: iface eth0 ' 5
 if tr -d '\r' < "$log" | grep -qE '^thir: iface (sit0|tunl0) '; then echo "FAIL: tunnel device present"; cat "$log"; exit 1; fi
 wait_for 'dhcp: eth0 10\.0\.2\.15 mask 255\.255\.255\.0 gw 10\.0\.2\.2 dns 10\.0\.2\.3$' 10   # no ^: may follow a prompt
-wait_for 'first boot: create the first user'
+wait_for 'enter +create your account'; send ''; wait_for 'first boot: create the first user'
 wait_for 'username: '
 send alice;  wait_for 'password: '
 send "$PW1"; wait_for 'repeat password: '
@@ -32,7 +32,7 @@ send '+05:30'; wait_for 'user alice created'
 wait_for 'set up your AI'; wait_for 'choice \[0\]: '; send 0; wait_for 'the AI is off'
 wait_for '\$ $'
 run '! hello' 'the AI is off'
-send settings; wait_for 'setting +value'; sendk $'\e[B\e[B\e[B\e[B\e[B'; sendk $'\r'   # down to the AI row, Enter: it is off, so the setup runs
+send settings; wait_for 'setting +value'; sendk $'\e[B\e[B\e[B\e[B\e[B\e[B\e[B'; sendk $'\r'   # down to the AI row, Enter: it is off, so the setup runs
 wait_for 'choice \[0\]: '
 send 6; wait_for 'name \[mine\]: '; send mock; wait_for 'protocol'; send anthropic; wait_for 'URL: '; send 'http://10.0.2.2:1/v1'
 wait_for 'model \[claude-opus-5-5\]: '; send ''; wait_for 'could not connect'; wait_for '\[c\] choose another'; send c
@@ -112,13 +112,13 @@ run 'cat .config/thir/notes/notes' 'Shopping.\[x\] buy milk$'
 send calendar; wait_for 'id +time +event'; sendk a; wait_for 'title:'; sendk $'Dentist\r'; wait_for 'date YYYY'; sendk $'\r'; wait_for 'time HH'; sendk $'14:30\r'; wait_for 'remind before'; sendk $'\r'
 wait_for 'event saved'; sendk q; wait_for '\$ $'
 run 'cat .config/thir/calendar/events' '^1.20[0-9-]+.14:30.15.Dentist$'
-send settings; wait_for 'setting +value'; sendk $'\x1b[B'; sendk $'\r'; wait_for 'graphite'; sendk $'\x1b[B'; sendk $'\r'; wait_for 'sound +off'; sendk q; wait_for '\$ $'
-send 'cat .config/thir/settings'; wait_for '^wall=graphite$'; wait_for '^sound=off$'; wait_for '\$ $'
+send settings; wait_for 'setting +value'; sendk $'\x1b[B'; sendk $'\x1b[C'; wait_for 'graphite'; sendk $'\x1b[B'; sendk $'\x1b[C'; wait_for 'accent +.* blue'; sendk $'\x1b[B\x1b[B'; sendk $'\r'; wait_for 'sound +off'; sendk q; wait_for '\$ $'
+send 'cat .config/thir/settings'; wait_for '^wall=graphite$'; wait_for '^accent=blue$'; wait_for '^sound=off$'; wait_for '\$ $'
 run beep 'beep: sound is off'
 run 'echo sound=on > .config/thir/settings' '\$ $'
 run 'ls /dev/snd' '^pcmC0D0p$'
 run 'cat /dev/snd/timer' 'Permission denied'   # the mixer and timer (and any capture node: unit-tested) stay root only; only the playback stream is ours
-run 'cat /dev/snd/controlC0' 'Permission denied'
+run 'cat /dev/snd/pcmC0D0c' 'Permission denied'   # the microphone stream stays root only (the mixer control is the user's: the browser's sound needs it)
 run beep '\$ $'
 # an alarm one to two minutes ahead (the guest is on +05:30); it rings with no app open, and the notice shows before a later prompt
 AL=$(date -u -v+5H -v+30M -v+90S +%H:%M)
@@ -212,41 +212,47 @@ run 'cat h2.txt' '^  ! +your words +ask the AI'
 run 'mkdri docs' 'nsh: mkdri: command not found\. Did you mean mkdir\?'
 run 'foo bar' 'command not found \(type ! and your words to ask the AI\)'
 run 'what apps do I have' 'nsh: what: command not found'   # plain words are a normal shell now: no AI call
-send '! what apps do I have'; wait_for '→ answer'; wait_for 'mock: you have calc'; wait_for '\$ $'
-send '!please open the calculator'; wait_for '→ calc +run\? +\[y\] run \(default\)'; send ''; wait_for 'expression'; sendk $'\x04'; wait_for '\$ $'   # the built-in calc app
-send '! make me a weather app'; wait_for '→ build an app: make me a weather app'; send n; wait_for 'nothing done'; wait_for '\$ $'
-send '! I live in Colombo'; wait_for '→ remember: city: Colombo'; send y; wait_for 'remembered: city: Colombo'; wait_for '\$ $'
+send '! what apps do I have'; wait_for '→ answer'; wait_for 'mock: you have calc'; bye
+send '!please open the calculator'; wait_for '→ calc +run\? +\[y\] run \(default\)'; send ''; wait_for 'expression'; sendk $'\x04'; bye   # the built-in calc app
+send '! make me a weather app'; wait_for '→ build an app: make me a weather app'; send n; wait_for 'nothing done'; bye
+send '! I live in Colombo'; wait_for '→ remember: city: Colombo'; send y; wait_for 'remembered: city: Colombo'; bye
 run '/bin/agent forget city' 'forgot: city: Colombo'
-send '! remind me in 5 seconds to drink water'; wait_for '→ reminder: in 5 s · drink water'; send y; wait_for 'reminder [0-9]+: in 5 s'; wait_for '\$ $'
+send '! remind me in 5 seconds to drink water'; wait_for '→ reminder: in 5 s · drink water'; send y; wait_for 'reminder [0-9]+: in 5 s'; bye
 # plain words work the apps: a change is shown and asked first, a read shows what it sends (only the matches), arithmetic is done by thir
-send '! add Nimal to my contacts, 0719876543'; wait_for '→ contacts: add Nimal · 0719876543 +run\? +\[y\] run \(default\)'; send y; wait_for 'saved Nimal in contacts'; wait_for '\$ $'
+send '! add Nimal to my contacts, 0719876543'; wait_for '→ contacts: add Nimal · 0719876543 +run\? +\[y\] run \(default\)'; send y; wait_for 'saved Nimal in contacts'; bye
 run 'cat .config/thir/contacts/contacts' '^2.Nimal.0719876543'
-run '! add evil to my contacts' 'is not a phone number'
-send "! what is Kasun's number"; wait_for '→ private data: sends 1 contact matching "kasun".*only this goes to the AI'; send y; wait_for 'mock saw: Kasun Perera \| phones: 0771234567'; wait_for '\$ $'
+send '! add evil to my contacts'; wait_for 'is not a phone number'; wait_for '\$ $'
+send "! what is Kasun's number"; wait_for '→ private data: sends 1 contact matching "kasun".*only this goes to the AI'; send y; wait_for 'mock saw: Kasun Perera \| phones: 0771234567'; bye
 if tail -n +$((mark + 1)) "$log" | grep -a 'mock saw' | grep -q Nimal; then echo "FAIL: a contact that was not asked for went to the AI"; exit 1; fi
-run "! what is Zed's number" 'no contact matches "zed"'
-send '! add buy milk to my notes as a todo'; wait_for '→ notes: add "\[ \] buy milk" to the note Todo +run\? +\[y\] run \(default\)'; send y; wait_for 'added to the note Todo'; wait_for '\$ $'
+send "! what is Zed's number"; wait_for 'no contact matches "zed"'; bye
+send '! add buy milk to my notes as a todo'; wait_for '→ notes: add "\[ \] buy milk" to the note Todo +run\? +\[y\] run \(default\)'; send y; wait_for 'added to the note Todo'; bye
 run 'cat .config/thir/notes/notes' '^2.[0-9]+.[0-9]+..Todo.\[ \] buy milk$'
-send '! add dentist to my calendar today at 14:30'; wait_for '→ calendar: Dentist · 20[0-9-]+ 14:30 · remind 15 min before'; send y; wait_for 'saved Dentist in the calendar'; wait_for '\$ $'
-send '! what is on my calendar today'; wait_for '→ private data: sends 2 events from 20[0-9-]+ \(date, time, title\)'; send y; wait_for 'mock saw: 20[0-9-]+ 14:30 Dentist ; 20[0-9-]+ 14:30 Dentist'; wait_for '\$ $'
-send '! set an alarm for 6:30'; wait_for '→ alarm: 06:30 once, (today|tomorrow) 06:30 +· it rings even with no app open +run\? +\[y\] run \(default\)'; send y; wait_for 'alarm set'; wait_for '\$ $'
+send '! add dentist to my calendar today at 14:30'; wait_for '→ calendar: Dentist · 20[0-9-]+ 14:30 · remind 15 min before'; send y; wait_for 'saved Dentist in the calendar'; bye
+send '! what is on my calendar today'; wait_for '→ private data: sends 2 events from 20[0-9-]+ \(date, time, title\)'; send y; wait_for 'mock saw: 20[0-9-]+ 14:30 Dentist ; 20[0-9-]+ 14:30 Dentist'; bye
+send '! set an alarm for 6:30'; wait_for '→ alarm: 06:30 once, (today|tomorrow) 06:30 +· it rings even with no app open +run\? +\[y\] run \(default\)'; send y; wait_for 'alarm set'; bye
 run 'cat .config/thir/clock/alarms' '^2.@[0-9]+.1.$'
-run '! what is 12 times 15' '→ 12\*15 = 180'
+send '! what is 12 times 15'; wait_for '→ 12\*15 = 180'; bye
+# a conversation: the AI asks, the reply at the dim ↳ prompt continues the same chat; an empty line leaves the prompt; a new ! line within 10 minutes continues it; !! starts anew
+send '! remind me to call mum'; wait_for 'What time\?'; wait_for '↳ $'; send '5pm'; wait_for '→ reminder: .*17:00 · call mum +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; wait_for '↳ $'; send ''; wait_for '\$ $'
+send '!! first question'; wait_for 'mock: one'; wait_for '↳ $'; send ''; wait_for '\$ $'
+send '! and tomorrow?'; wait_for 'continuing the conversation'; wait_for 'mock: 2 earlier messages, first: first question'; wait_for '↳ $'; send ''; wait_for '\$ $'
+send '!! and tomorrow?'; wait_for 'mock: no history'; wait_for '↳ $'; send ''; wait_for '\$ $'
 # one command line from the AI: shown exactly, run only after a yes; a dangerous one defaults to no; shell tricks are refused
 run 'echo hi > notes.txt' '\$ $'
-send '! move notes into docs'; wait_for '→ mv notes\.txt docs/ +run\? +\[y\] run \(default\)'; send ''; wait_for '\$ $'
+send '! move notes into docs'; wait_for '→ mv notes\.txt docs/ +run\? +\[y\] run \(default\)'; send ''; bye
 run 'ls docs' 'notes\.txt'
 run 'rm docs/notes.txt' '\$ $'
-send '! delete everything'; wait_for '! this deletes files or folders'; wait_for '→ rm -r docs +run\? +\[y\] run'; send ''; wait_for 'nothing done'; wait_for '\$ $'
+send '! delete everything'; wait_for '! this deletes files or folders'; wait_for '→ rm -r docs +run\? +\[y\] run'; send ''; wait_for 'nothing done'; bye
 run 'ls' 'docs/'
-run '! run a shell for me' 'could not turn that into one command'
-run '! open ../../bin/sh' 'could not turn that into one command'
-send '! forget my city'; wait_for '! this removes it from what the AI remembers'; wait_for 'forget +city +run\? +\[y\] run'; send n; wait_for 'nothing done'; wait_for '\$ $'
-# the media examples of the route prompt: play and view are in every image (the answer n runs nothing); rec turns on the microphone, so it defaults to no; web exists only with the add-on, so here it is no command
-send '! play my music'; wait_for '→ play ~/Music +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; wait_for '\$ $'
-send '! show my photos'; wait_for '→ view ~/Pictures +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; wait_for '\$ $'
-send '! record a voice note'; wait_for '! this turns on the microphone'; wait_for '→ rec +run\? +\[y\] run'; send ''; wait_for 'nothing done'; wait_for '\$ $'
-run '! open wikipedia sri lanka' 'could not turn that into one command'
+send '! run a shell for me'; wait_for 'could not turn that into one command'; bye
+send '! open ../../bin/sh'; wait_for 'could not turn that into one command'; bye
+send '! forget my city'; wait_for '! this removes it from what the AI remembers'; wait_for 'forget +city +run\? +\[y\] run'; send n; wait_for 'nothing done'; bye
+# the media examples of the route prompt: play, view and web are commands in the full image (the answer n runs nothing); rec turns on the microphone, so it defaults to no; web exists only in the full image (in the small one it is no command)
+send '! play my music'; wait_for '→ play ~/Music +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; bye
+send '! show my photos'; wait_for '→ view ~/Pictures +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; bye
+send '! record a voice note'; wait_for '! this turns on the microphone'; wait_for '→ rec +run\? +\[y\] run'; send ''; wait_for 'nothing done'; bye
+if [ -n "${THIR_SMALL:-}" ]; then send '! open wikipedia sri lanka'; wait_for 'could not turn that into one command'; bye   # no browser in the small image
+else send '! open wikipedia sri lanka'; wait_for '→ web https://en\.wikipedia\.org/wiki/Sri_Lanka +run\? +\[y\] run \(default\)'; send n; wait_for 'nothing done'; bye; fi
 # file tasks in plain words; the plan is shown and nothing changes before y
 run 'echo provider mockd anthropic http://10.0.2.2:18080/do/v1 >> .config/thir/agent' '\$ $'
 run '/bin/agent do -p mockd make notes.txt > out.txt' 'needs a terminal'

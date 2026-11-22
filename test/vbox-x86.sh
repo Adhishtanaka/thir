@@ -8,7 +8,7 @@ PW=vbox-pass-123; SECRETS=("$PW"); STEP=${UEFI_STEP_TIMEOUT:-120}
 source test/lib.sh
 TIMEOUT=${UEFI_TIMEOUT:-300}
 cp -c "$OUT/thir.img" "$d/thir.img" 2>/dev/null || cp "$OUT/thir.img" "$d/thir.img"; cp "$EDK2_VARS" "$d/vars.fd"
-vbox=("$QEMU_BIN" "${QEMU_MACHINE[@]}" -m 512 -smp 1 -netdev user,id=n0 -device virtio-net-pci,netdev=n0
+vbox=("$QEMU_BIN" "${QEMU_MACHINE[@]}" -m ${THIR_WEB:+1024}${THIR_SMALL:+512} -smp ${THIR_WEB:+2}${THIR_SMALL:+1} -netdev user,id=n0 -device virtio-net-pci,netdev=n0
       -drive if=pflash,format=raw,readonly=on,file="$EDK2_CODE" -drive if=pflash,format=raw,file="$d/vars.fd"
       -device ahci,id=ahci -drive file="$d/thir.img",format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ahci.0
       -device ${VBOX_GPU:-VGA} -device qemu-xhci -device usb-kbd -qmp "unix:$d/qmp,server,nowait")
@@ -24,7 +24,7 @@ wait_for '^thir: init ready$' "$TIMEOUT"; echo "boot-to-marker: ${SECONDS}s"
 wait_for '^thir: mounted /data$' 20
 wait_for 'den: [0-9]+x[0-9]+ 32bpp$' 30
 grep -iE 'vmwgfx|efifb|fb0' "$log" | tr -d '\r' || true
-wait_for 'first boot: create the first user'
+wait_for 'enter +create your account'; send ''; wait_for 'first boot: create the first user'
 wait_for 'username: '
 send alice;  wait_for 'password: '
 send "$PW"; wait_for 'repeat password: '

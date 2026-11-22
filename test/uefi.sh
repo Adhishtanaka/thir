@@ -21,7 +21,7 @@ boot boot1 "${uefi[@]}"
 wait_for '^thir: init ready$' "$TIMEOUT"; echo "boot-to-marker: ${SECONDS}s"
 wait_for '^thir: mounted /data$' 20
 wait_for 'den: [0-9]+x[0-9]+ 32bpp$' 30
-wait_for 'first boot: create the first user'
+wait_for 'enter +create your account'; send ''; wait_for 'first boot: create the first user'
 wait_for 'username: '
 send alice;  wait_for 'password: '
 send "$PW"; wait_for 'repeat password: '
