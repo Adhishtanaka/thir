@@ -61,7 +61,7 @@ fn mount_data() {
         Err(e) => eprintln!("thir: /data unavailable: {e}"),
     }
 }
-/// Loop-mount the optional web add-on (root-only squashfs on the data disk) read-only at /web. Loop setup by ioctl: no losetup binary.
+/// Loop-mount the optional browser and media apps (root-only squashfs on the data disk) read-only at /web. Loop setup by ioctl: no losetup binary.
 fn mount_web() {
     use std::os::fd::AsRawFd;
     const SRC: &str = "/data/system/web.sqsh";
@@ -107,6 +107,7 @@ fn main() {
     open_sound();
     mount_warn(c"proc", c"/proc", c"proc", 0, c"");
     mount_warn(c"sysfs", c"/sys", c"sysfs", 0, c"");
+    let _ = fs::write("/proc/sys/kernel/printk", "3 3 1 3");   // kernel messages below "error" never print over the console or the login (also when a boot loader replaced the command line)
     mount_warn(c"tmpfs", c"/tmp", c"tmpfs", nosuid, c"mode=1777");
     mount_warn(c"tmpfs", c"/run", c"tmpfs", 0, c"mode=0755");
     unsafe { libc::mkdir(c"/run/den".as_ptr(), 0o755); libc::mkdir(c"/dev/shm".as_ptr(), 0o755); }

@@ -63,6 +63,14 @@ impl Indent {
     }
 }
 
+/// Tells nsh (fd THIR_PICK_FD, a pipe) what the AI chose, as `KIND\ntext`: RUN and the command, ANSWER and the answer, ACT and the action line. nsh keeps it as the AI's side of the conversation.
+fn report(kind: &str, text: &str) {
+    use std::{io::Write, os::fd::FromRawFd};
+    let Some(fd) = std::env::var("THIR_PICK_FD").ok().and_then(|v| v.parse::<i32>().ok()) else { return };
+    let mut f = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+    let _ = f.write_all(format!("{kind}\n{}", sanitize(text.trim()).chars().take(1000).collect::<String>()).as_bytes());
+}
+
 fn fail(m: &str) -> i32 { eprintln!("{m}"); 1 }
 /// The yes/no line. `warn` is a danger: a yellow line first and the default flips to no.
 fn ask(label: &str, what: &str, cost: &str) -> bool { ask_w(label, what, cost, "") }
@@ -85,9 +93,12 @@ pub fn command(args: &[String]) -> i32 {
     let cfg = match load_config(&home) { Ok((c, _)) => c, Err(m) => return fail(&m) };
     let ch = match ctx_for(&home, &cfg, cli.p.as_deref(), cli.m.as_deref(), cli.e.as_deref(), "low") { Ok(c) => c, Err((code, m)) => { eprintln!("{m}"); return code } };
     let cmds = std::env::var("THIR_CMDS").unwrap_or_default();
+    let past = thir::chat::Chat::decode(&std::env::var("THIR_CHAT").unwrap_or_default()); std::env::remove_var("THIR_CHAT");   // the conversation so far (nsh keeps it); the snapshot goes on the newest line only
     let msg = format!("{}{}===COMMANDS===\n{}\n===LINE===\n{line}", memory::block(&facts), context::block(&home, &std::env::current_dir().unwrap_or_else(|_| home.clone())), clean(&cmds).chars().take(3000).collect::<String>());
     let (mut think, mut head, mut streaming, mut out) = (progress::Think::start(), String::new(), false, Indent { bol: true });
-    let r = stream(&ch.ctx(), PROMPT, &[("user", msg)], &mut |t| {
+    let mut msgs: Vec<crate::agent::Msg> = past.iter().map(|(u, t)| (if *u { "user" } else { "assistant" }, t.clone())).collect();
+    msgs.push(("user", msg));
+    let r = stream(&ch.ctx(), PROMPT, &msgs, &mut |t| {
         if streaming { out.put(t); return; }
         head.push_str(t);
         if let Some(i) = head.find('\n') {
@@ -98,8 +109,9 @@ pub fn command(args: &[String]) -> i32 {
     let d = match r { Ok(d) => d, Err(m) => return fail(&m) };
     if d.stop == "refusal" { return fail(&format!("agent: Claude declined this request (category: {})", clean(d.category.as_deref().unwrap_or("unknown")))); }
     if d.stop == "content_filter" { return fail("agent: the provider declined this request"); }
-    if streaming { if !d.text.ends_with('\n') { println!(); } return 0; }
+    if streaming { if !d.text.ends_with('\n') { println!(); } report("ANSWER", d.text.split_once('\n').map_or("", |x| x.1)); return 0; }
     let pick = match parse_pick(&d.text) { Ok(p) => p, Err(e) => return fail(&format!("agent: could not tell what to do ({e}). Nothing was done. Try other words.")) };
+    match &pick { Pick::Run(_) => {} Pick::Answer(t) => report("ANSWER", t), _ => report("ACT", d.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("")) }   // Run is reported by act, with the command
     act(&cli.flags(), &home, &line, pick, &ch)
 }
 
@@ -119,7 +131,7 @@ fn act(flags: &[String], home: &std::path::Path, line: &str, pick: Pick, ch: &Ch
     match pick {
         Pick::Answer(t) => { println!("  {DIM}\u{2192} answer{R}"); Indent { bol: true }.put(&format!("{t}\n")); 0 }
         Pick::Run(c) => match std::env::var("THIR_PICK_FD").ok().and_then(|v| v.parse::<i32>().ok()) {   // nsh checks, shows and asks
-            Some(fd) => { use std::os::fd::FromRawFd; let mut f = unsafe { std::fs::File::from_raw_fd(fd) }; let _ = std::io::Write::write_all(&mut f, c.as_bytes()); 0 }
+            Some(_) => { report("RUN", &c); 0 }
             None => { println!(" {CYAN}\u{2192}{R} {FG}{}{R}", printable(&c)); 0 }
         },
         Pick::Build => if ask("build an app:", &what, "2 to 5 API calls") { make::command("build", &with(&[line])) } else { no() },

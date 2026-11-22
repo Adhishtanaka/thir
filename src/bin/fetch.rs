@@ -22,7 +22,7 @@ fn main() {
     let info = Info {
         user: printable(&user), host: printable(host.trim()),
         rows: vec![
-            ("OS", format!("thir {} {}", env!("CARGO_PKG_VERSION"), std::env::consts::ARCH)),
+            ("OS", format!("thir {}", env!("CARGO_PKG_VERSION"))),
             ("Kernel", printable(&kernel())),
             ("Uptime", uptime_str(up)),
             ("Shell", "nsh".into()),

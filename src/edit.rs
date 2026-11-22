@@ -108,7 +108,7 @@ impl Buf {
             Key::Home | Key::Ctrl(b'a') => self.home(), Key::End | Key::Ctrl(b'e') => self.end(),
             Key::PgUp => self.page(rows, false), Key::PgDn => self.page(rows, true),
             Key::Ctrl(b'k') => self.cut_line(), Key::Ctrl(b'u') => self.paste(),
-            Key::Ctrl(_) => {}
+            Key::Ctrl(_) | Key::Paste(_) => {}   // the editor never asks for bracketed paste: a paste arrives as typed keys
         }
     }
 

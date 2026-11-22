@@ -1,4 +1,4 @@
-use thir::{clock, files::{app_name_ok, printable, rm_refuses}, line::Editor, net, notify, parse::{parse_cmd, Cmd}};
+use thir::{chat::Chat, clock, files::{app_name_ok, printable, rm_refuses}, line::Editor, net, notify, parse::{parse_cmd, Cmd}};
 use std::{fs::{self, File, OpenOptions}, io::{self, BufRead, Write}, os::unix::{fs::{FileExt, OpenOptionsExt}, process::{CommandExt, ExitStatusExt}}, path::Path, process::{exit, Command, Stdio}};
 
 /// Every command nsh offers, by section: (usage, description). Builtins and completion come from here, so they cannot drift.
@@ -12,11 +12,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ("programs", &[("edit [file]", "full-screen editor (also: nano)"), ("find [dir] [-name P]", "find files; P uses * and ?; -type f|d"), ("top", "CPU, memory and processes"),
         ("fetch", "system summary with a bear (also: neofetch)"),
         ("curl [opts] URL", "download a page or file (curl -h for options)"),
-        ("web [URL]", "browser (needs the web add-on)"),
+        ("web [URL]", "the browser"),
         ("passwd", "change your password"), ("dhcp [iface]", "request an address (root only)")]),
     ("apps", &[("clock", "big time, stopwatch, timer, alarms"), ("calendar", "month view, events, reminders"), ("calc", "calculator with history"), ("contacts", "names, phones, emails"),
         ("notes", "notes with tags and todos"), ("settings", "time zone, wallpaper, sound"), ("beep [hz ms]", "play the alarm chime or a note"),
-        ("play FILE|DIR [-s]", "music and video (needs the web add-on)"), ("view FILE|DIR", "pictures (needs the web add-on)"), ("rec", "record the microphone (den asks first)")]),
+        ("play FILE|DIR [-s]", "music and video"), ("view FILE|DIR", "pictures"), ("rec", "record the microphone (den asks first)"), ("camera", "webcam preview and photos (den asks first)")]),
 ];
 
 /// Names of the builtins: every section except "programs" and "apps", first word of the usage.
@@ -28,7 +28,7 @@ fn builtins() -> impl Iterator<Item = &'static str> {
 const HIDDEN: &[&str] = &["agent", "login", "den", "init", "nsh"];
 
 /// What `!` alone prints: the only way to the AI is `!` and your words.
-const ASK_HELP: &str = "Type ! and your words to ask the AI. It shows one thing and asks first.\n  ! move notes into docs          ! what apps do I have\n  ! make me a timer app           ! remind me at 5pm to call mum\n  ! add Kasun to my contacts, 0771234567\n  ! change my AI provider         ! delete the app weather\nPlain lines without ! are a normal shell.\n";
+const ASK_HELP: &str = "Type ! and your words to ask the AI. It shows one thing and asks first.\n  ! move notes into docs          ! what apps do I have\n  ! make me a timer app           ! remind me at 5pm to call mum\n  ! add Kasun to my contacts, 0771234567\n  ! change my AI provider         ! delete the app weather\nAfter an answer a dim \u{21b3} prompt takes your reply in the same conversation.\nEnter alone leaves it. A ! line in 10 minutes continues it; !! starts anew.\nPlain lines without ! are a normal shell.\n";
 
 fn help_text() -> String {
     let mut o = String::from("nsh, the thir shell\n");
@@ -37,7 +37,7 @@ fn help_text() -> String {
         for (i, (u, d)) in rows.iter().enumerate() { o += &format!("  {:<8} {:<20} {}\n", if i == 0 { sec } else { "" }, u, d); }
     }
     o.push('\n');
-    o += "  !        your words          ask the AI (type ! alone for examples)\n";
+    o += "  !        your words          ask the AI (type ! alone for examples)\n"; o += "  !!       your words          new AI chat (! continues it, 10 min)\n";
     o + "\nApps the AI builds run by their name. Plain lines are a normal shell.\nRedirect output with > file or >> file.\nKeys: Tab completes, Up/Down history, Ctrl-A/E start/end, Ctrl-U/K cut to\nstart/end, Ctrl-W cut word, Ctrl-L clear screen, Ctrl-C cancel, Ctrl-D exit.\n"
 }
 
@@ -54,6 +54,8 @@ fn tz(args: &[String], out: &mut dyn Write) {
         .and_then(|mut f| writeln!(f, "{}", clock::format_offset(off)));
     if let Err(e) = r { eprintln!("nsh: tz: {e}"); }
 }
+
+const REPLY_PROMPT: &str = "  \x1b[90m\u{21b3}\x1b[0m ";   // the dim reply prompt of an AI conversation
 
 fn prompt() -> String {
     let user = std::env::var("USER").unwrap_or_else(|_| "?".into());
@@ -281,13 +283,14 @@ fn dangerous(argv: &[String]) -> Option<&'static str> {
     }
 }
 
-/// `! words`: asks /bin/agent, which sends the line back on fd 3 (a pipe), or prints an answer or its own action. Some(line) when it proposed a command.
-fn ask_ai(words: &str, names: &[String]) -> Option<String> {
+/// `! words`: asks /bin/agent, which sends back on fd 3 (a pipe) `KIND\ntext`: RUN and a command line, or what the AI answered or chose (that is the AI's side of the conversation).
+/// The conversation so far goes in THIR_CHAT. Returns (the command it proposed, the AI's reply); no reply = something failed and agent said why.
+fn ask_ai(words: &str, names: &[String], chat: &Chat) -> (Option<String>, Option<String>) {
     let mut fds = [0i32; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 { eprintln!("nsh: cannot make a pipe"); return None; }
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 { eprintln!("nsh: cannot make a pipe"); return (None, None); }
     let w = fds[1];
     let mut c = Command::new("/bin/agent");
-    c.args(["ask", "--", words]).env("THIR_CMDS", names.join(" ")).env("THIR_PICK_FD", "3");
+    c.args(["ask", "--", words]).env("THIR_CMDS", names.join(" ")).env("THIR_PICK_FD", "3").env("THIR_CHAT", chat.encode());
     let r = unsafe { c.pre_exec(move || {
         for s in [libc::SIGINT, libc::SIGQUIT] { libc::signal(s, libc::SIG_DFL); }
         if w == 3 { libc::fcntl(3, libc::F_SETFD, 0); } else if libc::dup2(w, 3) < 0 { return Err(io::Error::last_os_error()); }
@@ -296,8 +299,16 @@ fn ask_ai(words: &str, names: &[String]) -> Option<String> {
     unsafe { libc::close(w); }
     let mut got = String::new();
     { use std::os::fd::FromRawFd; let mut f = unsafe { File::from_raw_fd(fds[0]) }; let _ = io::Read::read_to_string(&mut io::Read::take(&mut f, 2000), &mut got); }
-    if let Err(e) = r { eprintln!("nsh: /bin/agent: {e}"); return None; }
-    (!got.trim().is_empty()).then(|| got.trim().to_string())
+    if let Err(e) = r { eprintln!("nsh: /bin/agent: {e}"); return (None, None); }
+    parse_reply(&got)
+}
+
+/// `KIND\ntext` from agent: (the command line when KIND is RUN, the text the conversation keeps). RUN keeps "RUN cmd", ANSWER keeps "ANSWER\\n" and the answer, ACT keeps the action line.
+fn parse_reply(got: &str) -> (Option<String>, Option<String>) {
+    let (kind, text) = got.split_once('\n').unwrap_or((got, ""));
+    let text = text.trim();
+    if text.is_empty() { return (None, None); }
+    match kind { "RUN" => (Some(text.to_string()), Some(format!("RUN {text}"))), "ANSWER" => (None, Some(format!("ANSWER\n{text}"))), "ACT" => (None, Some(text.to_string())), _ => (None, None) }
 }
 
 /// Shows the proposed command exactly and asks. Enter is yes, or no when it is dangerous.
@@ -324,17 +335,35 @@ fn main() {
     let old = fs::read_to_string(&path).unwrap_or_default();
     let mut ed = Editor::new(old.lines().rev().take(1000).map(String::from).collect::<Vec<_>>().into_iter().rev().collect());
     let (uid, mut seen) = (unsafe { libc::getuid() }, clock::now() - 600);
+    let (mut chat, mut replying) = (Chat::default(), false);   // the AI conversation of this shell; replying: the next line is a reply to it (the ↳ prompt)
     loop {
-        show_notices(&mut seen, uid);
-        let Some(line) = thir::term::read_line(&mut ed, &prompt(), &candidates) else { exit(0) };
-        if ed.push_history(line.trim()) {
-            if let Ok(mut f) = OpenOptions::new().append(true).create(true).mode(0o600).open(&path) { let _ = writeln!(f, "{}", line.trim()); }
-        }
+        let reply = replying; replying = false;
+        let line = if reply {   // a reply is not kept in the history (and so not in the file): it may say anything
+            match thir::term::read_line(&mut Editor::new(vec![]), REPLY_PROMPT, &|_, _| vec![]) {
+                Some(l) if !l.trim().is_empty() => l,
+                _ => continue,   // an empty line (or Ctrl-D) leaves the reply prompt; the conversation stays for 10 minutes (`!` continues it, `!!` starts anew)
+            }
+        } else {
+            show_notices(&mut seen, uid);
+            let Some(line) = thir::term::read_line(&mut ed, &prompt(), &candidates) else { exit(0) };
+            if ed.push_history(line.trim()) {
+                if let Ok(mut f) = OpenOptions::new().append(true).create(true).mode(0o600).open(&path) { let _ = writeln!(f, "{}", line.trim()); }
+            }
+            line
+        };
         let names = || candidates("", "").into_iter().filter(|n| !HIDDEN.contains(&n.as_str())).collect::<Vec<_>>();
-        let mut cmd = match classify(&line, &is_cmd, &names) {
+        let kind = if reply { Line::Ask(line.trim().strip_prefix('!').unwrap_or(line.trim()).trim().to_string()) } else { classify(&line, &is_cmd, &names) };
+        let mut cmd = match kind {
             Line::Ask(w) if w.is_empty() => { print!("{ASK_HELP}"); continue; }
             Line::Ask(w) => {
-                let Some(l) = ask_ai(&w, &names()) else { continue };
+                let (w, fresh) = match w.strip_prefix('!') { Some(r) if !reply => (r.trim().to_string(), true), _ => (w, false) };   // `!! words` starts a new conversation
+                if fresh { chat.clear(); }
+                if w.is_empty() { println!("  \x1b[90mconversation ended\x1b[0m"); continue; }
+                if !reply && chat.live(clock::now()) { println!("  \x1b[90mcontinuing the conversation (!! and your words start a new one)\x1b[0m"); }
+                else if !reply { chat.clear(); }
+                let (cmd, said) = ask_ai(&w, &names(), &chat);
+                if let Some(t) = said { chat.add(&w, &t, clock::now()); replying = true; }   // the AI answered or chose: you may reply
+                let Some(l) = cmd else { continue };
                 let c = match check_line(&l, &is_cmd) { Ok(c) => c, Err(e) => { eprintln!("nsh: {e}"); continue; } };
                 if !confirm_cmd(&l, dangerous(&c.argv)) { println!("  nothing done."); continue; }
                 c
@@ -359,7 +388,7 @@ fn main() {
         c.args(&cmd.argv[1..]);
         if let Some(f) = file { c.stdout(Stdio::from(f)); }
         match unsafe { c.pre_exec(|| { for s in [libc::SIGINT, libc::SIGQUIT] { libc::signal(s, libc::SIG_DFL); } Ok(()) }) }.status() {
-            Err(e) if e.kind() == io::ErrorKind::NotFound && name == "web" => eprintln!("nsh: web needs the web add-on: this system has no browser installed"),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && name == "web" => eprintln!("nsh: web: not installed in this small thir (no browser)"),
             Err(e) if e.kind() == io::ErrorKind::NotFound && !name.contains('/') => eprintln!("nsh: {}: command not found (type ! and your words to ask the AI)", printable(name)),
             Err(e) => eprintln!("nsh: {name}: {e}"),
             Ok(s) if !s.success() => match s.signal() { Some(n) => println!("[signal {n}]"), None => println!("[exit {}]", s.code().unwrap_or(-1)) },
@@ -392,6 +421,13 @@ mod tests {
         assert_eq!(progs, ["edit", "find", "top", "fetch", "curl", "web", "passwd", "dhcp"]);
         assert!(HELP.iter().filter(|s| s.0 == "apps").flat_map(|s| s.1.iter()).all(|u| thir::apps::NAMES.contains(&u.0.split(' ').next().unwrap())));
         assert!(builtins().all(|b| !progs.contains(&b)) && builtins().any(|b| b == "date") && help_cmd("find").unwrap().starts_with("find [dir]"));
+    }
+    #[test] fn replies_from_agent() {
+        assert_eq!(parse_reply("RUN\nls docs"), (Some("ls docs".into()), Some("RUN ls docs".into())));
+        assert_eq!(parse_reply("ANSWER\nWhat time?\n"), (None, Some("ANSWER\nWhat time?".into())));
+        assert_eq!(parse_reply("ACT\nREMIND 17:00 call mum"), (None, Some("REMIND 17:00 call mum".into())));
+        for bad in ["", "RUN\n", "RUN", "EXEC\nx", "ANSWER\n  "] { assert_eq!(parse_reply(bad), (None, None), "{bad:?}"); }
+        assert!(ASK_HELP.contains("!! starts anew") && help_text().contains("!!"));
     }
     fn cls(l: &str) -> Line {
         let cmds = ["ls", "cat", "mkdir", "weather", "echo", "help"];

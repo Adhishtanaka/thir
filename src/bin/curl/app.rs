@@ -88,7 +88,7 @@ fn key_name(k: &Key) -> Option<String> {
     Some(match k {
         Key::Char(c) => c.to_string(), Key::Enter => "enter".into(), Key::Tab => "tab".into(), Key::Backspace => "backspace".into(), Key::Delete => "delete".into(),
         Key::Left => "left".into(), Key::Right => "right".into(), Key::Up => "up".into(), Key::Down => "down".into(), Key::Home => "home".into(), Key::End => "end".into(),
-        Key::PgUp => "pgup".into(), Key::PgDn => "pgdn".into(), Key::Ctrl(b) if b.is_ascii_lowercase() => format!("ctrl-{}", *b as char), Key::Ctrl(_) => return None,
+        Key::PgUp => "pgup".into(), Key::PgDn => "pgdn".into(), Key::Ctrl(b) if b.is_ascii_lowercase() => format!("ctrl-{}", *b as char), Key::Ctrl(_) | Key::Paste(_) => return None,
     })
 }
 

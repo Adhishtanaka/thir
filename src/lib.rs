@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod chat;
 pub mod clock;
 pub mod dhcp;
 pub mod disk;
@@ -10,6 +11,7 @@ pub mod gui;
 pub mod http;
 pub mod json;
 pub mod line;
+pub mod logfile;
 pub mod net;
 pub mod notify;
 pub mod parse;
