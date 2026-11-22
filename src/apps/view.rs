@@ -211,6 +211,7 @@ fn selftest() -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args == ["--selftest"] { return selftest() }
     let [arg] = args else { eprintln!("usage: view FILE|DIR"); return 2 };
+    if !Path::new(arg).exists() { eprintln!("view: {arg}: no such file or folder (Tab completes names)"); return 1 }
     let (files, idx) = list(Path::new(arg));
     if files.is_empty() { eprintln!("view: no pictures in {arg}"); return 1 }
     if !Path::new(FFMPEG).exists() { eprintln!("view is not in this small thir (no media apps)"); return 1 }
